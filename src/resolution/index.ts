@@ -30,7 +30,7 @@ import { gateRustScope, clearRustScopeMemos } from './rust-scope';
 import { gateSuperSelfCall } from './super-self';
 import { resurrectRefFromDroppedEdge } from './resurrect-ref';
 import { GO_TYPE_KINDS, isGoBareName, isGoUnknownQualified, goTypePositionTarget } from './go-type-visibility';
-import { ResolverPool, minRefsForPool } from './resolver-pool';
+import { ResolverPool, minRefsForPool, shouldEngageAdaptively } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
 import { detectFrameworksWithSkips, getResolvingFrameworks } from './frameworks';
 import { synthesizeCallbackEdges } from './callback-synthesizer';
@@ -1926,6 +1926,12 @@ export class ReferenceResolver {
     if (parallel && total >= minRefsForPool()) {
       pool = await createPool();
     }
+    // Below the fixed gate the pool can still boot mid-run: the loop times its
+    // main-thread kernel resolves and, after a batch, boots the pool once the
+    // projected remainder clears the bar (shouldEngageAdaptively). One attempt.
+    let poolEngageTried = !parallel || total >= minRefsForPool();
+    let kernelResolveMs = 0;
+    let kernelResolveRefs = 0;
 
     // Process in PIPELINED batches (double-buffer). The enumeration is the
     // head of the pending set in rowid order; every ref a persisted batch
@@ -1997,11 +2003,18 @@ export class ReferenceResolver {
     // Resolve a page on the main-thread kernel. Only while no pool is up.
     const resolveOnMainKernel = async (batch: BatchPage): Promise<ResolveOutcome[]> => {
       const k = await openMainKernel();
-      if (!batch.kernelRefs) return this.resolveChunkWithKernel(k, batch.refs);
-      const outcomes = k.resolveChunk(batch.kernelRefs);
-      if (outcomes.length !== batch.kernelRefs.length) {
-        throw new Error(`kernel resolveChunk returned ${outcomes.length} outcomes for ${batch.kernelRefs.length} refs`);
+      const tKernel = Date.now();
+      let outcomes: ResolveOutcome[];
+      if (!batch.kernelRefs) {
+        outcomes = this.resolveChunkWithKernel(k, batch.refs);
+      } else {
+        outcomes = k.resolveChunk(batch.kernelRefs);
+        if (outcomes.length !== batch.kernelRefs.length) {
+          throw new Error(`kernel resolveChunk returned ${outcomes.length} outcomes for ${batch.kernelRefs.length} refs`);
+        }
       }
+      kernelResolveMs += Date.now() - tKernel;
+      kernelResolveRefs += batch.refs.length;
       return outcomes;
     };
 
@@ -2161,6 +2174,19 @@ export class ReferenceResolver {
       const tBatch = Date.now();
       const result = await settleBatch(inFlight, batch);
       if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[pool-timing] batch ${inFlight.mode}: ${batch.refs.length} refs in ${Date.now() - tBatch}ms`);
+      // The next batch has not begun: booting the pool here means it, and every
+      // later one, fans out (the first fan-out waits for the workers).
+      if (inFlight.mode === 'kernel' && !poolEngageTried && pool === null && kernelResolveRefs > 0) {
+        const remaining = total - processed - batch.refs.length;
+        const projectedMs = (kernelResolveMs / kernelResolveRefs) * Math.max(0, remaining);
+        if (shouldEngageAdaptively(projectedMs, remaining)) {
+          poolEngageTried = true;
+          if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
+            console.error(`[pool-timing] adaptive engage: projected ${Math.round(projectedMs)}ms main-thread resolve over ${remaining} remaining refs`);
+          }
+          pool = await createPool();
+        }
+      }
       if (process.env.CODEGRAPH_RESOLVE_DEBUG) {
         const accounted = result.resolved.length + result.unresolved.length;
         const first = batch.refs[0]?.rowId ?? -1;
