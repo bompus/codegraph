@@ -30,6 +30,7 @@ import {
   ResolutionContext,
 } from '../types';
 import { stripCommentsForRegex } from '../strip-comments';
+import { makeLineAt } from '../synth-utils';
 import { declaredDependencies } from './package-deps';
 
 // ---------------------------------------------------------------------------
@@ -277,9 +278,16 @@ export const nestjsResolver: FrameworkResolver = {
         if (!content) continue;
         const safe = stripCommentsForRegex(content, detectLanguage(filePath));
         const scopes = buildClassScopes(safe);
-        const hits = findDecorators(safe, HTTP_METHODS);
+        // First decorator on each line, so a route finds its own in one lookup
+        // instead of re-counting the file's newlines for every decorator.
+        const lineOf = makeLineAt(safe, 1);
+        const hitOnLine = new Map<number, DecoratorHit>();
+        for (const h of findDecorators(safe, HTTP_METHODS)) {
+          const line = lineOf(h.index);
+          if (!hitOnLine.has(line)) hitOnLine.set(line, h);
+        }
         for (const route of routes) {
-          const hit = hits.find((h) => lineAt(safe, h.index) === route.startLine);
+          const hit = hitOnLine.get(route.startLine);
           const scope = hit ? scopeFor(scopes, hit.index) : null;
           if (!hit || !scope || scope.kind !== 'controller') continue;
           const planned = plan.get(route.id);
