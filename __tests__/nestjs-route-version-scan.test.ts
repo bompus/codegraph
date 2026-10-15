@@ -49,9 +49,9 @@ describe('NestJS: versioning a controller with many routes', () => {
     const elapsed = performance.now() - started;
 
     expect(updates).toHaveLength(routes);
-    const names = updates.map((n) => n.name);
-    expect(names).toContain('GET /api/v2/wide/r0');
-    expect(names).toContain('POST /api/v2/wide/r1499');
+    expect(new Set(updates.map((n) => n.name))).toEqual(
+      new Set(Array.from({ length: routes }, (_, i) => `${i % 2 ? 'POST' : 'GET'} /api/v2/wide/r${i}`))
+    );
     // The pass takes a few milliseconds; the per-route rescan took seconds at this size.
     expect(elapsed).toBeLessThan(1000);
   });
