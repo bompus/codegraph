@@ -57,10 +57,6 @@ impl Variant {
     fn is_ts(self) -> bool {
         matches!(self, Variant::Typescript | Variant::Tsx)
     }
-    /// VALUE_REF_LANGS includes typescript/tsx/javascript but NOT jsx.
-    fn value_refs(self) -> bool {
-        !matches!(self, Variant::Jsx)
-    }
 }
 
 /// typescriptExtractor.methodTypes / javascriptExtractor.methodTypes.

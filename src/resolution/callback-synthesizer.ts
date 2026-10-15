@@ -44,7 +44,8 @@ import { rnModuleMethods } from './frameworks/react-native';
 import { resolveImportPath } from './import-resolver';
 import { isDistinctiveIdentifier } from '../search/query-utils';
 import { crossesCodeBoundary, innermostBinding } from './gates';
-import { declaredComponent } from './frameworks/react';
+import { declaredComponent, exportedComponent } from './frameworks/react';
+import { jsxCode } from './jsx-code';
 
 const REGISTRAR_NAME = /^(on[A-Z]\w*|subscribe|addListener|addEventListener|register|watch|listen|addCallback)$/;
 const DISPATCHER_NAME = /(emit|trigger|notify|dispatch|fire|publish|flush)/i;
@@ -65,6 +66,8 @@ const ON_INLINE_RE =
 const SETSTATE_RE = /this\.setState\s*\(/;
 const FLUTTER_SETSTATE_RE = /\bsetState\s*\(/; // Flutter: setState((){…}) / this.setState
 const JS_FAMILY = ['typescript', 'javascript', 'tsx', 'jsx'];
+/** The languages that can write JSX: not TypeScript's `.ts` files. */
+const JSX_FAMILY = ['tsx', 'jsx', 'javascript'];
 // A tag's name ends at whitespace, `/` or `>`, or at the `<` of the type
 // arguments a generic component's tag passes: `<PaginatedList<Document>
 // items={…} />` renders PaginatedList. The lookahead leaves that `<` to open
@@ -2085,6 +2088,21 @@ function importedFromPackage(ctx: ResolutionContext, name: string, file: string)
 }
 
 /**
+ * The module of the project `file` imports `name` from, and the export the
+ * import names: `default` for a default import, else the imported name.
+ * Undefined when the file imports no such name from a module the index holds:
+ * a package's (`importedFromPackage`), or a path only the app's build resolves.
+ */
+function projectImport(ctx: ResolutionContext, name: string, file: string): { module: string; exported: string } | undefined {
+  const language = languageForJsxFile(file);
+  const binding = ctx.getImportMappings(file, language).find((m) => m.localName === name);
+  if (!binding || binding.isNamespace) return undefined;
+  const module = binding.resolvedPath ?? resolveImportPath(binding.source, file, language, ctx);
+  if (!module || !ctx.getNodesInFile(module).some((n) => n.kind === 'file')) return undefined;
+  return { module, exported: binding.isDefault || binding.exportedName === 'default' ? 'default' : binding.exportedName };
+}
+
+/**
  * The component a JSX tag names, among every node that shares the name.
  *
  * A tag is written in one file, and that file already says which `FrameCard` it
@@ -2101,9 +2119,19 @@ function importedFromPackage(ctx: ResolutionContext, name: string, file: string)
  * shape, and the one an import can never disambiguate. Then a name the file
  * imports from a package: that package's component, which is no node here, so
  * nothing. On SigNoz, antd's `<Button>` rendered the one project `Button` there
- * was, a styled link in a 404 page's styles. Then the file the name is
- * imported from. Then the language, which only decides a tie: a `.tsx` tag
- * naming both a TS component and a same-named Swift class means the TS one.
+ * was, a styled link in a 404 page's styles. Then a name it imports from a
+ * module of the project: the component that module exports under it, read the
+ * way a lazy route's module is (`exportedComponent`), through an `index` or a
+ * barrel that hands it on and past a wrapper call. outline's
+ * `Sidebar/index.ts` is `import Sidebar from "./App"; export default
+ * Sidebar`, and `./App` exports `observer(AppSidebar)`; the index declares
+ * nothing, so `<Sidebar>` took the styled `Sidebar` of `Aside.tsx` by name.
+ * When the module exports nothing the graph holds as a component under the
+ * name — `export default () => …`, a type — no namesake elsewhere is it either,
+ * though one the module itself declares still is (a CommonJS `module.exports =
+ * Card`). Then the file the name is imported from. Then the language, which
+ * only decides a tie: a `.tsx` tag naming both a TS component and a
+ * same-named Swift class means the TS one.
  *
  * A value the file declares under the name comes first of all: `const Chart =
  * lazy(() => import('./Chart'))` renders the component that module exports,
@@ -2118,7 +2146,8 @@ function jsxChild(
   name: string,
   file: string,
   importsOf: () => Map<string, string>,
-  ownValueOf: (name: string) => ReturnType<typeof declaredComponent>
+  ownValueOf: (name: string) => ReturnType<typeof declaredComponent>,
+  exportOf: (module: string, exported: string) => Node | null
 ): Node | undefined {
   const own = ownValueOf(name);
   if (own) return own.component ?? own.declaration;
@@ -2126,6 +2155,14 @@ function jsxChild(
   const local = candidates.find((n) => n.filePath === file);
   if (local) return local;
   if (importedFromPackage(ctx, name, file)) return undefined;
+  const imported = projectImport(ctx, name, file);
+  if (imported) {
+    const exported = exportOf(imported.module, imported.exported);
+    if (exported) return exported;
+    const inModule = candidates.find((n) => n.filePath === imported.module);
+    if (inModule) return inModule;
+    if (candidates.length > 0) return undefined;
+  }
   if (candidates.length === 0) {
     // A name nothing declares is the file's DEFAULT import of a module's one
     // component under another name: segmented-control renders
@@ -2215,7 +2252,9 @@ function declaredInside(ctx: ResolutionContext, name: string, parent: Node, chil
  * so a render tree (App.render → StaticCanvas → renderStaticScene) breaks at the
  * JSX hop. Link parent → each capitalized JSX child it renders. File-oriented
  * (read each JSX file once). Precision gates: the parent must write the name as
- * a tag, not only in a type argument or parameter list (`useState<User>()`,
+ * a tag in its code, not in a comment, a string or a template (react-router's
+ * "You cannot render a <Router> inside another <Router>"; `jsxCode`), and
+ * not only in a type argument or parameter list (`useState<User>()`,
  * `<Entry extends BaseEntity>(…) =>`; outline's `<PaginatedList<Document>`
  * read its `Document` model class as a child), and the name must resolve to a
  * component/function/class node, or to a value the file declares itself (see
@@ -2231,6 +2270,19 @@ async function reactJsxChildEdges(ctx: ResolutionContext, onYield: MaybeYield): 
   const edges: Edge[] = [];
   const seen = new Set<string>();
   const PARENT_KINDS = new Set(['method', 'function', 'component']);
+  // Once per module and export for the whole pass: what a tag imported from
+  // the project renders. The lookup reads and comment-strips the module.
+  const exports = new Map<string, Node | null>();
+  const exportOf = (module: string, exported: string): Node | null => {
+    const key = `${module}\0${exported}`;
+    let node = exports.get(key);
+    if (node === undefined) {
+      const id = exportedComponent(module, exported, ctx);
+      node = id ? ctx.getNodeById?.(id) ?? null : null;
+      exports.set(key, node);
+    }
+    return node;
+  };
   let scanned = 0;
   for (const file of ctx.getAllFiles()) {
     if ((++scannedFiles & 15) === 0) await onYield();
@@ -2242,9 +2294,11 @@ async function reactJsxChildEdges(ctx: ResolutionContext, onYield: MaybeYield): 
       continue;
     }
     // File-level language gate, not merely a project-level one: mixed C/JS
-    // monorepos must not interpret `"<Foo/>"` inside C as JSX (#1560).
+    // monorepos must not interpret `"<Foo/>"` inside C as JSX (#1560). A
+    // TypeScript `.ts` file holds no JSX either: a `<Name>` there is a type
+    // assertion or text, like outline's OpenSearch XML template.
     const parents = ctx.getNodesInFile(file).filter(
-      (n) => PARENT_KINDS.has(n.kind) && JS_FAMILY.includes(n.language)
+      (n) => PARENT_KINDS.has(n.kind) && JSX_FAMILY.includes(n.language)
     );
     if (parents.length === 0) continue;
     // Read once per file, and only when a name actually turns out ambiguous.
@@ -2261,7 +2315,8 @@ async function reactJsxChildEdges(ctx: ResolutionContext, onYield: MaybeYield): 
     // the same lines share them: every function of a minified bundle spans
     // its one line, and reading that line again per function took 9 to 25 s
     // over go-ethereum's graphiql.min.js (2,234 functions on 980 KB). The
-    // file is split once, not once per function.
+    // file is split once, not once per function, and read as code once: a
+    // tag in a comment or a string is text (`jsxCode`).
     let lines: string[] | null = null;
     // Each name a span holds, and the line of its first tag: 0 while only type
     // argument or parameter lists name it (`opensTag`). `bare` holds the
@@ -2273,7 +2328,7 @@ async function reactJsxChildEdges(ctx: ResolutionContext, onYield: MaybeYield): 
       let names = tagsBySpan.get(span);
       if (!names) {
         names = { tags: new Map<string, number>(), bare: new Set<string>() };
-        lines ??= content.split('\n');
+        lines ??= (jsxCode(content) ?? content).split('\n');
         const src = lines.slice(parent.startLine - 1, parent.endLine).join('\n');
         if (src.includes('</') || src.includes('/>')) {
           let line = parent.startLine;
@@ -2293,7 +2348,7 @@ async function reactJsxChildEdges(ctx: ResolutionContext, onYield: MaybeYield): 
       for (const [name, line] of names.tags) {
         if (added >= MAX_JSX_CHILDREN) break;
         if (!line) continue;
-        let child = jsxChild(ctx, name, file, importsOf, ownValueOf);
+        let child = jsxChild(ctx, name, file, importsOf, ownValueOf, exportOf);
         // A name the parent binds itself by its first tag is that local.
         if (child && names.bare.has(name) && jsxParentBindsName(name, parent, line, ctx)) {
           child = declaredInside(ctx, name, parent, child);

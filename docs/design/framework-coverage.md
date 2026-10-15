@@ -526,6 +526,22 @@ Each of these cost real debugging time; they are not hypothetical.
    namespaces, but the resolver does not, so a `.tsx` type reference to a name
    the file also declares as a lazy value (`type User = …; const User =
    lazy(…)`) binds to the loaded page, not to the type.
+20. **A tag imported from the project is what its module exports under the
+   name, and a tag in a comment or a string is no tag.** `jsxChild` asks
+   `exportedComponent` (the lookup a lazy route's module goes through) for a
+   name the file imports from a module of the project: through an `index` or
+   barrel that hands the component on (`import Sidebar from './App'; export
+   default Sidebar`), past a constant that holds another binding (`const
+   Avatar = AvatarWithHoverCard; export { Avatar }`) and past a wrapper call
+   (`observer(AppSidebar)`, `memo(Blurhash)`). A module that exports no
+   component under the name leaves the tag with no edge rather than a namesake
+   elsewhere. The lookup reads the binding rows for what a file exports, as in
+   trap 19. The JSX pass also reads each file once through `jsxCode`
+   (`resolution/jsx-code.ts`), which blanks comments, strings and templates,
+   so react-router's "cannot render a <Router> inside another <Router>" is no
+   render; and it skips `.ts` files, which hold no JSX. Upstream's sync input
+   list for these modules (`importedTagModules`) is not taken: the fork
+   re-runs synthesis in full on a sync.
 
 ---
 
@@ -627,4 +643,4 @@ false-positive controls through full indexing.
 
 React Router lazy modules follow default or `Component` exports through local named and wildcard re-exports. Local exports take precedence; ambiguous wildcard exports and re-export cycles stay unresolved. JSX component lookup follows its import and excludes names bound as local values or parameters.
 
-Regression coverage: `__tests__/react-router-lazy-barrel.test.ts` and `__tests__/jsx-child-disambiguation.test.ts`. These deterministic cases do not establish a new agent-evaluation or performance result.
+Regression coverage: `__tests__/react-router-lazy-barrel.test.ts`, `__tests__/jsx-child-disambiguation.test.ts` and `__tests__/sync-jsx-import-forwarding.test.ts`. These deterministic cases do not establish a new agent-evaluation or performance result.
