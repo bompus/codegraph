@@ -66,11 +66,11 @@ targets** (see §3).
 
 ## 2. Current state (what's shipped + validated)
 
-- **Default ON** for TS/JS/tsx + Go + Python + Rust + Ruby + C + Java + C# (`CODEGRAPH_VALUE_REFS=0` disables). Shipped in **PR #895**
+- **Default ON** for TS/JS/tsx/jsx + Go + Python + Rust + Ruby + C + Java + C# (`CODEGRAPH_VALUE_REFS=0` disables). Shipped in **PR #895**
   (flip-on + the shadow prune); Go added in a later PR (the shadow-prune declarator switch +
   `VALUE_REF_LANGS`); C added later still (extractor change to emit the nodes + the bare-identifier
   misparse guard); Java + C# after that (field→constant kind switch for the const subset).
-- **Validated S/M/L** in **TS, JS, tsx, Go, Python, Rust, Ruby, C, Java, and C#** — see the matrix in the
+- **Validated S/M/L** in **TS, JS, tsx, jsx, Go, Python, Rust, Ruby, C, Java, and C#** — see the matrix in the
   design doc. All clean: node count identical on/off, precision guards held, impact win
   reproduced. Go required extending the shadow prune (per-grammar declarators) — the worked
   example of "step B is load-bearing." **C required the Ruby treatment** (the extractor didn't emit
@@ -154,7 +154,7 @@ targets** (see §3).
   miss); not worth normalizing.
 - **Tests:** `__tests__/value-reference-edges.test.ts` — same-file readers edged; surfaced in
   impact radius; shadowed const NOT edged (verified to fail without the guard); JSX-only read
-  edged (tsx); `CODEGRAPH_VALUE_REFS=0` emits nothing.
+  edged (tsx and jsx); `CODEGRAPH_VALUE_REFS=0` emits nothing.
 - **Memory:** `value-reference-edges-default-on` (the A/B finding + shadow guard rationale).
 
 ---

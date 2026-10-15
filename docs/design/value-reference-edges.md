@@ -428,7 +428,7 @@ component had no edge to the lazy page it renders (`<LoginPage />` under
 mastodon and bigbluebutton-html5 the index only gained edges (400 in all, every one a
 same-file read of a file-scope value that is the only binding of its name in the file),
 and a repo with no `.jsx` files indexed byte-identically. Locked by the `.jsx` cases in
-`value-reference-edges.test.ts` (the fork has no parity test, because it has no second parser; the kernel walker in `codegraph-kernel/src/tsjs/fnref.rs` carries the same change).
+`value-reference-edges.test.ts` (the kernel walker in `codegraph-kernel/src/tsjs/fnref.rs` carries the same change; `kernel-generic-extractor-tree.test.ts` compares that walker with the generic extractor, but has no `.jsx` value-reference case of its own).
 
 **Svelte / Vue / Astro are covered for free** — their extractors re-parse the `<script>` /
 frontmatter block as `typescript` / `javascript`, which are in `VALUE_REF_LANGS`, so a `const`
