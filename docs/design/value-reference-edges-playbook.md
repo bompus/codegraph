@@ -66,10 +66,10 @@ targets** (see §3).
 
 ## 2. Current state (what's shipped + validated)
 
-- **Default ON** for TS/JS/tsx/jsx + Go + Python + Rust + Ruby + C + Java + C# (`CODEGRAPH_VALUE_REFS=0` disables). Shipped in **PR #895**
+- **Default ON** for TS/JS/tsx + Go + Python + Rust + Ruby + C + Java + C# (`CODEGRAPH_VALUE_REFS=0` disables). Shipped in **PR #895**
   (flip-on + the shadow prune); Go added in a later PR (the shadow-prune declarator switch +
   `VALUE_REF_LANGS`); C added later still (extractor change to emit the nodes + the bare-identifier
-  misparse guard); Java + C# after that (field→constant kind switch for the const subset).
+  misparse guard); Java + C# after that (field→constant kind switch for the const subset). `jsx` was added in 2026-10 (it was missing from `VALUE_REF_LANGS`).
 - **Validated S/M/L** in **TS, JS, tsx, jsx, Go, Python, Rust, Ruby, C, Java, and C#** — see the matrix in the
   design doc. All clean: node count identical on/off, precision guards held, impact win
   reproduced. Go required extending the shadow prune (per-grammar declarators) — the worked
