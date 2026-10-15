@@ -31,4 +31,5 @@ In the five engaged rows the candidate's range does not overlap the baseline's. 
 - The memory cost is real and large in relative terms. It is the same trade the 150,000-reference default already makes.
 - A 400 ms bar projected from the first batches is close to the edge on Alamofire (about 500 ms projected). The floor and bar are untuned; a different value could move which corpora engage.
 - pretix and projects between 111,000 and 150,000 references were not re-measured with this change.
+- A project that starts the pool mid-run has no checkpoint valve (the valve is only created at the 150,000-reference gate). One instrumented Exposed run, the largest engaged corpus, sampled the write-ahead log every 0.1 s: peak 9.5 MB against a 127.7 MB database (7%), pool started once. Other corpora were not sampled.
 - Single host, Linux only. The pool's own preflight is unchanged, so hosts it declines are unaffected.
