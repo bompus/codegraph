@@ -43,10 +43,12 @@ for (const [key] of CORPORA) {
     const i = rows.filter((r) => r[1] === arm && r[2] === 'index');
     const s = rows.filter((r) => r[1] === arm && r[2] !== 'index');
     if (!i.length || !s.length) throw new Error(`${key} ${arm}: missing rows`);
+    // A sync that exits non-zero has no time worth comparing: its comparisons are left out and drawn as n/a.
+    const syncFailed = s.some((r) => r[3] !== '0');
     index[key][arm] = {
       indexS: median(i.map((r) => seconds(r[4]))), peakMiB: median(i.map((r) => +r[5])) / 1024,
       dbMiB: median(i.map((r) => +r[7])) / 2 ** 20, nodes: +i[0][8], edges: +i[0][9],
-      syncS: median(s.map((r) => seconds(r[4]))), runs: i.length, syncRuns: s.length,
+      syncS: syncFailed ? NaN : median(s.map((r) => seconds(r[4]))), runs: i.length, syncRuns: s.length,
     };
   }
 }
@@ -81,7 +83,7 @@ const cli = {};
 }
 
 // ---- formatting
-const fSec = (v) => `${v < 10 ? v.toFixed(2) : v.toFixed(1)} s`;
+const fSec = (v) => Number.isNaN(v) ? 'sync failed' : `${v < 10 ? v.toFixed(2) : v.toFixed(1)} s`;
 const fMem = (miB) => (miB >= 1024 ? `${(miB / 1024).toFixed(2)} GiB` : miB < 100 ? `${miB.toFixed(1)} MiB` : `${Math.round(miB)} MiB`);
 const fMs = (v) => (v >= 1000 ? fSec(v / 1000) : `${Math.round(v)} ms`);
 const fPct = (v) => `${v.toFixed(2)}%`;
@@ -104,15 +106,17 @@ const ratio = (m, rt) => {
   const [up, fk] = rt === 'Node' ? [m[2].upnode, m[2].forknode] : [m[2].upbun, m[2].forkbun];
   return up === 0 ? (fk === 0 ? 1 : Infinity) : fk / up;
 };
-const cmp = [];
-for (const m of metrics) for (const rt of ['Node', 'Bun']) cmp.push({ m, rt, r: ratio(m, rt) });
+const every = [];
+for (const m of metrics) for (const rt of ['Node', 'Bun']) every.push({ m, rt, r: ratio(m, rt) });
+const excluded = every.filter((c) => Number.isNaN(c.r));
+const cmp = every.filter((c) => !Number.isNaN(c.r));
 const nBetter = cmp.filter((c) => c.r < 1 - BAND).length;
 const nSame = cmp.filter((c) => c.r >= 1 - BAND && c.r <= 1 + BAND).length;
 const nWorse = cmp.filter((c) => c.r > 1 + BAND).length;
 
 // ---- SVG pieces
 const C = { bg: '#0d1117', panel: '#161b22', text: '#e6edf3', muted: '#8b949e', good: '#2ea043', same: '#d29922', bad: '#f85149' };
-const col = (r) => (r < 1 - BAND ? C.good : r > 1 + BAND ? C.bad : C.same);
+const col = (r) => Number.isNaN(r) ? C.muted : (r < 1 - BAND ? C.good : r > 1 + BAND ? C.bad : C.same);
 const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
 const T = (x, y, s, o = {}) => `<text x="${x}" y="${y}" font-size="${o.size || 12}" font-weight="${o.w || 400}" fill="${o.fill || C.text}" text-anchor="${o.a || 'start'}">${esc(s)}</text>`;
 const wrap = (W, H, body, title, desc) => `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="${FONT}" role="img" aria-labelledby="t d">\n<title id="t">${esc(title)}</title>\n<desc id="d">${esc(desc)}</desc>\n<rect width="${W}" height="${H}" rx="8" fill="${C.bg}"/>\n${body}\n</svg>\n`;
@@ -164,7 +168,7 @@ function cards() {
   b += T(40, y + 26, 'Where the fork is not better', { size: 14, w: 700, fill: C.bad });
   lines.forEach((s, i) => { b += T(40, y + 54 + i * 22, s, { size: 12.5 }); });
   y += boxH + 26;
-  b += T(24, y, `Over all ${cmp.length} comparisons on Node and Bun: better in ${nBetter}, about the same in ${nSame}, worse in ${nWorse}.`, { size: 12, fill: C.muted });
+  b += T(24, y, `Over all ${cmp.length} comparisons on Node and Bun: better in ${nBetter}, about the same in ${nSame}, worse in ${nWorse}.${excluded.length ? ` ${excluded.length} more are left out because upstream's one-file sync failed.` : ''}`, { size: 12, fill: C.muted });
   y += 20;
   b += T(24, y, FOOT, { size: 11, fill: C.muted });
   const n8 = index.n8n;
@@ -196,6 +200,7 @@ function heatmap() {
     }
     y += 18;
   }
+  if (excluded.length) { b += T(24, y + 4, `Grey n/a: upstream's one-file sync exited with an error, so there is no time to compare.`, { size: 11, fill: C.muted }); y += 18; }
   b += T(24, y + 4, FOOT, { size: 11, fill: C.muted });
   const desc = `Heatmap of the fork's change against upstream for full index time, peak memory and one-file sync on seven repositories, the MCP server on n8n and gin, and command-line startup. Of ${cmp.length} comparisons it is better in ${nBetter}, about the same in ${nSame} and worse in ${nWorse}.`;
   return wrap(W, y + 24, b, 'Fork vs upstream CodeGraph: every result', desc);
