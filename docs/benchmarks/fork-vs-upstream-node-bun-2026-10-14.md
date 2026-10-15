@@ -78,7 +78,7 @@ Median of four.
 
 ### Upstream sync fails on supabase
 
-Upstream's `codegraph sync` exited with return code 1 and `Failed to sync: FOREIGN KEY constraint failed` in all eight supabase syncs (two per run, two runs, Node and Bun). The same edit synced with return code 0 on 2026-10-13 at upstream `34dd3d2f`. The fork syncs it. A full index of the same project succeeds. This is reported upstream as [colbymchenry/codegraph#2565](https://github.com/colbymchenry/codegraph/issues/2565); it reproduces on a small workspace project and starts at upstream `d0bb9be5`. The supabase one-file sync is therefore left out of every comparison and tally on this page, which is 2 of the 76 comparisons of 2026-10-13.
+Upstream's `codegraph sync` exited with return code 1 and `Failed to sync: FOREIGN KEY constraint failed` in all eight supabase syncs (two per run, two runs, Node and Bun). The same edit synced with return code 0 on 2026-10-13 at upstream `34dd3d2f`. The fork syncs it. A full index of the same project succeeds. This is reported upstream as [colbymchenry/codegraph#2565](https://github.com/colbymchenry/codegraph/issues/2565); it reproduces on a small workspace project and starts at upstream `d0bb9be5`. The supabase one-file sync is therefore left out of every comparison and tally on this page, so this run reports 74 comparisons where the 2026-10-13 run reported 76.
 
 ### Peak memory
 

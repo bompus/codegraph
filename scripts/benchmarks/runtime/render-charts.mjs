@@ -146,7 +146,7 @@ function cards() {
   b += T(24, 60, 'Numbers are for n8n (the largest test repo) and the command line. Lower is better. Upstream → fork.', { size: 12, fill: C.muted });
   card.forEach(([t, m, kind], i) => {
     const x = 24 + (i % 3) * 284, y = 82 + Math.floor(i / 3) * 150, r = ratio(m, 'Node');
-    const badge = kind === 'mem' ? `${Math.round((1 - r) * 100)}% less` : `${(1 / r).toFixed(1)}× faster`;
+    const badge = Number.isNaN(r) ? 'n/a' : kind === 'mem' ? `${Math.round((1 - r) * 100)}% less` : `${(1 / r).toFixed(1)}× faster`;
     const f = m[3], v = m[2];
     b += `<rect x="${x}" y="${y}" width="272" height="138" rx="8" fill="${C.panel}"/>`;
     b += T(x + 16, y + 26, t, { size: 13, fill: C.muted });
