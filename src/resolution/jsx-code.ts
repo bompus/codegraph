@@ -6,8 +6,8 @@
  * commented out (`{/* <Progress /> *\/}`), an error message ("You cannot
  * render a <Router> inside another <Router>"), an attribute's value. So
  * comments, and the contents of string, template and regex literals and of
- * JSX attribute strings, are blanked. Every character keeps its offset and
- * every line break its place, so a match in the result sits at the same line
+ * JSX attribute strings and child text, are blanked. Every character keeps its
+ * offset and every line break its place, so a match in the result sits at the same line
  * and column as in the source.
  *
  * Inside an element, a quote, a slash or a backtick is text: `<p>Don't have an
@@ -513,6 +513,8 @@ class JsxLexer {
     if (c === 62 || c === 125) return this.reread();
     let end = i + 1;
     for (let e = src.charCodeAt(end); end < this.n && e !== 123 && e !== 60 && e !== 62 && e !== 125; e = src.charCodeAt(++end));
+    // Text before a child tag is not a type name or a local binding.
+    this.blank(i, end);
     this.i = end;
     return true;
   }

@@ -96,4 +96,4 @@ React Router also reads imported route tables from their module-level export bin
 
 Cross-file route-table nodes and their references are persisted in one transaction per framework. A failed write rolls back that reconciliation, allowing the next pass to retry it.
 
-React Router lazy modules follow default or `Component` exports through local named and wildcard re-exports. Local exports take precedence; ambiguous wildcard exports and re-export cycles stay unresolved. JSX component lookup follows its import and excludes names bound as local values or parameters.
+React Router lazy modules follow default or `Component` exports through local named and wildcard re-exports. Local exports take precedence; ambiguous wildcard exports and re-export cycles stay unresolved. JSX component lookup follows its import and excludes names bound as local values or parameters. Child components after JSX text or line breaks retain their render links; type arguments, comments and quoted examples do not create them.

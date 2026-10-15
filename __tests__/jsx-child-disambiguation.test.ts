@@ -604,10 +604,7 @@ export function AuthShell() {
 
   it('renders the declaration itself when the module it loads is out of reach', () => declarationWhenOutOfReach('Sign in: '));
 
-  // Known limit of the fork: `opensTag` skips the whitespace before `<` and reads a word there
-  // as a type or comparison (`count < Max`), so upstream's `Sign in <LoginPage />` is no tag
-  // here. `it.fails` keeps this red-by-design case visible and turns the suite red once fixed.
-  it.fails('renders the declaration itself when a word precedes the tag (upstream fixture)', () => declarationWhenOutOfReach('Sign in '));
+  it.each(['Sign in ', 'Sign in\n'])('renders the declaration itself after JSX text %j', declarationWhenOutOfReach);
 
   it('reads next/dynamic’s `(await import(…)).default` and a `.then` that picks a named export', async () => {
     // excalidraw's docs site has a component of the same name.
@@ -1191,9 +1188,7 @@ describe('JSX child: a tag written in a comment or a string', () => {
       '    <form title="<Fake /> is not rendered">',
       '      <p>Don\'t have an account? <Link to="/signup">Sign up</Link></p>',
       '      <p>Read https://example.com/docs first: <Docs /></p>',
-      // Upstream writes `Press `Ctrl` and <Kbd>`; the fork's opensTag reads "and <" as a comparison (see the
-      // `it.fails` case above), so the backtick case uses a `+` before the tag.
-      '      <p>Press `Ctrl` + <Kbd>K</Kbd></p>',
+      '      <p>Press `Ctrl` and <Kbd>K</Kbd></p>',
       '      <Field label=\'It"s\' />',
       '    </form>',
       '  );',

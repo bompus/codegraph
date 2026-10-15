@@ -644,3 +644,5 @@ false-positive controls through full indexing.
 React Router lazy modules follow default or `Component` exports through local named and wildcard re-exports. Local exports take precedence; ambiguous wildcard exports and re-export cycles stay unresolved. JSX component lookup follows its import and excludes names bound as local values or parameters.
 
 Regression coverage: `__tests__/react-router-lazy-barrel.test.ts`, `__tests__/jsx-child-disambiguation.test.ts` and `__tests__/sync-jsx-import-forwarding.test.ts`. These deterministic cases do not establish a new agent-evaluation or performance result.
+
+JSX child rendering preserves tags after plain text and line breaks. The lexer blanks child text without shifting source positions; type arguments and quoted examples remain excluded. Regression coverage is in `__tests__/jsx-child-disambiguation.test.ts`.
