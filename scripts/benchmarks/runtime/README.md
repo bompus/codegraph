@@ -1,7 +1,7 @@
 # Runtime benchmark
 
 These scripts produced the README's "Measured results" and the tables in
-[`docs/benchmarks/fork-vs-upstream-node-bun-2026-10-13.md`](../../../docs/benchmarks/fork-vs-upstream-node-bun-2026-10-13.md).
+[`docs/benchmarks/fork-vs-upstream-node-bun-2026-10-14.md`](../../../docs/benchmarks/fork-vs-upstream-node-bun-2026-10-14.md).
 Each arm is a runtime (a `node` or `bun` executable) running a built checkout.
 The arms can differ in build, in runtime, or in both.
 
@@ -28,7 +28,7 @@ before it. The 2026-09-28 run of the same steps took 1 h 26 min. The
 2026-10-12 run took 3 h 2 min (00:16 to 03:18), most of it waiting for the host
 to go quiet and re-running attempts it rejected. Its measuring time per corpus
 was about 5 min for discourse and supabase, 18 min for n8n index and sync, and
-26 min for the n8n MCP run. The 2026-10-13 run took 1 h 26 min (13:49 to 15:15; index and sync 40 min, MCP 43 min, CLI under 1 min), with the host quiet enough that no attempt was rejected. Start a re-run estimate from these numbers, and
+26 min for the n8n MCP run. The 2026-10-13 run took 1 h 26 min (13:49 to 15:15; index and sync 40 min, MCP 43 min, CLI under 1 min), with the host quiet enough that no attempt was rejected. The 2026-10-14 run took 1 h 23 min (17:24 to 18:47; index and sync 38 min, MCP 42 min, CLI under 1 min) with no attempt rejected. Start a re-run estimate from these numbers, and
 update them here after a run that takes much longer or shorter.
 
 ## Arms
