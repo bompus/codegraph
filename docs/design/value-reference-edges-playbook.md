@@ -45,7 +45,7 @@ agent read-reduction (see §4.3).
 
 | Symbol | Role |
 |---|---|
-| `VALUE_REF_LANGS` (static Set) | languages the feature runs for. Currently `typescript`, `javascript`, `tsx`, `go`, `python`, `rust`, `ruby`, `c`, `java`, `csharp`, `php`, `scala`, `kotlin`, `swift`, `dart`, `pascal`. **Add the new language here.** |
+| `VALUE_REF_LANGS` (static Set) | languages the feature runs for. Currently `typescript`, `javascript`, `tsx`, `jsx`, `arkts`, `go`, `python`, `rust`, `ruby`, `c`, `java`, `csharp`, `php`, `scala`, `kotlin`, `swift`, `dart`, `pascal`. **Add the new language here.** |
 | `valueRefsEnabled` | `process.env.CODEGRAPH_VALUE_REFS !== '0'` — default ON, env opts out. |
 | `MAX_VALUE_REF_NODES` (20_000) | per-scope traversal cap (and the shadow-scan cap). |
 | `captureValueRefScope(kind, name, id, node)` | called from `createNode` on every node. Records **targets** (file-scope `const`/`var`) and **reader scopes** (`function`/`method`/`const`/`var`). |
@@ -69,8 +69,8 @@ targets** (see §3).
 - **Default ON** for TS/JS/tsx + Go + Python + Rust + Ruby + C + Java + C# (`CODEGRAPH_VALUE_REFS=0` disables). Shipped in **PR #895**
   (flip-on + the shadow prune); Go added in a later PR (the shadow-prune declarator switch +
   `VALUE_REF_LANGS`); C added later still (extractor change to emit the nodes + the bare-identifier
-  misparse guard); Java + C# after that (field→constant kind switch for the const subset).
-- **Validated S/M/L** in **TS, JS, tsx, Go, Python, Rust, Ruby, C, Java, and C#** — see the matrix in the
+  misparse guard); Java + C# after that (field→constant kind switch for the const subset). `jsx` was added in 2026-10 (it was missing from `VALUE_REF_LANGS`).
+- **Validated S/M/L** in **TS, JS, tsx, jsx, Go, Python, Rust, Ruby, C, Java, and C#** — see the matrix in the
   design doc. All clean: node count identical on/off, precision guards held, impact win
   reproduced. Go required extending the shadow prune (per-grammar declarators) — the worked
   example of "step B is load-bearing." **C required the Ruby treatment** (the extractor didn't emit
@@ -154,7 +154,7 @@ targets** (see §3).
   miss); not worth normalizing.
 - **Tests:** `__tests__/value-reference-edges.test.ts` — same-file readers edged; surfaced in
   impact radius; shadowed const NOT edged (verified to fail without the guard); JSX-only read
-  edged (tsx); `CODEGRAPH_VALUE_REFS=0` emits nothing.
+  edged (tsx and jsx); `CODEGRAPH_VALUE_REFS=0` emits nothing.
 - **Memory:** `value-reference-edges-default-on` (the A/B finding + shadow guard rationale).
 
 ---
@@ -169,7 +169,7 @@ the bottom of this section).
 
 | Language | How |
 |---|---|
-| TypeScript, JavaScript, tsx | file-scope `const`/`var`; the original languages |
+| TypeScript, JavaScript, tsx, jsx | file-scope `const`/`var`; the original languages (`jsx` was left out until 2026-10 — see the design doc's tsx note) |
 | Python | module-level `NAME =` |
 | Go | package `const`/`var` |
 | Rust | module + impl `const`/`static` |
