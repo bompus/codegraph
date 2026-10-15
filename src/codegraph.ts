@@ -1791,6 +1791,20 @@ export class CodeGraph {
       // drained first: its timer pass holding the checkpoint lock is what
       // made the fold report busy and cost the whole pool.
       foldWalForSnapshot: () => this.db.foldWalForCopy(async () => { await walValve?.drain(); }),
+      // Fast init leaves a small index in rollback-journal mode; a pool that
+      // boots mid-resolution (below the fixed ref gate) needs WAL so its
+      // readers never block the writer's commits.
+      ensureWalForPool: () => {
+        try {
+          if (this.db.getJournalMode() !== 'wal') {
+            this.db.getDb().pragma('synchronous = NORMAL');
+            this.db.getDb().pragma('journal_mode = WAL');
+          }
+          return this.db.getJournalMode() === 'wal';
+        } catch {
+          return false;
+        }
+      },
     });
   }
 

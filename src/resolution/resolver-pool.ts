@@ -68,6 +68,35 @@ export function minRefsForPool(): number {
   return 150_000;
 }
 
+/**
+ * Fewest refs still to resolve for the batch loop to boot the pool mid-run
+ * from its observed per-ref rate. Booting costs worker CPU and memory (the
+ * floor above), so a small project stays on the main-thread kernel.
+ */
+export const ADAPTIVE_ENGAGE_MIN_REFS = 20_000;
+
+/** Projected main-thread kernel time for the remaining refs that justifies booting the pool. */
+export const ADAPTIVE_ENGAGE_RESOLVE_MS = 400;
+
+/**
+ * Whether the resolve loop should boot the pool mid-run. The fixed ref-count
+ * gate (minRefsForPool) cannot see per-ref cost; this projects the remaining
+ * main-thread kernel time from the rate the loop has measured so far.
+ */
+export function shouldEngageAdaptively(projectedMs: number, remainingRefs: number): boolean {
+  return remainingRefs >= ADAPTIVE_ENGAGE_MIN_REFS && projectedMs >= ADAPTIVE_ENGAGE_RESOLVE_MS;
+}
+
+/**
+ * The mid-run start is the default policy only. An explicit
+ * CODEGRAPH_PARALLEL_RESOLVE_MIN is the user's own pool threshold (a higher
+ * value keeps the pool off below it, 0 forces it on), so it turns the
+ * projection off.
+ */
+export function adaptiveEngageEnabled(): boolean {
+  return process.env.CODEGRAPH_PARALLEL_RESOLVE_MIN === undefined;
+}
+
 export class ResolverPool {
   private static poolSeq = 0;
   private workers: PoolWorker[] = [];
