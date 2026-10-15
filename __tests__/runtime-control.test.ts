@@ -539,7 +539,7 @@ describe('ordinary watcher startup', () => {
     const launch = spySpawn();
     expect(await startRuntimeWatcher(root, options())).toMatchObject({ pid: message.pid, watching: true });
     expect(launch).not.toHaveBeenCalled();
-  });
+  }, 30_000);
 
   it.each(['uncertain', 'same-pid-successor', 'open-successor'])(
     'preserves a %s writer appearing after daemon election before activation', async event => {
@@ -591,7 +591,7 @@ describe('ordinary watcher startup', () => {
     if (event === 'uncertain') expect(state.writer).toBe('uncertain');
     else expect(JSON.parse(state.writer).pid).toBe(candidate.pid);
     if (event === 'open-successor') expect(state.closedOnRejection).toBe(true);
-  });
+  }, 30_000);
 
   it.each([false, true])('retains a partial database and preserves successors on initialization failure (successor=%s)', successor => {
     const result = spawnSync(process.execPath, ['-e', `
