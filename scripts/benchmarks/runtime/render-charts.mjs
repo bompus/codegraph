@@ -122,6 +122,7 @@ const col = (r) => Number.isNaN(r) ? C.muted : (r < 1 - BAND ? C.good : r > 1 + 
 const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
 const T = (x, y, s, o = {}) => `<text x="${x}" y="${y}" font-size="${o.size || 12}" font-weight="${o.w || 400}" fill="${o.fill || C.text}" text-anchor="${o.a || 'start'}">${esc(s)}</text>`;
 const wrap = (W, H, body, title, desc) => `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="${FONT}" role="img" aria-labelledby="t d">\n<title id="t">${esc(title)}</title>\n<desc id="d">${esc(desc)}</desc>\n<rect width="${W}" height="${H}" rx="8" fill="${C.bg}"/>\n${body}\n</svg>\n`;
+const wrapLine = (s, n) => { const out = []; let cur = ''; for (const w of s.split(' ')) { if ((cur + ' ' + w).trim().length > n) { out.push(cur); cur = w; } else cur = (cur + ' ' + w).trim(); } if (cur) out.push(cur); return out; };
 const FOOT = `Measured ${META.date} · upstream ${META.upstream} vs fork ${META.fork} · Node ${META.node}, Bun ${META.bun} · 16-vCPU WSL2 · two runs per arm, median · fork on Node unless noted`;
 const find = (group, label) => metrics.find((m) => m[0] === group && m[1] === label);
 
@@ -170,7 +171,8 @@ function cards() {
   b += T(40, y + 26, 'Where the fork is not better', { size: 14, w: 700, fill: C.bad });
   lines.forEach((s, i) => { b += T(40, y + 54 + i * 22, s, { size: 12.5 }); });
   y += boxH + 26;
-  b += T(24, y, `Over all ${cmp.length} comparisons on Node and Bun: better in ${nBetter}, about the same in ${nSame}, worse in ${nWorse}.${excluded.length ? ` ${excluded.length} more are left out because the one-file sync failed for ${failedArms}.` : ''}`, { size: 12, fill: C.muted });
+  const tally = `Over all ${cmp.length} comparisons on Node and Bun: better in ${nBetter}, about the same in ${nSame}, worse in ${nWorse}.${excluded.length ? ` ${excluded.length} more are left out because the one-file sync failed for ${failedArms}.` : ''}`;
+  wrapLine(tally, 120).forEach((l, i) => { if (i) y += 18; b += T(24, y, l, { size: 12, fill: C.muted }); });
   y += 20;
   b += T(24, y, FOOT, { size: 11, fill: C.muted });
   const n8 = index.n8n;
@@ -202,7 +204,7 @@ function heatmap() {
     }
     y += 18;
   }
-  if (excluded.length) { b += T(24, y + 4, `Grey n/a: the one-file sync exited with an error for ${failedArms}, so there is no time to compare.`, { size: 11, fill: C.muted }); y += 18; }
+  if (excluded.length) for (const l of wrapLine(`Grey n/a: the one-file sync exited with an error for ${failedArms}, so there is no time to compare.`, 130)) { b += T(24, y + 4, l, { size: 11, fill: C.muted }); y += 18; }
   b += T(24, y + 4, FOOT, { size: 11, fill: C.muted });
   const desc = `Heatmap of the fork's change against upstream for full index time, peak memory and one-file sync on seven repositories, the MCP server on n8n and gin, and command-line startup. Of ${cmp.length} comparisons it is better in ${nBetter}, about the same in ${nSame} and worse in ${nWorse}.`;
   return wrap(W, y + 24, b, 'Fork vs upstream CodeGraph: every result', desc);
