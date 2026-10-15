@@ -113,6 +113,8 @@ Compared with upstream `main` at `1d3619d6` (after v1.6.2). Each item here and i
 
 The other languages are the same in both, listed under [Supported Languages](#supported-languages).
 
+JSX render links include child components after plain text or a line break. Type arguments, comments and quoted examples do not create render links.
+
 C# property accessors and expression-bodied properties contribute calls and references owned by the property. VB.NET member bodies and field initializers also contribute their calls and references.
 
 C# field and property initializers retain their calls and references under the member that owns them. Target-typed `new()` resolves relative declared types through enclosing namespaces and honors `global::` qualification without requiring a redundant `using`. VB.NET resolves typed receivers, enclosing and inherited members, and field or property reads through values and Shared types without choosing unrelated project declarations. Names beginning with keywords, such as `SharedCache`, `Dimension` and `NewItem`, retain their declarations.
