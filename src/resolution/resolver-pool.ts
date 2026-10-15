@@ -87,6 +87,16 @@ export function shouldEngageAdaptively(projectedMs: number, remainingRefs: numbe
   return remainingRefs >= ADAPTIVE_ENGAGE_MIN_REFS && projectedMs >= ADAPTIVE_ENGAGE_RESOLVE_MS;
 }
 
+/**
+ * The mid-run start is the default policy only. An explicit
+ * CODEGRAPH_PARALLEL_RESOLVE_MIN is the user's own pool threshold (a higher
+ * value keeps the pool off below it, 0 forces it on), so it turns the
+ * projection off.
+ */
+export function adaptiveEngageEnabled(): boolean {
+  return process.env.CODEGRAPH_PARALLEL_RESOLVE_MIN === undefined;
+}
+
 export class ResolverPool {
   private static poolSeq = 0;
   private workers: PoolWorker[] = [];

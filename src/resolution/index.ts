@@ -30,7 +30,7 @@ import { gateRustScope, clearRustScopeMemos } from './rust-scope';
 import { gateSuperSelfCall } from './super-self';
 import { resurrectRefFromDroppedEdge } from './resurrect-ref';
 import { GO_TYPE_KINDS, isGoBareName, isGoUnknownQualified, goTypePositionTarget } from './go-type-visibility';
-import { ResolverPool, minRefsForPool, shouldEngageAdaptively } from './resolver-pool';
+import { ResolverPool, adaptiveEngageEnabled, minRefsForPool, shouldEngageAdaptively } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
 import { detectFrameworksWithSkips, getResolvingFrameworks } from './frameworks';
 import { synthesizeCallbackEdges } from './callback-synthesizer';
@@ -1769,6 +1769,9 @@ export class ReferenceResolver {
        *  resolves true only when every WAL frame is backfilled into the db
        *  file. See ensureKernelReaderSnapshot. */
       foldWalForSnapshot?: () => Promise<boolean>;
+      /** Puts the db in WAL mode before workers attach; false when it cannot
+       *  (the pool is then not created). A no-op when already in WAL. */
+      ensureWalForPool?: () => boolean;
     }
   ): Promise<ResolutionResult> {
     // Resolution runs on the indexer's MAIN thread, and the #850 liveness
@@ -1892,6 +1895,10 @@ export class ReferenceResolver {
       // leave the idle conn's mapping stale → its later close SIGBUSes), and
       // dropping the JS ref alone leaves teardown to GC time.
       dropKernel();
+      // Workers open the live db read-only; in rollback-journal mode (fast
+      // init below the fixed gate) their reads would contend with the writer's
+      // commits, so the pool needs WAL first. Declining keeps the run sequential.
+      if (parallel.ensureWalForPool && !parallel.ensureWalForPool()) return null;
       const kernelDbPath = await this.ensureKernelReaderSnapshot(parallel.foldWalForSnapshot);
       if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
         console.error(`[pool-timing] kernel-reader snapshot: ${kernelDbPath ?? 'unavailable — no pool'}`);
@@ -1929,7 +1936,7 @@ export class ReferenceResolver {
     // Below the fixed gate the pool can still boot mid-run: the loop times its
     // main-thread kernel resolves and, after a batch, boots the pool once the
     // projected remainder clears the bar (shouldEngageAdaptively). One attempt.
-    let poolEngageTried = !parallel || total >= minRefsForPool();
+    let poolEngageTried = !parallel || total >= minRefsForPool() || !adaptiveEngageEnabled();
     let kernelResolveMs = 0;
     let kernelResolveRefs = 0;
 
