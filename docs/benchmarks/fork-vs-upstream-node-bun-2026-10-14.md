@@ -161,7 +161,7 @@ Node arms, full-index time and one-file sync time. The upstream build moved from
 | pretix | 2.58 s → 2.83 s | +10% | 2.33 s → 2.46 s | +6% |
 | CPython | 6.83 s → 7.53 s | +10% | 7.34 s → 5.54 s | −25% |
 | discourse | 5.88 s → 6.75 s | +15% | 3.03 s → 3.31 s | +9% |
-| supabase | sync failed | n/a | 3.05 s → 3.10 s | no clear change |
+| supabase | 5.86 s → sync failed | n/a | 3.05 s → 3.10 s | no clear change |
 | n8n | 13.2 s → 14.0 s | +6% | 4.44 s → 4.72 s | +6% |
 
 ## Not measured here
