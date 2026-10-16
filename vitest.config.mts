@@ -23,8 +23,14 @@ export default defineConfig({
       '__tests__/setup-home-sandbox.ts',
     ],
     // Suites need a kernel and a current dist/ (#1879). Every run's
-    // temp files go in one directory that is removed afterwards.
-    globalSetup: ['__tests__/kernel.global-setup.ts', '__tests__/global-setup-dist.ts', '__tests__/run-tmpdir.global-setup.ts'],
+    // temp files go in one directory that is removed afterwards, and the end
+    // of the run removes any home sandbox its own test file could not.
+    globalSetup: [
+      '__tests__/kernel.global-setup.ts',
+      '__tests__/global-setup-dist.ts',
+      '__tests__/run-tmpdir.global-setup.ts',
+      '__tests__/global-setup-home-sandbox.ts',
+    ],
     env: {
       /**
        * The suite spawns real CLI/MCP processes; without this they would write
