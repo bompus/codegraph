@@ -195,8 +195,8 @@ describe("a C++ call picks between const and non-const overloads by its argument
 });
 
 /**
- * What an argument's value category decides: an object a name reads (an lvalue)
- * never binds `Foo&&`.
+ * More of what an argument's constness and value category decide: an lvalue never
+ * binds `Foo&&`, and a `constexpr` pointer is itself const, not what it points at.
  */
 describe('a C++ argument binds a reference by its value category and constness', () => {
   const FILES: Record<string, string> = {
@@ -208,6 +208,13 @@ describe('a C++ argument binds a reference by its value category and constness',
       'Foo Make() { return Foo(); }',
       'void Lvalue() { Foo x; Take(x); }',
       'void Temporary() { Take(Make()); }',
+      'struct Widget {};',
+      'void Point(Widget* w) {}',
+      'void Point(const Widget* w) {}',
+      'Widget global;',
+      'void ConstexprPointer() { constexpr Widget* p = &global; Point(p); }',
+      'void ConstPointer() { const Widget* p = &global; Point(p); }',
+      'void ConstexprObject() { constexpr Widget w{}; Point(&w); }',
     ),
     'b.cc': lines(
       'struct Value { Value(int v) {} };',
@@ -248,5 +255,10 @@ describe('a C++ argument binds a reference by its value category and constness',
     expect(callees('Temporary')).toEqual(['Make@a.cc:5', 'Take@a.cc:4']);
     // An `int` converted to `Value` is a temporary, so it may bind `Value&&`.
     expect(callees('Convert')).toEqual(['Box::Push@b.cc:3']);
+  });
+  it('a `constexpr` pointer points at a non-const object', () => {
+    expect(callees('ConstexprPointer')).toEqual(['Point@a.cc:9']);
+    expect(callees('ConstPointer')).toEqual(['Point@a.cc:10']);
+    expect(callees('ConstexprObject')).toEqual(['Point@a.cc:10']);
   });
 });

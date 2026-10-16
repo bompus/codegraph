@@ -639,11 +639,14 @@ pub(super) fn cpp_binding_type(parent: tree_sitter::Node, at: tree_sitter::Node,
 
 /// Whether the declaration of the name `node` in scope writes `const` (or `constexpr`) in front of
 /// its type: `const Buffer* b`, `constexpr char name[] = "name"`, which the declared type
-/// (`cpp_ast_declared_type`) leaves out.
+/// (`cpp_ast_declared_type`) leaves out. A `constexpr` pointer (`constexpr Widget* p`) is itself
+/// const, not what it points at.
 pub(super) fn cpp_declared_const(node: tree_sitter::Node, source: &SourceFile) -> bool {
     let name = &source.text()[node.byte_range()];
-    let leading = |declaration: tree_sitter::Node| declaration.child_by_field_name("type")
-        .is_some_and(|ty| re!(r"\b(?:const|constexpr)\b").is_match(&source.text()[declaration.start_byte()..ty.start_byte()]));
+    let leading = |declaration: tree_sitter::Node| declaration.child_by_field_name("type").is_some_and(|ty| {
+        let head = &source.text()[declaration.start_byte()..ty.start_byte()];
+        re!(r"\bconst\b").is_match(head) || (re!(r"\bconstexpr\b").is_match(head) && !cpp_binds_pointer(declaration, name, source))
+    });
     let mut at = node;
     while let Some(parent) = at.parent() {
         let block = matches!(parent.kind(), "compound_statement" | "declaration_list" | "translation_unit");
@@ -669,6 +672,21 @@ pub(super) fn cpp_declared_const(node: tree_sitter::Node, source: &SourceFile) -
         at = parent;
     }
     false
+}
+
+/// Whether the declarator of `declaration` that binds `name` declares a pointer: `p` in
+/// `constexpr Widget* p = &w;`.
+fn cpp_binds_pointer(declaration: tree_sitter::Node, name: &str, source: &SourceFile) -> bool {
+    let mut cursor = declaration.walk();
+    let found = declaration.children(&mut cursor).enumerate()
+        .find(|(i, child)| declaration.field_name_for_child(*i as u32) == Some("declarator") && cpp_declarator_binds(*child, name, source))
+        .map(|(_, child)| child);
+    let Some(mut declarator) = found else { return false };
+    if declarator.kind() == "init_declarator" {
+        let Some(inner) = declarator.child_by_field_name("declarator") else { return false };
+        declarator = inner;
+    }
+    declarator.kind() == "pointer_declarator"
 }
 
 pub(super) fn cpp_ast_declared_type(ty: tree_sitter::Node, mut declarator: tree_sitter::Node, source: &SourceFile) -> String {
