@@ -92,9 +92,21 @@ impl KernelResolver {
             site = written.site;
             element = true;
         }
-        let Some(raw) = raw else { return Ok(None) };
+        let Some(mut raw) = raw else { return Ok(None) };
         if super::cpp_range_for::is_cpp_auto(&raw) { return Ok(None); }
         if raw.contains('[') { return Ok(Some(None)); }
+        // `it->data()` on a container's iterator (`std::deque<Slice>::const_iterator it`, an `auto`
+        // local holding `logs_.begin()`): a member of the container's element, looked up where the
+        // container's type is written. One a class template's own `operator*` writes with its
+        // template parameter goes on below.
+        if operator.trim() == "->" {
+            if let Some(target) = self.cpp_iterator_target(super::cpp_range_for::CppWritten { text: raw.clone(), site: site.clone() }, r)? {
+                if super::cpp_range_for::top_level_pointer(&target.text) { return Ok(None); }
+                raw = format!("{}*", super::cpp_range_for::cpp_plain_type(&target.text));
+                site = target.site;
+                element = true;
+            }
+        }
         let included = self.namespace_visible_files(&r.file_path, "cpp")?;
         if self.cpp_alias_expansion(&raw, &site, 0, &included)?.is_some_and(|alias| alias.pointer || (operator.trim() == "->" && alias.raw.as_deref().is_some_and(|ty| ty.ends_with("::iterator") || ty.ends_with("::const_iterator")))) { return Ok(None); }
         let mut depth = 0usize;
@@ -204,7 +216,14 @@ impl KernelResolver {
                             let children = named_children(shape);
                             let [only] = children.as_slice() else { return Ok(None) }; shape = *only;
                         }
-                        if !matches!(shape.kind(), "subscript_expression" | "field_expression") { return Ok(None); }
+                        // `(*it)->Visit()`, `(*node).Weight()`; not `(*this)`, which is implicit this's.
+                        let dereference = shape.kind() == "pointer_expression" && shape.child_by_field_name("operator").is_some_and(|o| o.kind() == "*")
+                            && shape.child_by_field_name("argument").is_some_and(|a| a.kind() != "this");
+                        if !dereference && !matches!(shape.kind(), "subscript_expression" | "field_expression") { return Ok(None); }
+                        let operator = super::awaited::strip_ts_comments(&source.text()[receiver.end_byte()..field.map_or(receiver.end_byte(), |f| f.start_byte())]);
+                        if let Some(found) = self.cpp_unspelled_receiver_call(receiver, operator.trim(), &source, r)? { return Ok(Some(found)); }
+                        // A dereference whose type can't be read goes on to the name strategies, as before.
+                        if dereference { return Ok(None); }
                         let Some(owner) = self.cpp_expression_owner(receiver, &source, r, 0)? else { return Ok(Some(None)) };
                         let methods = self.nodes_by_qualified_name(&format!("{}::{}", owner.qualified_name, r.reference_name))?;
                         let methods: Vec<_> = methods.iter().filter(|n| n.kind == "method" && n.file_path == owner.file_path).collect();
@@ -216,6 +235,36 @@ impl KernelResolver {
             }
             let Some(parent) = node.parent() else { break }; node = parent;
         }
+        Ok(None)
+    }
+
+    /// A C++ call the extractor records by its bare name on a receiver it drops: `(*it)->Visit()`
+    /// over a `std::vector<Node*>`, `(*node).Weight()` on a `Node*`, `it->second.Flush()` through
+    /// a map's iterator, `statuses[i].ok()` on an array. It calls a member of the class that
+    /// receiver has, read as written (`cpp_call_object`) and looked up as C++ looks it up there;
+    /// by its bare name the call went to whichever class had a method of that name.
+    ///  - `Some(Some(_))`: the member of that class, or of a class it derives from.
+    ///  - `Some(None)`: no project method is called: a library type's (`(*it).size()` over a
+    ///    `std::vector<std::string>`), the calling function's template parameter's, or a class that
+    ///    surely lacks the method.
+    ///  - `None`: the type can't be read or placed.
+    fn cpp_unspelled_receiver_call(&mut self, receiver: tree_sitter::Node, operator: &str, source: &Rc<SourceFile>, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
+        let Some(object) = self.cpp_call_object(receiver, operator, source, r)? else { return Ok(None) };
+        if super::cpp_range_for::top_level_pointer(&object.text) { return Ok(None); }
+        let plain = super::cpp_range_for::cpp_plain_type(&object.text);
+        if let Some(parts) = super::cpp_aliases::type_segments(&plain) {
+            let last = parts.last().map(String::as_str).unwrap_or("");
+            if parts[0] == "std" || (parts[0] == "absl" && last.starts_with(|c: char| c.is_ascii_lowercase())) { return Ok(Some(None)); }
+        }
+        let Some(cls) = self.cpp_written_class(&object, r)? else {
+            // A template parameter's type names no particular class when the calling function
+            // writes it; one another template writes is what the call's specialization makes it.
+            if self.cpp_written_template_parameter(&object)? { return Ok((object.site.from_node_id == r.from_node_id).then_some(None)); }
+            return Ok(self.cpp_outside_qualified_type(&object.text, &object.site)?.then_some(None));
+        };
+        if let Some(member) = self.match_bound_type_member(&cls.qualified_name, &r.reference_name, r)? { return Ok(Some(Some(member))); }
+        if self.supertypes_complete && !self.cpp_alias_template_owner(&cls, r)? && self.cpp_methods_named(&cls, &r.reference_name, r)?.is_empty()
+            && self.cpp_bases_known(&cls, 0, &mut HashSet::new())? { return Ok(Some(None)); }
         Ok(None)
     }
 

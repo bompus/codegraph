@@ -40,7 +40,47 @@ const LIBRARY_SEQUENCES: &[&str] = &[
 const PROJECT_SEQUENCES: &[&str] = &["RepeatedField", "RepeatedPtrField", "autovector"];
 /// The standard library's and abseil's maps, whose elements are `std::pair`s of a key and a value.
 const LIBRARY_MAPS: &[&str] = &["map", "multimap", "unordered_map", "unordered_multimap", "flat_hash_map", "node_hash_map", "btree_map", "btree_multimap"];
+/// The standard library's container adaptors, whose element is their first template argument.
+const LIBRARY_ADAPTORS: &[&str] = &["stack", "queue", "priority_queue"];
+/// The members of a library container that return an iterator into it, with the iterator's kind.
+const ITERATOR_MEMBERS: &[(&str, &str)] = &[
+    ("begin", "iterator"), ("end", "iterator"), ("find", "iterator"), ("lower_bound", "iterator"), ("upper_bound", "iterator"),
+    ("cbegin", "const_iterator"), ("cend", "const_iterator"), ("rbegin", "reverse_iterator"), ("rend", "reverse_iterator"),
+    ("crbegin", "const_reverse_iterator"), ("crend", "const_reverse_iterator"),
+];
 const MAX_DEPTH: u32 = 4;
+
+/// A written type and the array dimensions `cpp_ast_declared_type` gives it (`Status[]` for
+/// `Status statuses[3]`, `int[][]` for two): the element type, and how many. None when a `[` is
+/// anywhere else.
+pub(super) fn cpp_array_split(text: &str) -> Option<(&str, usize)> {
+    let mut base = text.trim_end();
+    let mut dimensions = 0;
+    while let Some(inner) = base.strip_suffix("[]") {
+        base = inner.trim_end();
+        dimensions += 1;
+    }
+    (!base.contains('[')).then_some((base, dimensions))
+}
+
+/// An element of the array `text` (`Status[]`): its type with one dimension less. None for a
+/// type that is no array.
+fn cpp_array_element(text: &str) -> Option<String> {
+    let (base, dimensions) = cpp_array_split(text)?;
+    (dimensions > 0).then(|| format!("{base}{}", "[]".repeat(dimensions - 1)))
+}
+
+/// A written type without `typename`, `const` and `&`, which name no part of it.
+fn without_type_keywords(text: &str) -> String {
+    re!(r"\b(?:typename|const)\b").replace_all(text, " ").replace('&', " ").trim().to_string()
+}
+
+/// The container of a container's iterator type (`std::vector<Foo*>` of
+/// `std::vector<Foo*>::const_iterator`).
+fn iterator_container(text: &str) -> Option<String> {
+    let bare = without_type_keywords(text);
+    re!(r"^(.*>)\s*::\s*(?:const_)?(?:reverse_)?iterator$").captures(&bare).map(|m| m[1].trim().to_string())
+}
 
 /// A written type without nullability annotations (`const FieldDescriptor* absl_nonnull`) or
 /// cv-qualifiers, which are no part of the name it is looked up by.
@@ -49,9 +89,9 @@ pub(super) fn cpp_plain_type(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The class a member expression reads from, the member's name, and its explicit template
+/// The object a member expression reads from, the member's name, and its explicit template
 /// arguments (`<…>` as written).
-type CppMemberRead = (Arc<KNode>, String, Option<String>);
+type CppMemberRead = (CppWritten, String, Option<String>);
 
 /// A type written `auto`, `auto&`, `const auto*`.
 pub(super) fn is_cpp_auto(raw: &str) -> bool {
@@ -59,7 +99,7 @@ pub(super) fn is_cpp_auto(raw: &str) -> bool {
 }
 
 /// Whether `text` is a pointer: a `*` outside its template arguments.
-fn top_level_pointer(text: &str) -> bool {
+pub(super) fn top_level_pointer(text: &str) -> bool {
     let mut depth = 0i32;
     text.chars().any(|c| {
         match c { '<' => depth += 1, '>' => depth -= 1, _ => {} }
@@ -246,7 +286,7 @@ impl KernelResolver {
     }
 
     /// Whether the type `written` names is a template parameter's, which a template argument decides.
-    fn cpp_written_template_parameter(&mut self, written: &CppWritten) -> Res<bool> {
+    pub(super) fn cpp_written_template_parameter(&mut self, written: &CppWritten) -> Res<bool> {
         let Some(parts) = type_segments(&written.text) else { return Ok(false) };
         let Some(node) = self.node_by_id(&written.site.from_node_id)? else { return Ok(false) };
         self.cpp_template_parameter(&node, &parts[0], &written.site)
@@ -256,6 +296,11 @@ impl KernelResolver {
     /// rocksdb's `const BlobFiles&` is `std::vector<std::shared_ptr<BlobFileMetaData>>`. None when an
     /// alias on the way can't be read: a member of an aliased type, `typename`, `decltype`.
     pub(super) fn cpp_follow_written_aliases(&mut self, written: CppWritten, r: &ResolveRefIn) -> Res<Option<CppWritten>> {
+        // An array of an alias (`Handle handles[2]`) is an array of what the alias names.
+        if let Some((base, dimensions)) = cpp_array_split(&written.text).filter(|(_, d)| *d > 0) {
+            let base = CppWritten { text: base.to_string(), site: written.site };
+            return Ok(self.cpp_follow_written_aliases(base, r)?.map(|f| CppWritten { text: format!("{}{}", f.text, "[]".repeat(dimensions)), site: f.site }));
+        }
         let included = self.namespace_visible_files(&r.file_path, "cpp")?;
         let mut current = written;
         for _ in 0..4 {
@@ -518,11 +563,20 @@ impl KernelResolver {
                 let Some(argument) = node.child_by_field_name("argument") else { return Ok(None) };
                 let Some(pointer) = self.cpp_expression_written(argument, source, r, depth + 1)? else { return Ok(None) };
                 let Some(pointer) = self.cpp_follow_written_aliases(pointer, r)? else { return Ok(None) };
-                Ok(cpp_pointee(&pointer.text).map(|text| CppWritten { text, site: pointer.site }))
+                self.cpp_dereferenced(pointer, r)
             }
-            // `compact_->sub_compact_states`: a data member of the object's class.
+            // `statuses[i]`, `(*m)[key]`: the element a subscript reads.
+            "subscript_expression" => {
+                let Some(argument) = node.child_by_field_name("argument") else { return Ok(None) };
+                let Some(container) = self.cpp_expression_written(argument, source, r, depth + 1)? else { return Ok(None) };
+                self.cpp_subscript_element(container, r)
+            }
+            // `compact_->sub_compact_states`: a data member of the object's class; `it->second`
+            // through a map's iterator: the member of the `std::pair`.
             "field_expression" => {
-                let Some((cls, field, None)) = self.cpp_member_of_expression(node, source, r, depth)? else { return Ok(None) };
+                let Some((object, field, None)) = self.cpp_member_object_of(node, source, r, depth)? else { return Ok(None) };
+                if let Some(element) = self.cpp_pair_member(&object, &field, r)? { return Ok(Some(element)); }
+                let Some(cls) = self.cpp_written_class(&object, r)? else { return Ok(None) };
                 self.cpp_data_member_written(&cls.qualified_name, &field, r)
             }
             // `new Foo(…)`: a pointer to what it constructs.
@@ -556,7 +610,14 @@ impl KernelResolver {
                     // `recv.method(…)`, `recv->method(…)`, `recv->method<T>(…)`: the method of the
                     // receiver's class.
                     "field_expression" => {
-                        let Some((cls, method, template_arguments)) = self.cpp_member_of_expression(function, source, r, depth)? else { return Ok(None) };
+                        let Some((object, method, template_arguments)) = self.cpp_member_object_of(function, source, r, depth)? else { return Ok(None) };
+                        if template_arguments.is_none() {
+                            // `logs_.begin()`, `map.find(key)`: the iterator a library container hands out.
+                            if let Some(iterator) = cpp_library_iterator_of(&object, &method) { return Ok(Some(iterator)); }
+                            // `ws.front()`, `m.at(key)`, `p.get()`, `s.value()`: what it holds.
+                            if let Some(element) = self.cpp_library_element_of(&object, &method, r)? { return Ok(Some(element)); }
+                        }
+                        let Some(cls) = self.cpp_written_class(&object, r)? else { return Ok(None) };
                         let methods = self.cpp_methods_named(&cls, &method, r)?;
                         let Some(arguments) = template_arguments else { return self.cpp_return_type_of(&methods, r) };
                         // Explicit template arguments call a template, never an overload that is none.
@@ -581,6 +642,11 @@ impl KernelResolver {
                             }
                         }
                         let spelled: String = strip_template_arguments(callee).split_whitespace().collect();
+                        // `std::lower_bound(v.begin(), v.end(), key)`: the iterator it is given.
+                        if re!(r"^(?:::)?std::(?:find|find_if|find_if_not|lower_bound|upper_bound|min_element|max_element|partition_point|adjacent_find|next|prev)$").is_match(&spelled) {
+                            let first = node.child_by_field_name("arguments").and_then(|a| named_children(a).into_iter().find(|n| !n.kind().contains("comment")));
+                            return match first { Some(first) => self.cpp_expression_written(first, source, r, depth + 1), None => Ok(None) };
+                        }
                         if !re!(r"^(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*$").is_match(&spelled) { return Ok(None); }
                         let Some(caller) = self.node_by_id(&r.from_node_id)? else { return Ok(None) };
                         // `NewIterator(…)` in a method, or in a gtest body: what the method of its
@@ -616,18 +682,108 @@ impl KernelResolver {
         self.cpp_expression_written(node, source, r, 0)
     }
 
-    /// What `x[i]` is when `x` has the type `container`: what a pointer points at, or a
-    /// container's element.
+    /// What `x[i]` is when `x` has the type `container`: an array's element, what a pointer points
+    /// at, a library map's mapped value, a sequence's element (a library container's, or one of
+    /// PROJECT_SEQUENCES'), or what a class's `operator[]` returns. None for anything else: a
+    /// `std::string`'s `char`, or a class whose `operator[]` the index doesn't hold.
     pub(super) fn cpp_subscript_element(&mut self, container: CppWritten, r: &ResolveRefIn) -> Res<Option<CppWritten>> {
         let Some(followed) = self.cpp_follow_written_aliases(container, r)? else { return Ok(None) };
+        if let Some(text) = cpp_array_element(&followed.text) { return Ok(Some(CppWritten { text, site: followed.site })); }
         if top_level_pointer(&followed.text) { return Ok(cpp_pointee(&followed.text).map(|text| CppWritten { text, site: followed.site })); }
-        self.cpp_range_element_of(followed, r, 0)
+        let plain = cpp_plain_type(&followed.text);
+        let Some(parts) = type_segments(&plain) else { return Ok(None) };
+        let last = parts.last().map(String::as_str).unwrap_or("");
+        let library = parts[0] == "std" || parts[0] == "absl";
+        if library && LIBRARY_MAPS.contains(&last) {
+            return Ok(template_arguments(&plain).and_then(|a| a.into_iter().nth(1)).map(|value| CppWritten { text: cpp_plain_type(&value), site: followed.site }));
+        }
+        if (library && LIBRARY_SEQUENCES.contains(&last)) || PROJECT_SEQUENCES.contains(&last) { return self.cpp_range_element_of(followed, r, 0); }
+        if library { return Ok(None); }
+        let Some(cls) = self.cpp_written_class(&followed, r)? else { return Ok(None) };
+        let subscript = self.cpp_methods_named(&cls, "operator[]", r)?;
+        Ok(self.cpp_return_type_of(&subscript, r)?.map(|t| CppWritten { text: t.text.trim_end_matches('&').trim().to_string(), site: t.site }))
     }
 
-    /// The class of the object a member expression `x.m` or `x->m` names a member of, and `m`.
-    /// The class of the object a member expression `recv.name`, `recv->name` or `recv->name<…>`
-    /// reads from, with the member's name and its explicit template arguments (`<…>` as written).
-    fn cpp_member_of_expression(&mut self, member: TsNode, source: &Rc<SourceFile>, r: &ResolveRefIn, depth: u32) -> Res<Option<CppMemberRead>> {
+    /// What dereferencing a value of the type `written` gives, for `*x` and `x->`: an array's first
+    /// element, what a pointer points at or a holder holds (`cpp_pointee`), or the element a
+    /// container's iterator points at (`cpp_iterator_target`): the `Node*` of `*nodes.begin()`
+    /// over a `std::vector<Node*>`.
+    pub(super) fn cpp_dereferenced(&mut self, written: CppWritten, r: &ResolveRefIn) -> Res<Option<CppWritten>> {
+        if let Some(text) = cpp_array_element(&written.text) { return Ok(Some(CppWritten { text, site: written.site })); }
+        if let Some(text) = cpp_pointee(&written.text) { return Ok(Some(CppWritten { text, site: written.site })); }
+        self.cpp_iterator_target(written, r)
+    }
+
+    /// The element a container's iterator of the type `iterator` points at, read from the
+    /// container's template arguments before the `iterator` alias would lose them: `Slice` for
+    /// `std::deque<Slice>::const_iterator`, protobuf's `SourceCodeInfo_Location` for
+    /// `RepeatedPtrField<SourceCodeInfo_Location>::iterator`. None for any other type, and for an
+    /// element a class template's own `begin()` or `operator*` writes with its template parameter
+    /// (googletest's `ParamGenerator<T>::iterator`), which the specialization decides.
+    pub(super) fn cpp_iterator_target(&mut self, iterator: CppWritten, r: &ResolveRefIn) -> Res<Option<CppWritten>> {
+        let Some(container) = iterator_container(&iterator.text) else { return Ok(None) };
+        let Some(element) = self.cpp_range_element_of(CppWritten { text: container, site: iterator.site.clone() }, r, 1)? else { return Ok(None) };
+        if element.site.from_node_id != iterator.site.from_node_id && self.cpp_written_template_parameter(&element)? { return Ok(None); }
+        Ok(Some(element))
+    }
+
+    /// The member `first` or `second` of a `std::pair` of the type `pair`, as a map's iterator
+    /// points at one: its first or second element. None for any other member or type.
+    fn cpp_pair_member(&mut self, pair: &CppWritten, member: &str, r: &ResolveRefIn) -> Res<Option<CppWritten>> {
+        let index = match member { "first" => 0, "second" => 1, _ => return Ok(None) };
+        let Some(followed) = self.cpp_follow_written_aliases(pair.clone(), r)? else { return Ok(None) };
+        let plain = cpp_plain_type(&followed.text);
+        if top_level_pointer(&plain) || !type_segments(&plain).is_some_and(|parts| parts.len() == 2 && parts[0] == "std" && parts[1] == "pair") { return Ok(None); }
+        Ok(template_arguments(&plain).and_then(|a| a.into_iter().nth(index)).map(|text| CppWritten { text: cpp_plain_type(&text), site: followed.site }))
+    }
+
+    /// What the member `member` of a library container or holder of the type `object` hands out,
+    /// where the container's type is written: an element of a sequence for `front()`, `back()` and
+    /// `at(i)` (of one of PROJECT_SEQUENCES' too), the value a map's `at(key)` maps to, the element
+    /// of a `std::stack`'s `top()` or a `std::queue`'s `front()` and `back()`, the pointer a smart
+    /// pointer's `get()` returns and the value an optional's or an `absl::StatusOr`'s `value()`
+    /// returns. rocksdb's `cfds.front()->GetName()` over an `autovector<ColumnFamilyData*>` calls
+    /// ColumnFamilyData's. None for any other member or type.
+    fn cpp_library_element_of(&mut self, object: &CppWritten, member: &str, r: &ResolveRefIn) -> Res<Option<CppWritten>> {
+        if top_level_pointer(&object.text) { return Ok(None); }
+        let Some(parts) = type_segments(&without_type_keywords(&object.text)) else { return Ok(None) };
+        let last = parts.last().map(String::as_str).unwrap_or("");
+        // (Its own `const` and `&` aside: a `const` in a template argument, `std::shared_ptr<const Message>`, stays.)
+        let text = re!(r"(?:\s*\bconst\b)?\s*&+\s*$").replace(re!(r"^\s*(?:typename\s+)?const\s+").replace(&object.text, "").as_ref(), "").trim().to_string();
+        let library = parts[0] == "std" || parts[0] == "absl";
+        let element = |text: Option<String>| text.map(|t| CppWritten { text: cpp_plain_type(&t), site: object.site.clone() });
+        if matches!(member, "front" | "back" | "at") {
+            if (library && LIBRARY_SEQUENCES.contains(&last)) || PROJECT_SEQUENCES.contains(&last) { return self.cpp_range_element_of(object.clone(), r, 0); }
+            if member == "at" && library && LIBRARY_MAPS.contains(&last) { return Ok(element(template_arguments(&text).and_then(|a| a.into_iter().nth(1)))); }
+        }
+        if parts[0] == "std" && LIBRARY_ADAPTORS.contains(&last) && (member == "top" || (matches!(member, "front" | "back") && last == "queue")) {
+            return Ok(element(template_arguments(&text).and_then(|a| a.into_iter().next())));
+        }
+        let Some(held) = cpp_holder_arguments(&text.split_whitespace().collect::<Vec<_>>().join(" ")).and_then(cpp_held_type) else { return Ok(None) };
+        if held.contains('[') { return Ok(None); }
+        let holder = parts.join("::");
+        if member == "get" && matches!(holder.as_str(), "std::unique_ptr" | "std::shared_ptr" | "absl::NoDestructor") { return Ok(Some(CppWritten { text: format!("{held}*"), site: object.site.clone() })); }
+        if matches!(member, "value" | "value_or") && matches!(holder.as_str(), "std::optional" | "absl::optional" | "absl::StatusOr") { return Ok(Some(CppWritten { text: held, site: object.site.clone() })); }
+        Ok(None)
+    }
+
+    /// The object a C++ call through the operator `operator` (`.` or `->`) on the receiver
+    /// expression `receiver` is made on, as `cpp_member_object_of` reads it.
+    pub(super) fn cpp_call_object(&mut self, receiver: TsNode, operator: &str, source: &Rc<SourceFile>, r: &ResolveRefIn) -> Res<Option<CppWritten>> {
+        let Some(object) = self.cpp_expression_written(receiver, source, r, 1)? else { return Ok(None) };
+        let Some(object) = self.cpp_follow_written_aliases(object, r)? else { return Ok(None) };
+        match operator {
+            "->" => self.cpp_dereferenced(object, r),
+            "." if !top_level_pointer(&object.text) && cpp_array_element(&object.text).is_none() => Ok(Some(object)),
+            _ => Ok(None),
+        }
+    }
+
+    /// The type of the object a member expression `recv.name`, `recv->name` or `recv->name<…>`
+    /// reads from: `recv`'s own type for `.`, what it points at, holds or iterates over for `->`
+    /// (`cpp_dereferenced`), with the member's name and its explicit template arguments (`<…>` as
+    /// written).
+    fn cpp_member_object_of(&mut self, member: TsNode, source: &Rc<SourceFile>, r: &ResolveRefIn, depth: u32) -> Res<Option<CppMemberRead>> {
         let (Some(argument), Some(mut field)) = (member.child_by_field_name("argument"), member.child_by_field_name("field")) else { return Ok(None) };
         let mut template_arguments = None;
         if field.kind() == "template_method" {
@@ -641,14 +797,14 @@ impl KernelResolver {
         let Some(object) = self.cpp_expression_written(argument, source, r, depth + 1)? else { return Ok(None) };
         let Some(object) = self.cpp_follow_written_aliases(object, r)? else { return Ok(None) };
         let object = match operator.trim() {
-            "->" => match cpp_pointee(&object.text) {
-                Some(text) => CppWritten { text, site: object.site },
+            "->" => match self.cpp_dereferenced(object, r)? {
+                Some(object) => object,
                 None => return Ok(None),
             },
-            "." if !top_level_pointer(&object.text) => object,
+            "." if !top_level_pointer(&object.text) && cpp_array_element(&object.text).is_none() => object,
             _ => return Ok(None),
         };
-        Ok(self.cpp_written_class(&object, r)?.map(|cls| (cls, name, template_arguments)))
+        Ok(Some((object, name, template_arguments)))
     }
 
     /// The names of the template parameters a C++ function template's own `template <…>` header
@@ -706,7 +862,8 @@ impl KernelResolver {
         while let Some(parent) = at.parent() {
             if let Some(bound) = self.cpp_structured_binding_written(parent, at, name, source, r)? { return Ok(bound); }
             if let Some(raw) = cpp_binding_type(parent, at, name, source) {
-                if raw.is_empty() || raw.contains('[') { return Ok(None); }
+                // (An array, `Status statuses[3]`, is written `Status[]`.)
+                if raw.is_empty() || cpp_array_split(&raw).is_none_or(|(base, dimensions)| dimensions > 0 && is_cpp_auto(base)) { return Ok(None); }
                 if !is_cpp_auto(&raw) { return Ok(Some(CppWritten { text: raw, site: r.clone() })); }
                 // `const auto& blob_files = vstorage->GetBlobFiles();`: what its initializer is.
                 // (Read with a depth budget of its own: a chain of calls on the local, whose own
@@ -781,6 +938,7 @@ impl KernelResolver {
     fn cpp_range_element_of(&mut self, range: CppWritten, r: &ResolveRefIn, hops: u32) -> Res<Option<CppWritten>> {
         if hops > 2 { return Ok(None); }
         let Some(range) = self.cpp_follow_written_aliases(range, r)? else { return Ok(None) };
+        if let Some(text) = cpp_array_element(&range.text) { return Ok(Some(CppWritten { text, site: range.site })); }
         if top_level_pointer(&range.text) { return Ok(None); }
         let Some(parts) = type_segments(&range.text) else { return Ok(None) };
         let last = parts.last().map(String::as_str).unwrap_or("");
@@ -809,9 +967,8 @@ impl KernelResolver {
         let Some(iterator) = self.cpp_follow_written_aliases(iterator, r)? else { return Ok(None) };
         if top_level_pointer(&iterator.text) { return Ok(cpp_pointee(&iterator.text).map(|text| CppWritten { text, site: iterator.site })); }
         // `std::vector<Foo*>::const_iterator`: the container's element.
-        let bare = re!(r"\b(?:typename|const)\b").replace_all(&iterator.text, " ").replace('&', " ");
-        if let Some(nested) = re!(r"^(.*>)\s*::\s*(?:const_)?(?:reverse_)?iterator$").captures(bare.trim()) {
-            return self.cpp_range_element_of(CppWritten { text: nested[1].trim().to_string(), site: iterator.site.clone() }, r, hops + 1);
+        if let Some(container) = iterator_container(&iterator.text) {
+            return self.cpp_range_element_of(CppWritten { text: container, site: iterator.site.clone() }, r, hops + 1);
         }
         let Some(cls) = self.cpp_written_class(&iterator, r)? else { return Ok(None) };
         let star = self.cpp_methods_named(&cls, "operator*", r)?;
@@ -836,6 +993,20 @@ impl KernelResolver {
         }
         Ok(true)
     }
+}
+
+/// The iterator the member `member` of a standard library or abseil container of the type `object`
+/// returns, where the container's type is written: `std::deque<LogWriterNumber>::iterator` for
+/// rocksdb's `logs_.begin()`, whose `->` reaches the container's element (`cpp_iterator_target`).
+/// None for any other member or type.
+fn cpp_library_iterator_of(object: &CppWritten, member: &str) -> Option<CppWritten> {
+    let kind = ITERATOR_MEMBERS.iter().find(|(m, _)| *m == member)?.1;
+    if top_level_pointer(&object.text) { return None; }
+    let container = without_type_keywords(&object.text);
+    let parts = type_segments(&container)?;
+    let last = parts.last()?.as_str();
+    if parts[0] != "std" && parts[0] != "absl" { return None; }
+    (LIBRARY_SEQUENCES.contains(&last) || LIBRARY_MAPS.contains(&last)).then(|| CppWritten { text: format!("{container}::{kind}"), site: object.site.clone() })
 }
 
 /// Where `name` is in the structured binding `declarator` writes (`[cfh, iter]` in `auto& [cfh,

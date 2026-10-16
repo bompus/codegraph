@@ -65,6 +65,14 @@ pub(super) fn cpp_type_category(ty: &str) -> CppTypeCategory {
 }
 
 /// A C++ parameter declaration's type: without its default argument and its name.
+/// An array type (`Char[]`) as the pointer to its element an argument of it decays to (`Char*`).
+fn cpp_array_as_pointer(text: String) -> String {
+    match super::cpp_range_for::cpp_array_split(&text) {
+        Some((base, dimensions)) if dimensions > 0 => format!("{base}*"),
+        _ => text,
+    }
+}
+
 pub(super) fn cpp_parameter_type(param: &str) -> String {
     let mut text = param;
     let mut depth = 0i32;
@@ -239,14 +247,11 @@ impl KernelResolver {
                     None => self.cpp_written_expression(node, source, r)?.map(|w| CppArgument::Type(w.text)),
                 }
             }
-            "identifier" => self.cpp_written_name(node, source, r)?.map(|w| CppArgument::Type(w.text)),
-            // `keys[i]`: an element of the container, or what the pointer points at.
-            "subscript_expression" => {
-                let Some(container) = node.child_by_field_name("argument").filter(|a| a.kind() == "identifier") else { return Ok(None) };
-                let Some(written) = self.cpp_written_name(container, source, r)? else { return Ok(None) };
-                self.cpp_subscript_element(written, r)?.map(|w| CppArgument::Type(w.text))
-            }
-            _ => self.cpp_written_expression(node, source, r)?.map(|w: CppWritten| CppArgument::Type(w.text)),
+            // (An array is a pointer to its element: fmt's `format_base2e(4, buf, …)` on a `Char
+            // buf[8]` is the `Char* out` overload.)
+            "identifier" => self.cpp_written_name(node, source, r)?.map(|w| CppArgument::Type(cpp_array_as_pointer(w.text))),
+            // `keys[i]`: the element a subscript reads (`cpp_subscript_element`), through the expression typer.
+            _ => self.cpp_written_expression(node, source, r)?.map(|w: CppWritten| CppArgument::Type(cpp_array_as_pointer(w.text))),
         })
     }
 }
