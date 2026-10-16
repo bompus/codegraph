@@ -216,7 +216,11 @@ describe('a `->` call on a C++ receiver declared as a container\'s iterator', ()
       ),
     });
     try {
-      expect(calls(cg, 'RunAll')).toEqual(['Case::Run', 'ParamGenerator::begin']);
+      // The element is `const T&`, which only the class template's own `operator*` writes, so
+      // its type can't be read here. Upstream then matches `Run` by its name alone; the fork's
+      // resolver leaves such a call unlinked (README, "About this fork": C++ calls on an `auto`
+      // local, ... a template parameter's type).
+      expect(calls(cg, 'RunAll')).toEqual(['ParamGenerator::begin']);
     } finally {
       cg.close();
     }

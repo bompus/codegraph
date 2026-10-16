@@ -188,7 +188,11 @@ describe('a C++ call on the member of the pair a map\'s iterator points at', () 
       ),
     });
     try {
-      expect(calls(cg, 'Rep::Get')).toEqual(['CoreLocalArray::AccessElementAndIndex', 'ZSTDCachedData::GetUncompressData']);
+      // `p.first` is a `T*` that `CoreLocalArray<T>` writes with its template parameter, so its
+      // type can't be read here. Upstream then matches `GetUncompressData` by its name alone; the
+      // fork's resolver leaves such a call unlinked (README, "About this fork": C++ calls on an
+      // `auto` local, ... a template parameter's type).
+      expect(calls(cg, 'Rep::Get')).toEqual(['CoreLocalArray::AccessElementAndIndex']);
     } finally {
       cg.close();
     }
