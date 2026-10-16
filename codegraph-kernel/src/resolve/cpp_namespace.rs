@@ -1,6 +1,9 @@
 //! Namespace ownership supplied by a project's namespace-opening macros.
 use super::*;
 
+/// A file's `#define`s and `#undef`s of name macros: (line, name, whether it defines).
+type Directives = Rc<Vec<(i64,String,bool)>>;
+
 #[derive(Default)]
 pub(super) struct NamespaceCache {
     ready: bool,
@@ -14,6 +17,8 @@ pub(super) struct NamespaceCache {
     includes: HashMap<String,HashSet<String>>,
     replacements: HashMap<(String,String),String>,
     frames: HashMap<String,Vec<(i64,i64,Vec<String>)>>,
+    /// File → its `#define`s and `#undef`s of name macros.
+    directives: HashMap<String,Directives>,
 }
 impl KernelResolver {
     fn prepare_namespace_macros(&mut self)->Res<()> {
@@ -151,22 +156,50 @@ impl KernelResolver {
         }
         Ok(false)
     }
-    /// `qualified` spelled through the name macros `file` sees, when that differs: rocksdb's types
-    /// are `ROCKSDB_NAMESPACE::DB` in the index and `rocksdb::DB` to code that names them, under
-    /// `#define ROCKSDB_NAMESPACE rocksdb`; a tree declaring `namespace rocksdb` itself is named
-    /// `ROCKSDB_NAMESPACE::Cache` the other way round.
-    pub(super) fn cpp_name_macro_spelling(&mut self,file:&str,qualified:&str)->Res<Option<String>> {
+    /// `qualified` spelled through the name macros the file of `r` sees, when that differs:
+    /// rocksdb's types are `ROCKSDB_NAMESPACE::DB` in the index and `rocksdb::DB` to code that
+    /// names them, under `#define ROCKSDB_NAMESPACE rocksdb`; a tree declaring `namespace rocksdb`
+    /// itself is named `ROCKSDB_NAMESPACE::Cache` the other way round. A macro the reference writes
+    /// spells it only where it is defined: not before its `#define`, nor after an `#undef`.
+    pub(super) fn cpp_name_macro_spelling(&mut self,r:&ResolveRefIn,qualified:&str)->Res<Option<String>> {
         self.prepare_namespace_macros()?;
         if self.cpp_namespaces.replacements.is_empty() {return Ok(None);}
+        let file=r.file_path.as_str();
         let visible=self.namespace_visible_files(file,"cpp")?;
+        let mut written=Vec::new();
         let spelled:Vec<String>=qualified.split("::").map(|segment| {
             let forward:HashSet<_>=self.cpp_namespaces.replacements.iter().filter(|((f,name),_)|visible.contains(f) && name==segment).map(|(_,body)|body.clone()).collect();
-            if forward.len()==1 {return forward.into_iter().next().unwrap();}
+            if forward.len()==1 {written.push(segment.to_string());return forward.into_iter().next().unwrap();}
             let reverse:HashSet<_>=self.cpp_namespaces.replacements.iter().filter(|((f,_),body)|visible.contains(f) && *body==segment).map(|((_,name),_)|name.clone()).collect();
             if reverse.len()==1 {reverse.into_iter().next().unwrap()} else {segment.to_string()}
         }).collect();
+        for name in written {
+            if !self.cpp_name_macro_defined_at(r,&name)? {return Ok(None);}
+        }
         let spelled=spelled.join("::");
         Ok((spelled!=qualified).then_some(spelled))
+    }
+    /// Whether the name macro `name` is defined where `r` writes it: by the last `#define` or
+    /// `#undef` of it before the reference in its own file, else by an include before it of a
+    /// file that defines it.
+    fn cpp_name_macro_defined_at(&mut self,r:&ResolveRefIn,name:&str)->Res<bool> {
+        let file=r.file_path.as_str();
+        let directives=match self.cpp_namespaces.directives.get(file) {
+            Some(hit)=>hit.clone(),
+            None=>{
+                let text=self.read_file(file).map(|s|s.text().to_string()).unwrap_or_default();
+                let found:Vec<(i64,String,bool)>=super::cpp::directive_lines(&text).iter().enumerate()
+                    .filter_map(|(i,line)|re!(r"^\s*#\s*(define|undef)\s+([A-Za-z_]\w*)").captures(line).map(|m|(i as i64+1,m[2].to_string(),&m[1]=="define"))).collect();
+                let found=Rc::new(found);
+                self.cpp_namespaces.directives.insert(file.to_string(),found.clone());found
+            }
+        };
+        if let Some((_,_,define))=directives.iter().rfind(|(line,n,_)|*line<r.line && n==name) {return Ok(*define);}
+        let definers:Vec<String>=self.cpp_namespaces.replacements.keys().filter(|(f,n)|n==name && f!=file).map(|(f,_)|f.clone()).collect();
+        for definer in definers {
+            if self.cpp_included_before(file,r.line,&definer,&r.language)? {return Ok(true);}
+        }
+        Ok(false)
     }
     pub(super) fn match_cpp_macro_namespaced(&mut self,r:&ResolveRefIn)->Res<Option<KCand>> {
         if !matches!(r.language.as_str(),"c"|"cpp") || !r.reference_name.trim_start_matches("::").contains("::") {return Ok(None);}

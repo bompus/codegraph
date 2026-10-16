@@ -136,7 +136,7 @@ impl KernelResolver {
         }
         // A name written through a macro that stands for a namespace, or the other way round.
         if ty.contains("::") {
-            if let Some(spelled) = self.cpp_name_macro_spelling(&r.file_path, ty)? {
+            if let Some(spelled) = self.cpp_name_macro_spelling(r, ty)? {
                 let raw = if raw.trim_start().starts_with("::") { format!("::{spelled}") } else { spelled.clone() };
                 if let [owner] = self.cpp_scoped_types(&raw, &spelled, r, included)?.as_slice() { return self.cpp_expand_owner(owner, r, depth, constructor, included); }
             }
