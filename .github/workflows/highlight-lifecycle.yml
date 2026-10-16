@@ -6,6 +6,9 @@ on:
       - 'src/ui-server/highlight/**'
       - 'scripts/check-highlight-lifecycle.cjs'
       - '.github/workflows/highlight-lifecycle.yml'
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:

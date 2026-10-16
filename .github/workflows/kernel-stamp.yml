@@ -7,6 +7,9 @@ on:
       - 'scripts/ensure-kernel.mjs'
       - '__tests__/ensure-kernel-stamp.test.ts'
       - '.github/workflows/kernel-stamp.yml'
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:

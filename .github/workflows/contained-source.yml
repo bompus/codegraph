@@ -11,6 +11,9 @@ on:
       - '__tests__/security.test.ts'
       - '__tests__/explore-unmatched-names.test.ts'
       - '.github/workflows/contained-source.yml'
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
