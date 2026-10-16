@@ -144,8 +144,12 @@ impl KernelResolver {
     /// through what those files include. An include in a branch only a build with a flag nothing
     /// sets compiles (`#if 0`) counts only for a line in such a branch too.
     pub(super) fn cpp_included_before(&mut self,file:&str,line:i64,target:&str,language:&str)->Res<bool> {
+        self.cpp_included_between(file,0,line,target,language)
+    }
+    /// `cpp_included_before`, counting only the includes written after line `from`.
+    fn cpp_included_between(&mut self,file:&str,from:i64,line:i64,target:&str,language:&str)->Res<bool> {
         let imports:Vec<(i64,char,String)>=self.nodes_in_file(file)?.iter()
-            .filter(|n|n.kind=="import" && matches!(n.language.as_str(),"c"|"cpp") && n.start_line<line)
+            .filter(|n|n.kind=="import" && matches!(n.language.as_str(),"c"|"cpp") && n.start_line>from && n.start_line<line)
             .map(|n|(n.start_line,if n.signature.as_deref().is_some_and(|s|s.contains('<')) {'<'} else {'"'},n.name.clone())).collect();
         if imports.is_empty() {return Ok(false);}
         let off_here=self.is_off_by_default(file,line);
@@ -180,8 +184,10 @@ impl KernelResolver {
         Ok((spelled!=qualified).then_some(spelled))
     }
     /// Whether the name macro `name` is defined where `r` writes it: by the last `#define` or
-    /// `#undef` of it before the reference in its own file, else by an include before it of a
-    /// file that defines it.
+    /// `#undef` of it before the reference in its own file, else by an include written after
+    /// that directive (or anywhere before the reference, with no directive) of a file that
+    /// defines it. A directive in a branch only an unset flag compiles counts only for a
+    /// reference in such a branch too.
     fn cpp_name_macro_defined_at(&mut self,r:&ResolveRefIn,name:&str)->Res<bool> {
         let file=r.file_path.as_str();
         let directives=match self.cpp_namespaces.directives.get(file) {
@@ -194,10 +200,16 @@ impl KernelResolver {
                 self.cpp_namespaces.directives.insert(file.to_string(),found.clone());found
             }
         };
-        if let Some((_,_,define))=directives.iter().rfind(|(line,n,_)|*line<r.line && n==name) {return Ok(*define);}
+        let off_here=self.is_off_by_default(file,r.line);
+        let mut last=None;
+        for (line,n,define) in directives.iter().rev() {
+            if *line<r.line && n==name && (off_here || !self.is_off_by_default(file,*line)) {last=Some((*line,*define));break;}
+        }
+        if let Some((_,true))=last {return Ok(true);}
+        let from=last.map_or(0,|(line,_)|line);
         let definers:Vec<String>=self.cpp_namespaces.replacements.keys().filter(|(f,n)|n==name && f!=file).map(|(f,_)|f.clone()).collect();
         for definer in definers {
-            if self.cpp_included_before(file,r.line,&definer,&r.language)? {return Ok(true);}
+            if self.cpp_included_between(file,from,r.line,&definer,&r.language)? {return Ok(true);}
         }
         Ok(false)
     }

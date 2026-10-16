@@ -189,3 +189,65 @@ describe('a C++ name macro applies from its definition on', () => {
     expect(callees('After')).toEqual(['rocksdb::DB::Get@db.h:1']);
   });
 });
+
+/**
+ * Which `#define` or `#undef` of a name macro is the last one in effect: one in a branch no
+ * build compiles (`#if 0`) is not, and an `#undef` does not hide a definition an `#include`
+ * after it brings in.
+ */
+describe('a C++ name macro follows the directives that are in effect', () => {
+  const FILES: Record<string, string> = {
+    'db.h': lines('namespace rocksdb { struct DB { void Get() {} }; }'),
+    'config.h': lines('#define ROCKSDB_NAMESPACE rocksdb'),
+    'inactive.cc': lines(
+      '#include "db.h"',
+      '#define ROCKSDB_NAMESPACE rocksdb',
+      '#if 0',
+      '#undef ROCKSDB_NAMESPACE',
+      '#endif',
+      'void Active(ROCKSDB_NAMESPACE::DB* db) { db->Get(); }',
+    ),
+    'redefined.cc': lines(
+      '#include "db.h"',
+      '#undef ROCKSDB_NAMESPACE',
+      '#include "config.h"',
+      'void Redefined(ROCKSDB_NAMESPACE::DB* db) { db->Get(); }',
+    ),
+    'hidden.cc': lines(
+      '#include "db.h"',
+      '#include "config.h"',
+      '#undef ROCKSDB_NAMESPACE',
+      'void Hidden(ROCKSDB_NAMESPACE::DB* db) { db->Get(); }',
+    ),
+  };
+
+  let root: string;
+  let cg: CodeGraph;
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-cpp-macro-effect-'));
+    for (const [file, text] of Object.entries(FILES)) {
+      fs.writeFileSync(path.join(root, file), text);
+    }
+    cg = await CodeGraph.init(root, { index: true });
+  }, 120_000);
+
+  afterAll(() => {
+    cg?.close();
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const callees = (caller: string): string[] => {
+    const fn = cg.getNodesByKind('function').find((n) => n.qualifiedName === caller);
+    expect(fn, caller).toBeDefined();
+    return cg.getCallees(fn!.id).filter((c) => c.edge.kind === 'calls').map((c) => `${c.node.qualifiedName}@${c.node.filePath}:${c.node.startLine}`).sort();
+  };
+
+  it('ignores an `#undef` in a branch no build compiles', () => {
+    expect(callees('Active')).toEqual(['rocksdb::DB::Get@db.h:1']);
+  });
+  it('lets an include after an `#undef` define the macro again, and an `#undef` after it hide it', () => {
+    expect(callees('Redefined')).toEqual(['rocksdb::DB::Get@db.h:1']);
+    expect(callees('Hidden')).toEqual([]);
+  });
+});
