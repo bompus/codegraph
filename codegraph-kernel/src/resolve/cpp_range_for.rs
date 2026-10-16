@@ -759,8 +759,12 @@ impl KernelResolver {
         if parts[0] == "std" && LIBRARY_ADAPTORS.contains(&last) && (member == "top" || (matches!(member, "front" | "back") && last == "queue")) {
             return Ok(element(template_arguments(&text).and_then(|a| a.into_iter().next())));
         }
-        let Some(held) = cpp_holder_arguments(&text.split_whitespace().collect::<Vec<_>>().join(" ")).and_then(cpp_held_type) else { return Ok(None) };
+        let spaced = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let arguments = cpp_holder_arguments(&spaced);
+        let Some(held) = arguments.and_then(cpp_held_type) else { return Ok(None) };
         if held.contains('[') { return Ok(None); }
+        // (What it holds keeps its `const`: `get()` of a `std::shared_ptr<const Message>` is a `const Message*`.)
+        let held = if arguments.is_some_and(|a| re!(r"^\s*const\s").is_match(a)) { format!("const {held}") } else { held };
         let holder = parts.join("::");
         if member == "get" && matches!(holder.as_str(), "std::unique_ptr" | "std::shared_ptr" | "absl::NoDestructor") { return Ok(Some(CppWritten { text: format!("{held}*"), site: object.site.clone() })); }
         if matches!(member, "value" | "value_or") && matches!(holder.as_str(), "std::optional" | "absl::optional" | "absl::StatusOr") { return Ok(Some(CppWritten { text: held, site: object.site.clone() })); }
@@ -810,7 +814,7 @@ impl KernelResolver {
     /// The names of the template parameters a C++ function template's own `template <…>` header
     /// declares, in order, without their defaults: `["Type"]` for protobuf's `template <typename
     /// Type> const Type& GetRaw(…)`. Empty for a function that is no template.
-    fn cpp_own_template_parameters(&mut self, function: &Arc<KNode>, r: &ResolveRefIn) -> Res<Vec<String>> {
+    pub(super) fn cpp_own_template_parameters(&mut self, function: &Arc<KNode>, r: &ResolveRefIn) -> Res<Vec<String>> {
         let Some(source) = self.read_file(&function.file_path) else { return Ok(Vec::new()) };
         let site = site_at(r, function);
         let Some(tree) = self.parsed_tree(&source, &site) else { return Ok(Vec::new()) };

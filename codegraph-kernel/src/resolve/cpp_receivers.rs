@@ -634,6 +634,40 @@ pub(super) fn cpp_binding_type(parent: tree_sitter::Node, at: tree_sitter::Node,
     None
 }
 
+/// Whether the declaration of the name `node` in scope writes `const` (or `constexpr`) in front of
+/// its type: `const Buffer* b`, `constexpr char name[] = "name"`, which the declared type
+/// (`cpp_ast_declared_type`) leaves out.
+pub(super) fn cpp_declared_const(node: tree_sitter::Node, source: &SourceFile) -> bool {
+    let name = &source.text()[node.byte_range()];
+    let leading = |declaration: tree_sitter::Node| declaration.child_by_field_name("type")
+        .is_some_and(|ty| re!(r"\b(?:const|constexpr)\b").is_match(&source.text()[declaration.start_byte()..ty.start_byte()]));
+    let mut at = node;
+    while let Some(parent) = at.parent() {
+        let block = matches!(parent.kind(), "compound_statement" | "declaration_list" | "translation_unit");
+        let initializer = super::cpp_range_for::statement_initializer(parent);
+        if block || initializer.is_some() {
+            let children = if block { named_children(parent) } else { initializer.into_iter().collect() };
+            for declaration in children.into_iter().rev().filter(|n| n.kind() == "declaration" && n.end_byte() <= at.start_byte()) {
+                let mut cursor = declaration.walk();
+                if declaration.children(&mut cursor).enumerate().any(|(i, child)| declaration.field_name_for_child(i as u32) == Some("declarator") && cpp_declarator_binds(child, name, source)) {
+                    return leading(declaration);
+                }
+            }
+        }
+        if parent.kind() == "for_range_loop" && parent.child_by_field_name("body").is_some_and(|body| body.id() == at.id())
+            && parent.child_by_field_name("declarator").is_some_and(|d| cpp_declarator_binds(d, name, source)) { return leading(parent); }
+        if matches!(parent.kind(), "lambda_expression" | "function_definition") {
+            let mut queue = named_children(parent).into_iter().filter(|n| n.kind() != "compound_statement").collect::<Vec<_>>();
+            while let Some(parameter) = queue.pop() {
+                if parameter.kind() == "parameter_declaration" && parameter.child_by_field_name("declarator").is_some_and(|n| cpp_declarator_binds(n, name, source)) { return leading(parameter); }
+                if parameter.kind() != "compound_statement" { queue.extend(named_children(parameter)); }
+            }
+        }
+        at = parent;
+    }
+    false
+}
+
 pub(super) fn cpp_ast_declared_type(ty: tree_sitter::Node, mut declarator: tree_sitter::Node, source: &SourceFile) -> String {
     let type_node = if matches!(ty.kind(), "class_specifier" | "struct_specifier" | "union_specifier" | "enum_specifier") {
         ty.child_by_field_name("name").unwrap_or_else(|| {
