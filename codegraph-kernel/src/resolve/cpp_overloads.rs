@@ -137,18 +137,50 @@ impl KernelResolver {
         let top = fits.iter().copied().max().unwrap_or(0);
         let tied: Vec<_> = overloads.iter().zip(&fits).filter(|(_, f)| **f == top).map(|(n, _)| n.clone()).collect();
         if tied.len() == 1 || args.is_empty() { return Ok(tied[0].clone()); }
-        let Some(types) = self.cpp_call_argument_types(name, r)? else { return Ok(tied[0].clone()) };
-        if types.iter().all(Option::is_none) { return Ok(tied[0].clone()); }
-        let mut best = tied[0].clone();
-        let mut best_fit = self.cpp_argument_type_fit(&best, &types, r)?;
-        for n in tied.into_iter().skip(1) {
+        let first = tied[0].clone();
+        Ok(self.cpp_argument_type_choice(tied, name, r)?.unwrap_or(first))
+    }
+
+    /// Of overloads a call's arguments fit alike by count (in preference order), the one the types
+    /// the arguments have where the call reads them fit best; the first of those that fit best
+    /// alike. None when no argument's type can be read, or every overload fits the types alike.
+    pub(super) fn cpp_argument_type_choice(&mut self, tied: Vec<Arc<KNode>>, name: &str, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        let Some(types) = self.cpp_call_argument_types(name, r)? else { return Ok(None) };
+        if types.iter().all(Option::is_none) { return Ok(None); }
+        let mut best: Option<(Arc<KNode>, i64)> = None;
+        let mut decided = false;
+        for n in tied {
             let fit = self.cpp_argument_type_fit(&n, &types, r)?;
-            if fit > best_fit {
-                best = n;
-                best_fit = fit;
+            match &best {
+                None => best = Some((n, fit)),
+                Some((_, top)) if fit > *top => { best = Some((n, fit)); decided = true; }
+                Some((_, top)) if fit < *top => decided = true,
+                Some(_) => {}
             }
         }
-        Ok(best)
+        Ok(best.filter(|_| decided).map(|(n, _)| n))
+    }
+
+    /// The C++ function a call of `chosen`'s name reaches among `candidates` (cppFunctionOverload,
+    /// name-matcher.ts at 4a591aee): of its overloads, the functions of its qualified name the
+    /// call's file can see, `chosen` first, the one the call's arguments fit. The name strategies
+    /// pick a function by where it is; protobuf's `ParseWithLimit(limit, data, result)` on an
+    /// `int32_t result` is the overload taking an `int32_t&`, not the `int64_t&` one nearer the
+    /// call. A function hides a class of its name, so a call is to the function when `chosen` is
+    /// that class. `chosen` itself for anything but a C++ call, or when no function is in sight.
+    pub(super) fn cpp_function_overload(&mut self, chosen: Arc<KNode>, candidates: &[Arc<KNode>], r: &ResolveRefIn) -> Res<Arc<KNode>> {
+        if r.language != "cpp" || r.reference_kind != "calls" { return Ok(chosen); }
+        let mut overloads = Vec::new();
+        for n in candidates {
+            if n.kind == "function" && n.qualified_name == chosen.qualified_name && self.is_visible_across_files(n, r)? { overloads.push(n.clone()); }
+        }
+        if overloads.is_empty() { return Ok(chosen); }
+        if let Some(at) = overloads.iter().position(|n| n.id == chosen.id) {
+            let own = overloads.remove(at);
+            overloads.insert(0, own);
+        }
+        let name = chosen.name.clone();
+        self.cpp_overload_for(overloads, &name, r)
     }
 
     /// Whether the C++ function or method `n`, named `name`, is declared deleted: from its name to

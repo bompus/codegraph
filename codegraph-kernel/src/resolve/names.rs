@@ -7,6 +7,12 @@ use super::name_scope::{can_name_in_type_position, is_bare_rust_name};
 /// no repository class uses may claim: a guess, not a proven link.
 const PHP_UNSEEN_ANCESTOR_CONFIDENCE: f64 = 0.5;
 
+/// Whether `nodes` are one C++ function's overloads (and declarations): functions all of one
+/// qualified name, which a call's arguments choose among (cpp_function_overload).
+fn cpp_overload_set(nodes: &[Arc<KNode>]) -> bool {
+    nodes.first().is_some_and(|first| nodes.iter().all(|n| n.kind == "function" && n.language == "cpp" && n.qualified_name == first.qualified_name))
+}
+
 impl KernelResolver {
     // -----------------------------------------------------------------------
     // Name machinery (name-matcher.ts)
@@ -858,6 +864,7 @@ impl KernelResolver {
         let Some(best) = self.find_best_match(r, &candidates) else {
             return Ok(None);
         };
+        let best = self.cpp_function_overload(best, &candidates, r)?;
         if bare_js && !is_bare_call_target_kind(&best.kind) {
             return Ok(None);
         }
@@ -1371,8 +1378,9 @@ impl KernelResolver {
                 exact.push(node);
             }
             let exact = prefer_call_site_file(exact, &r.file_path);
-            return Ok(exact.first().filter(|node| exact.len() == 1 || node.file_path == r.file_path)
-                .map(|node| KCand { node: node.clone(), confidence: 0.95, resolved_by: "qualified-name" }));
+            let Some(first) = exact.first().filter(|node| exact.len() == 1 || node.file_path == r.file_path || cpp_overload_set(&exact)).cloned() else { return Ok(None) };
+            let node = self.cpp_function_overload(first, &exact, r)?;
+            return Ok(Some(KCand { node, confidence: 0.95, resolved_by: "qualified-name" }));
         }
 
         // Relative C++ qualification searches the caller's enclosing scopes
@@ -1387,8 +1395,9 @@ impl KernelResolver {
                 let candidates: Vec<_> = named.into_iter().filter(|n| matches!(n.language.as_str(), "c" | "cpp") && visible.contains(&n.file_path)).collect();
                 if candidates.is_empty() { continue; }
                 let candidates = prefer_call_site_file(candidates, &r.file_path);
-                return Ok(candidates.first().filter(|n| candidates.len() == 1 || n.file_path == r.file_path)
-                    .map(|node| KCand { node: node.clone(), confidence: 0.95, resolved_by: "qualified-name" }));
+                let Some(first) = candidates.first().filter(|n| candidates.len() == 1 || n.file_path == r.file_path || cpp_overload_set(&candidates)).cloned() else { return Ok(None) };
+                let node = self.cpp_function_overload(first, &candidates, r)?;
+                return Ok(Some(KCand { node, confidence: 0.95, resolved_by: "qualified-name" }));
             }
         }
 
@@ -1423,7 +1432,7 @@ impl KernelResolver {
             let ordered = prefer_call_site_file(candidates, &r.file_path);
             if ordered[0].file_path == r.file_path {
                 return Ok(Some(KCand {
-                    node: ordered[0].clone(),
+                    node: self.cpp_function_overload(ordered[0].clone(), &ordered, r)?,
                     confidence: 0.95,
                     resolved_by: "qualified-name",
                 }));
@@ -1468,9 +1477,9 @@ impl KernelResolver {
                 .filter(|n| n.qualified_name.ends_with(&r.reference_name))
                 .collect();
             let chosen = prefer_call_site_file(partial, &r.file_path);
-            if let Some(first) = chosen.into_iter().next() {
+            if let Some(first) = chosen.first().cloned() {
                 return Ok(Some(KCand {
-                    node: first,
+                    node: self.cpp_function_overload(first, &chosen, r)?,
                     confidence: 0.85,
                     resolved_by: "qualified-name",
                 }));

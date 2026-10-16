@@ -155,13 +155,20 @@ impl KernelResolver {
             if path==parts {matches.push(n.clone());}
         }
         let args = if r.reference_kind=="calls" { self.call_arguments(r,name) } else { None };
-        let mut best=None; let mut best_score=i64::MIN;let mut tied=false;
+        let mut best:Vec<Arc<KNode>>=Vec::new(); let mut best_score=i64::MIN;
         for n in matches {
             if args.as_ref().is_some_and(|args| !self.cpp_overload_compatible(&n,args,r)) {continue;}
             let score=if is_test_path(&n.file_path){-10}else{0} + args.as_ref().map(|args|self.cpp_overload_fit(&n,args,r)).unwrap_or(0);
-            if score>best_score {best_score=score;best=Some(n);tied=false;}else if score==best_score{tied=true;}
+            if score>best_score {best_score=score;best=vec![n];}else if score==best_score{best.push(n);}
         }
-        if tied{return Ok(None);}
+        // Overloads the arguments fit alike by count are told apart by the types they have (fmt's
+        // `write(out, count)` on an `int count`), else the call is left alone.
+        let best=match best.len() {
+            0=>None,
+            1=>best.pop(),
+            _ if args.is_some()=>self.cpp_argument_type_choice(best,name,r)?,
+            _=>None,
+        };
         Ok(best.map(|node|KCand{node,confidence:0.8,resolved_by:"qualified-name"}))
     }
 }
