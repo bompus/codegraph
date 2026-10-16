@@ -147,13 +147,21 @@ impl KernelResolver {
         let tied: Vec<_> = overloads.iter().zip(&fits).filter(|(_, f)| **f == top).map(|(n, _)| n.clone()).collect();
         if tied.len() == 1 || args.is_empty() { return Ok(tied[0].clone()); }
         let first = tied[0].clone();
-        Ok(self.cpp_argument_type_choice(tied, name, r)?.unwrap_or(first))
+        Ok(self.cpp_argument_type_ranking(tied, name, r)?.map_or(first, |(choice, _)| choice))
     }
 
     /// Of overloads a call's arguments fit alike by count (in preference order), the one the types
-    /// the arguments have where the call reads them fit best; the first of those that fit best
-    /// alike. None when no argument's type can be read, or every overload fits the types alike.
+    /// the arguments have where the call reads them fit best. None when no argument's type can be
+    /// read, or several fit the types best alike (however many fit them worse) and no const twin
+    /// tells them apart: `f(short)` beside `f(long)`, `f(int)` and `f(char)` is none of them.
     pub(super) fn cpp_argument_type_choice(&mut self, tied: Vec<Arc<KNode>>, name: &str, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        Ok(self.cpp_argument_type_ranking(tied, name, r)?.and_then(|(choice, decided)| decided.then_some(choice)))
+    }
+
+    /// `cpp_argument_type_choice`'s ranking: the first of the overloads the argument types fit
+    /// best, or its const twin, and whether it alone fits them best. None when no argument's type
+    /// can be read.
+    fn cpp_argument_type_ranking(&mut self, tied: Vec<Arc<KNode>>, name: &str, r: &ResolveRefIn) -> Res<Option<(Arc<KNode>, bool)>> {
         let Some(types) = self.cpp_call_argument_types(name, r)? else { return Ok(None) };
         if types.iter().all(Option::is_none) { return Ok(None); }
         let mut fits = Vec::with_capacity(tied.len());
@@ -162,10 +170,11 @@ impl KernelResolver {
         let at = fits.iter().position(|f| *f == top).unwrap_or(0);
         let best = tied[at].clone();
         let others: Vec<_> = tied.iter().zip(&fits).enumerate().filter(|(i, (_, f))| **f == top && *i != at).map(|(_, (n, _))| n.clone()).collect();
-        // Fit alike by type: decided only when a const twin is.
-        let alike = others.len() + 1 == tied.len();
+        // Several fit the types best: decided only when a const twin is.
+        let alone = others.is_empty();
         let choice = self.cpp_const_twin_choice(best.clone(), others, &types, r);
-        Ok((!alike || choice.id != best.id || at != 0).then_some(choice))
+        let decided = alone || choice.id != best.id;
+        Ok(Some((choice, decided)))
     }
 
     /// The C++ function a call of `chosen`'s name reaches among `candidates` (cppFunctionOverload,
