@@ -208,8 +208,10 @@ impl KernelResolver {
 
     /// Whether the C++ function or method `n`, named `name`, is declared deleted: from its name to
     /// the declaration's `;` or body, it says `= delete` (protobuf's `void reset(T*
-    /// PROTOBUF_NULLABLE) = delete;`).
+    /// PROTOBUF_NULLABLE) = delete;`). A method a macro defines never is.
     fn cpp_deleted_function(&mut self, n: &KNode, name: &str) -> bool {
+        // A method a macro defines has a body.
+        if cpp_macro_method_head(n).is_some() { return false; }
         let Some(source) = self.read_file(&n.file_path) else { return false };
         let from = (n.start_line - 1).max(0) as usize;
         let Ok(word) = shared_regex(&format!(r"\b{}\s*\(", regex::escape(name))) else { return false };
@@ -464,4 +466,22 @@ fn opening_paren(text: &str, close: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// The expanded definition a C++ method that a macro defines carries as its signature
+/// (cpp-macro-methods.ts), `inline const FileDescriptor* Descriptor::file() const` for protobuf's
+/// `PROTOBUF_DEFINE_ACCESSOR(Descriptor, file, const FileDescriptor*)`: its source is the
+/// invocation, which spells neither its return type nor its parameters. None for any other node.
+pub(super) fn cpp_macro_method_head(n: &KNode) -> Option<&str> {
+    if n.kind != "method" { return None; }
+    let signature = n.signature.as_deref()?;
+    shared_regex(&format!(r"::\s*{}\s*\(", regex::escape(&n.name))).ok()?.is_match(signature).then_some(signature)
+}
+
+/// The expansion `head` of a method a macro defines, parsed as a definition of its own.
+pub(super) fn cpp_macro_method_tree(head: &str) -> Option<(Rc<SourceFile>, tree_sitter::Tree)> {
+    let source = Rc::new(SourceFile::new(vec![format!("{head} {{}}")]));
+    let text = super::cpp_annotations::cpp_without_annotations(source.text()).into_owned();
+    let tree = crate::tree::parse_with_cached_parser(&text, "cpp").ok()?;
+    Some((source, tree))
 }

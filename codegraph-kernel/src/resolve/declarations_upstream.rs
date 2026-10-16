@@ -432,6 +432,19 @@ impl KernelResolver {
     }
 
     fn cpp_parameter_facts(&mut self, n: &KNode) -> Option<CppParameters> {
+        // A method a macro defines writes its list in its expansion.
+        if let Some(head) = super::cpp_overloads::cpp_macro_method_head(n) {
+            let (source, tree) = super::cpp_overloads::cpp_macro_method_tree(head)?;
+            let mut queue = vec![tree.root_node()];
+            while let Some(node) = queue.pop() {
+                if node.kind() == "function_declarator" && cpp_function_identity(node, &source).is_some_and(|(name, _)| name == n.name) {
+                    let params = node.child_by_field_name("parameters").filter(|p| cpp_parameter_shape_complete(*p))?;
+                    return Some(cpp_parameters(node, params, &source, &n.file_path, &[], &[]));
+                }
+                queue.extend(super::iteration::named_children(node));
+            }
+            return None;
+        }
         let source = self.read_file(&n.file_path)?;
         if let Some(cached) = self.cpp_declaration_memo.get(&n.id) {
             if Rc::ptr_eq(&cached.source, &source) {

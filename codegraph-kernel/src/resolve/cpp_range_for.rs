@@ -362,6 +362,12 @@ impl KernelResolver {
     /// FieldDescriptor*>` (the index keeps only `vector`), and its parameter list without spaces.
     /// None for a constructor, `void`, `auto` or `decltype(…)`.
     fn cpp_written_return_type(&mut self, function: &Arc<KNode>, r: &ResolveRefIn) -> Res<Option<(String, String)>> {
+        // A method a macro defines is read from its expansion.
+        if let Some(head) = super::cpp_overloads::cpp_macro_method_head(function) {
+            let Some((source, tree)) = super::cpp_overloads::cpp_macro_method_tree(head) else { return Ok(None) };
+            let Some(declaration) = named_children(tree.root_node()).into_iter().find(|n| n.kind() == "function_definition") else { return Ok(None) };
+            return Ok(cpp_declared_return(declaration, &source));
+        }
         let Some(source) = self.read_file(&function.file_path) else { return Ok(None) };
         let site = site_at(r, function);
         let Some(tree) = self.parsed_tree(&source, &site) else { return Ok(None) };
@@ -378,12 +384,7 @@ impl KernelResolver {
             let Some(parent) = node.parent() else { return Ok(None) };
             node = parent;
         };
-        let (Some(ty), Some(declarator)) = (declaration.child_by_field_name("type"), declaration.child_by_field_name("declarator")) else { return Ok(None) };
-        let Some(function_declarator) = declared_function(declarator) else { return Ok(None) };
-        let raw = cpp_plain_type(&cpp_ast_declared_type(ty, declarator, &source));
-        if raw.is_empty() || raw == "void" || is_cpp_auto(&raw) || raw.contains("decltype") { return Ok(None); }
-        let parameters = function_declarator.child_by_field_name("parameters").map(|p| without_spaces(&source.text()[p.byte_range()])).unwrap_or_default();
-        Ok(Some((raw, parameters)))
+        Ok(cpp_declared_return(declaration, &source))
     }
 
     /// The type the C++ class `cls` declares its data member `field` with, as written in the class,
@@ -1059,4 +1060,15 @@ mod tests {
         assert_eq!(cpp_pointee("std::unique_ptr<VersionSet>&").as_deref(), Some("VersionSet"));
         assert_eq!(cpp_pointee("std::vector<Foo*>"), None);
     }
+}
+
+/// The return type a C or C++ function `declaration` writes, and its parameter list without
+/// spaces (cpp_written_return_type).
+fn cpp_declared_return(declaration: tree_sitter::Node, source: &SourceFile) -> Option<(String, String)> {
+    let (Some(ty), Some(declarator)) = (declaration.child_by_field_name("type"), declaration.child_by_field_name("declarator")) else { return None };
+    let function_declarator = declared_function(declarator)?;
+    let raw = cpp_plain_type(&cpp_ast_declared_type(ty, declarator, source));
+    if raw.is_empty() || raw == "void" || is_cpp_auto(&raw) || raw.contains("decltype") { return None; }
+    let parameters = function_declarator.child_by_field_name("parameters").map(|p| without_spaces(&source.text()[p.byte_range()])).unwrap_or_default();
+    Some((raw, parameters))
 }
