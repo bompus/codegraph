@@ -135,7 +135,16 @@ impl KernelResolver {
             }
             _ => return Ok(Some(None)),
         };
-        let primary = ty.split('<').next().unwrap_or(&ty).trim();
+        // A library template's member type: its iterator is the library's, and its `value_type`
+        // (`std::vector<Slice>::value_type key`) is its element.
+        let mut ty = ty;
+        if let Some(member) = cpp_library_member_type(&ty) {
+            let Some(held) = member else { return Ok(Some(None)) };
+            ty = held;
+            element = true;
+        }
+        let primary = cpp_primary_type(&ty);
+        let primary = primary.as_str();
         // A standard type's own member (`iter.reset()` on a `std::unique_ptr` element) is no project method.
         if element && re!(r"^(?:::)?(?:std|absl)::").is_match(primary) { return Ok(Some(None)); }
         if let Some(caller) = self.node_by_id(&site.from_node_id)? { if self.cpp_template_parameter(&caller, primary, &site)? { return Ok(Some(None)); } }
@@ -313,7 +322,8 @@ impl KernelResolver {
                     if let Some(raw) = cpp_binding_type(parent, at, text(node), source) {
                         let ty = if raw == "auto" && parent.kind() == "compound_statement" { self.infer_cpp_receiver_type(text(node), r, 0, true)? } else { Some(raw) };
                         let Some(ty) = ty else { return Ok(None) };
-                        let primary = ty.split('<').next().unwrap_or(&ty).trim();
+                        let primary = cpp_primary_type(&ty);
+                        let primary = primary.as_str();
                         if let Some(caller) = self.node_by_id(&r.from_node_id)? { if self.cpp_template_parameter(&caller, primary, r)? { return Ok(None); } }
                         return self.cpp_type_owner(primary, r, 0, false);
                     }
@@ -395,7 +405,8 @@ impl KernelResolver {
 
     fn cpp_field_owner(&mut self, owner: &Arc<KNode>, field: &str, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
         let Some(ty) = self.cpp_field_type(owner, field, r)? else { return Ok(None) };
-        let primary = ty.split('<').next().unwrap_or(&ty).trim();
+        let primary = cpp_primary_type(&ty);
+        let primary = primary.as_str();
         let mut site = r.clone().at(owner); site.from_node_id = owner.id.clone(); site.column = owner.start_column;
         if self.cpp_template_parameter(owner, primary, &site)? { return Ok(None); }
         let included = self.namespace_visible_files(&r.file_path, "cpp")?;
@@ -498,6 +509,49 @@ fn cpp_element_type(raw: &str) -> Option<String> {
 
 /// The first template argument of a standard smart pointer or optional, or None when it
 /// is a pointer: `Foo`, `ns::Foo<int, true>`, `const Foo` for `Foo, Deleter`.
+/// The type `ty` names as its owner is looked up: `SkipList` for `SkipList<Key, Comparator>`,
+/// and `SkipList::Iterator` for the member type `SkipList<Key, Comparator>::Iterator`, which the
+/// class template declares whatever its arguments.
+pub(super) fn cpp_primary_type(ty: &str) -> String {
+    let mut depth = 0usize;
+    let mut member = false;
+    for (i, ch) in ty.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => { depth = depth.saturating_sub(1); if depth == 0 && ty[i + 1..].trim_start().starts_with("::") { member = true; } }
+            _ => (),
+        }
+    }
+    if member {
+        if let Some(parts) = super::cpp_aliases::type_segments(ty) {
+            let global = re!(r"^(?:(?:typename|const)\s+)*::").is_match(ty.trim());
+            return format!("{}{}", if global { "::" } else { "" }, parts.join("::"));
+        }
+    }
+    ty.split('<').next().unwrap_or(ty).trim().to_string()
+}
+
+/// What a library template's member type is: Some(its element) for a container's `value_type`,
+/// `reference` or a smart pointer's `element_type` (the first template argument), a map's
+/// `mapped_type` (the second); Some(None) for any other member, its `iterator` included, which is
+/// the library's. None for a type that is no library template's member.
+fn cpp_library_member_type(ty: &str) -> Option<Option<String>> {
+    let hit = re!(r"^(?:(?:typename|const)\s+)*(?:::)?(?:std|absl)::\w+\s*<(.*)>\s*::\s*([A-Za-z_]\w*)\s*&?$").captures(ty.trim())?;
+    let arguments = &hit[1];
+    Some(match &hit[2] {
+        "value_type" | "reference" | "const_reference" | "element_type" => cpp_held_type(arguments),
+        "mapped_type" => {
+            let mut depth = 0usize;
+            let comma = arguments.char_indices().find(|&(_, ch)| {
+                match ch { '<' | '(' => depth += 1, '>' | ')' => depth = depth.saturating_sub(1), _ => () }
+                ch == ',' && depth == 0
+            });
+            comma.and_then(|(at, _)| cpp_held_type(&arguments[at + 1..]))
+        }
+        _ => None,
+    })
+}
+
 pub(super) fn cpp_held_type(arguments: &str) -> Option<String> {
     let mut depth = 0usize;
     let mut end = arguments.len();
