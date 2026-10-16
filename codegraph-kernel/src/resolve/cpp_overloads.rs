@@ -297,10 +297,13 @@ impl KernelResolver {
     /// `DynamicCastMessage<T>(*msg)` takes a reference, and rocksdb's `db_->Put(opts, key, ts,
     /// value)` on a `char key[]` no `ColumnFamilyHandle*`. A pointer or reference to a non-const
     /// type never takes a const object, nor a reference a value a call returns (`lvalue` false).
-    /// None of that holds for an argument of a template parameter's type (`dependent`), and the
-    /// pointer and `const` rules not for a parameter whose type the function's own template
-    /// parameter is (`deduced`). (Of two overloads alike but for a `const`, which one a non-const
-    /// object takes is `cpp_const_twin_choice`'s.)
+    /// An object of the parameter's own type that a name or dereference reads (`lvalue`) never
+    /// binds an rvalue reference: `Foo x; Take(x)` is `Take(const Foo&)`, not `Take(Foo&&)`; an
+    /// `int` converted to a `Value` is a temporary, which does. None of that holds for an argument of a
+    /// template parameter's type (`dependent`), and the pointer, `const` and rvalue rules not for a
+    /// parameter whose type the function's own template parameter is (`deduced`). (Of two
+    /// overloads alike but for a `const`, which one a non-const object takes is
+    /// `cpp_const_twin_choice`'s.)
     fn cpp_written_type_fit(&mut self, argument: &str, param: &str, category: CppTypeCategory, lvalue: Option<bool>, dependent: bool, deduced: bool) -> Res<i64> {
         use CppTypeCategory::*;
         let fit = self.cpp_unqualified_type_fit(argument, param, category)?;
@@ -309,6 +312,7 @@ impl KernelResolver {
         if category == Pointer && argument_category == Class { return Ok(-3); }
         if !deduced && category == Pointer && argument_category == CString && !re!(r"\bvoid\b").is_match(param) { return Ok(-3); }
         if category == CString && argument_category == Pointer { return Ok(-3); }
+        if !deduced && lvalue == Some(true) && fit == 3 && re!(r"&&\s*$").is_match(&strip_template_arguments(param)) { return Ok(-3); }
         if cpp_refers_to_const(param) != Some(false) { return Ok(fit); }
         if !deduced && cpp_argument_const(argument, param) == Some(true) { return Ok(-3); }
         Ok(if lvalue == Some(false) && !strip_template_arguments(param).contains('*') { -3 } else { fit })

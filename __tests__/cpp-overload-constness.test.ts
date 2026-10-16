@@ -193,3 +193,60 @@ describe("a C++ call picks between const and non-const overloads by its argument
     expect(calls('Look', 'peek')).toEqual(['peek:64']);
   });
 });
+
+/**
+ * What an argument's value category decides: an object a name reads (an lvalue)
+ * never binds `Foo&&`.
+ */
+describe('a C++ argument binds a reference by its value category and constness', () => {
+  const FILES: Record<string, string> = {
+    'a.cc': lines(
+      '#include <vector>',
+      'struct Foo {};',
+      'void Take(const Foo& f) {}',
+      'void Take(Foo&& f) {}',
+      'Foo Make() { return Foo(); }',
+      'void Lvalue() { Foo x; Take(x); }',
+      'void Temporary() { Take(Make()); }',
+    ),
+    'b.cc': lines(
+      'struct Value { Value(int v) {} };',
+      'struct Box {',
+      '  void Push(Value&& v) {}',
+      '  void Push(const Value& v) {}',
+      '};',
+      'void Convert(Box& box) { int i = 1; box.Push(i); }',
+    ),
+  };
+
+  let root: string;
+  let cg: CodeGraph;
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-cpp-overload-binding-'));
+    for (const [file, text] of Object.entries(FILES)) {
+      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+      fs.writeFileSync(path.join(root, file), text);
+    }
+    cg = await CodeGraph.init(root, { index: true });
+  }, 120_000);
+
+  afterAll(() => {
+    cg?.close();
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** What a function or method calls, as `qualifiedName@file:line`. */
+  const callees = (caller: string): string[] => {
+    const fn = [...cg.getNodesByKind('function'), ...cg.getNodesByKind('method')].find((n) => n.qualifiedName === caller);
+    expect(fn, caller).toBeDefined();
+    return cg.getCallees(fn!.id).filter((c) => c.edge.kind === 'calls').map((c) => `${c.node.qualifiedName}@${c.node.filePath}:${c.node.startLine}`).sort();
+  };
+
+  it('an lvalue takes `const Foo&`, a temporary `Foo&&`', () => {
+    expect(callees('Lvalue')).toEqual(['Take@a.cc:3']);
+    expect(callees('Temporary')).toEqual(['Make@a.cc:5', 'Take@a.cc:4']);
+    // An `int` converted to `Value` is a temporary, so it may bind `Value&&`.
+    expect(callees('Convert')).toEqual(['Box::Push@b.cc:3']);
+  });
+});
