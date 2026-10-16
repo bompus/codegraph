@@ -66,15 +66,22 @@ pub(super) fn cpp_type_category(ty: &str) -> CppTypeCategory {
     if STRING_TYPES.contains(&last.as_str()) { String } else { Class }
 }
 
-/// A C++ parameter declaration's type: without its default argument and its name.
-/// An array type (`Char[]`) as the pointer to its element an argument of it decays to (`Char*`).
+/// An array type (`Char[]`) as the pointer to its element an argument of it decays to (`Char*`);
+/// a multidimensional one (`int[][]`) as the pointer to its first row (`int[]*`).
 fn cpp_array_as_pointer(text: String) -> String {
     match super::cpp_range_for::cpp_array_split(&text) {
-        Some((base, dimensions)) if dimensions > 0 => format!("{base}*"),
+        Some((base, dimensions)) if dimensions > 0 => format!("{base}{}*", "[]".repeat(dimensions - 1)),
         _ => text,
     }
 }
 
+/// Whether the C++ type `ty` is a pointer to an array: an argument's `int[]*`, a parameter's
+/// `int (*rows)[4]` or `int rows[][4]`.
+fn cpp_pointer_to_array(ty: &str) -> bool {
+    re!(r"\[\s*\]\s*\*|\(\s*\*[^()]*\)\s*\[|\]\s*\[").is_match(ty)
+}
+
+/// A C++ parameter declaration's type: without its default argument and its name.
 pub(super) fn cpp_parameter_type(param: &str) -> String {
     let mut text = param;
     let mut depth = 0i32;
@@ -312,6 +319,9 @@ impl KernelResolver {
         if category == Pointer && argument_category == Class { return Ok(-3); }
         if !deduced && category == Pointer && argument_category == CString && !re!(r"\bvoid\b").is_match(param) { return Ok(-3); }
         if category == CString && argument_category == Pointer { return Ok(-3); }
+        // A pointer to an array (`int a[3][4]` decayed) is no pointer to its element, nor the other
+        // way round; `void*` takes either.
+        if !deduced && matches!(category, Pointer | CString) && cpp_pointer_to_array(argument) != cpp_pointer_to_array(param) && !re!(r"\bvoid\b").is_match(param) { return Ok(-3); }
         if !deduced && lvalue == Some(true) && fit == 3 && re!(r"&&\s*$").is_match(&strip_template_arguments(param)) { return Ok(-3); }
         if cpp_refers_to_const(param) != Some(false) { return Ok(fit); }
         if !deduced && cpp_argument_const(argument, param) == Some(true) { return Ok(-3); }
