@@ -178,11 +178,25 @@ impl KernelResolver {
         // C has no overloads: a C call reaches the function of the name its file sees, its own or
         // one a header it includes defines, else one with external linkage, the best placed of
         // them. jemalloc's tests call the `static inline do_arena_create` of the arena_util.h they
-        // include, not a neighbouring test's own `static do_arena_create`.
+        // include, not a neighbouring test's own `static do_arena_create`. What the file sees only
+        // when the build sets a flag nothing in the project sets (is_c_feature_variant) yields to
+        // a definition with external linkage that the build without it calls: lua-cjson's fpconv.h
+        // defines `fpconv_init` under `#ifdef USE_INTERNAL_FPCONV`, and redis's build calls
+        // fpconv.c's. A call compiled only with such a flag itself is left to the file's own:
+        // redis's quicklist.c tests call its `static mstime` inside `#ifdef REDIS_TEST`.
         if r.language == "c" {
             let visible = self.namespace_visible_files(&r.file_path, "c")?;
-            let own: Vec<_> = overloads.iter().filter(|n| n.file_path == r.file_path || visible.contains(&n.file_path)).cloned().collect();
-            return Ok(self.find_best_match(r, if own.is_empty() { &overloads } else { &own }).unwrap_or(chosen));
+            let (own, others): (Vec<_>, Vec<_>) = overloads.iter().cloned().partition(|n| n.file_path == r.file_path || visible.contains(&n.file_path));
+            let mut external = Vec::new();
+            if !own.is_empty() {
+                for n in others { if !self.is_static_c_function(&n)? { external.push(n); } }
+            }
+            let mut outside = Vec::new();
+            if !external.is_empty() && own.iter().all(|n| self.is_c_feature_variant(n, r)) && !self.is_off_by_default(&r.file_path, r.line) {
+                outside = external.into_iter().filter(|n| !self.is_c_feature_variant(n, r)).collect();
+            }
+            let pool = if !outside.is_empty() { &outside } else if !own.is_empty() { &own } else { &overloads };
+            return Ok(self.find_best_match(r, pool).unwrap_or(chosen));
         }
         if let Some(at) = overloads.iter().position(|n| n.id == chosen.id) {
             let own = overloads.remove(at);
