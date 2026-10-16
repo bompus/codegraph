@@ -218,4 +218,29 @@ describe('a C++ receiver declared as a member type of a class template', () => {
       cg.close();
     }
   });
+  it('a library map\'s `value_type` is a pair of its key and value, not its key', async () => {
+    const cg = await indexed({
+      'src/entries.cc': lines(
+        '#include <map>',
+        '#include <vector>',
+        'class Key { public: void swap(Key& o) {} int size() const { return 0; } };',
+        'class Value {};',
+        'void Swap(std::map<Key, Value>& m, std::map<Key, Value>::value_type& other) {',
+        '  std::map<Key, Value>::value_type entry = *m.begin();',
+        '  entry.swap(other);',
+        '}',
+        'int First(const std::vector<Key>& keys) {',
+        '  std::vector<Key>::value_type key = keys[0];',
+        '  return key.size();',
+        '}',
+      ),
+    });
+    try {
+      expect(calls(cg, 'Swap')).toEqual([]);
+      // A sequence's `value_type` is still its element.
+      expect(calls(cg, 'First')).toEqual(['Key::size']);
+    } finally {
+      cg.close();
+    }
+  });
 });

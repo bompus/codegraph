@@ -39,7 +39,7 @@ const LIBRARY_SEQUENCES: &[&str] = &[
 /// Widely used project containers of the same kind: protobuf's repeated fields, rocksdb's `autovector`.
 const PROJECT_SEQUENCES: &[&str] = &["RepeatedField", "RepeatedPtrField", "autovector"];
 /// The standard library's and abseil's maps, whose elements are `std::pair`s of a key and a value.
-const LIBRARY_MAPS: &[&str] = &["map", "multimap", "unordered_map", "unordered_multimap", "flat_hash_map", "node_hash_map", "btree_map", "btree_multimap"];
+pub(super) const LIBRARY_MAPS: &[&str] = &["map", "multimap", "unordered_map", "unordered_multimap", "flat_hash_map", "node_hash_map", "btree_map", "btree_multimap"];
 /// The standard library's container adaptors, whose element is their first template argument.
 const LIBRARY_ADAPTORS: &[&str] = &["stack", "queue", "priority_queue"];
 /// The members of a library container that return an iterator into it, with the iterator's kind.

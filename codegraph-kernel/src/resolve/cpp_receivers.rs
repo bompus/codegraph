@@ -534,11 +534,14 @@ pub(super) fn cpp_primary_type(ty: &str) -> String {
 /// What a library template's member type is: Some(its element) for a container's `value_type`,
 /// `reference` or a smart pointer's `element_type` (the first template argument), a map's
 /// `mapped_type` (the second); Some(None) for any other member, its `iterator` included, which is
-/// the library's. None for a type that is no library template's member.
+/// the library's, and for a map's `value_type`, a `std::pair` of the key and the value. None for a
+/// type that is no library template's member.
 fn cpp_library_member_type(ty: &str) -> Option<Option<String>> {
-    let hit = re!(r"^(?:(?:typename|const)\s+)*(?:::)?(?:std|absl)::\w+\s*<(.*)>\s*::\s*([A-Za-z_]\w*)\s*&?$").captures(ty.trim())?;
-    let arguments = &hit[1];
-    Some(match &hit[2] {
+    let hit = re!(r"^(?:(?:typename|const)\s+)*(?:::)?(?:std|absl)::(\w+)\s*<(.*)>\s*::\s*([A-Za-z_]\w*)\s*&?$").captures(ty.trim())?;
+    let arguments = &hit[2];
+    let map = super::cpp_range_for::LIBRARY_MAPS.contains(&&hit[1]);
+    Some(match &hit[3] {
+        "value_type" | "reference" | "const_reference" if map => None,
         "value_type" | "reference" | "const_reference" | "element_type" => cpp_held_type(arguments),
         "mapped_type" => {
             let mut depth = 0usize;
