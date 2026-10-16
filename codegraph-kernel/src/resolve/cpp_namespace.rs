@@ -1,16 +1,24 @@
 //! Namespace ownership supplied by a project's namespace-opening macros.
 use super::*;
 
+/// A file's `#define`s and `#undef`s of name macros: (line, name, whether it defines).
+type Directives = Rc<Vec<(i64,String,bool)>>;
+
 #[derive(Default)]
 pub(super) struct NamespaceCache {
     ready: bool,
     openers: HashMap<(String,String),Vec<String>>,
     functions: HashSet<(String,String)>,
     closers: HashSet<(String,String)>,
-    aliases: HashMap<String,HashMap<String,String>>,
+    /// File → the namespace aliases it declares at namespace scope: name → (target, line).
+    aliases: HashMap<String,HashMap<String,(String,i64)>>,
+    /// File → the aliases a function or other block declares: (name, target, first line, last line).
+    local_aliases: HashMap<String,Vec<(String,String,i64,i64)>>,
     includes: HashMap<String,HashSet<String>>,
     replacements: HashMap<(String,String),String>,
     frames: HashMap<String,Vec<(i64,i64,Vec<String>)>>,
+    /// File → its `#define`s and `#undef`s of name macros.
+    directives: HashMap<String,Directives>,
 }
 impl KernelResolver {
     fn prepare_namespace_macros(&mut self)->Res<()> {
@@ -24,7 +32,14 @@ impl KernelResolver {
             let code=super::awaited::strip_ts_comments(&source.text().replace("\\\r\n"," ").replace("\\\n"," "));
             // (Of a file's alternatives for one build or another, `#if … namespace backend = …upb;
             // #elif … namespace backend = …cpp;`, the first.)
-            for m in re!(r"(?m)^\s*namespace\s+(\w+)\s*=\s*(?:::)?([\w:]+)\s*;").captures_iter(&code) {cache.aliases.entry(file.clone()).or_default().entry(m[1].to_string()).or_insert_with(|| m[2].to_string());}
+            if namespace_alias_pattern().is_match(&code) {
+                for (name,target,line,end) in cpp_namespace_alias_declarations(&super::awaited::strip_ts_comments(source.text())) {
+                    match end {
+                        Some(end)=>cache.local_aliases.entry(file.clone()).or_default().push((name,target,line,end)),
+                        None=>{cache.aliases.entry(file.clone()).or_default().entry(name).or_insert((target,line));}
+                    }
+                }
+            }
             for m in re!(r"(?m)^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)(\(\s*([A-Za-z_]\w*)?\s*\))?[ \t]+([^\n]*)$").captures_iter(&code) {
                 let body=m[4].trim();
                 if re!(r"^(?:[A-Za-z_]\w*\s+)*\}(?:\s*\})*\s*;?$").is_match(body) {cache.closers.insert((file.clone(),m[1].to_string()));}
@@ -62,6 +77,7 @@ impl KernelResolver {
         self.prepare_namespace_macros()?;
         let mut names: HashSet<String> = self.cpp_namespaces.openers.values().filter_map(|path| path.first().cloned()).collect();
         names.extend(self.cpp_namespaces.aliases.values().flat_map(|aliases| aliases.keys().cloned()));
+        names.extend(self.cpp_namespaces.local_aliases.values().flat_map(|aliases| aliases.iter().map(|(name,..)|name.clone())));
         for node in self.table()?.nodes.iter() {
             if matches!(node.language.as_str(), "c" | "cpp") && matches!(node.kind.as_str(), "class" | "struct" | "union" | "enum" | "type_alias") {
                 names.extend(node.qualified_name.split("::").filter(|s| !s.is_empty()).map(str::to_string));
@@ -108,31 +124,94 @@ impl KernelResolver {
         }
         self.cpp_namespaces.includes.insert(file.to_string(),seen.clone());Ok(seen)
     }
-    /// The namespace `name` is an alias of where `file` writes it: `pybind11` for `py` under
-    /// `namespace py = pybind11;`, declared in the file itself, else alike in the files it includes.
-    pub(super) fn cpp_namespace_alias(&mut self,file:&str,name:&str)->Res<Option<String>> {
+    /// The namespace `name` is an alias of where line `line` of `file` writes it: `pybind11` for
+    /// `py` under `namespace py = pybind11;`, declared before it in the block around it or in the
+    /// file itself, else alike in the files it includes before it. (`::lib` for an alias of the
+    /// global `lib`.)
+    pub(super) fn cpp_namespace_alias(&mut self,file:&str,name:&str,line:i64)->Res<Option<String>> {
         self.prepare_namespace_macros()?;
-        if let Some(local)=self.cpp_namespaces.aliases.get(file).and_then(|a|a.get(name)) {return Ok(Some(local.clone()));}
+        if let Some((_,target,..))=self.cpp_namespaces.local_aliases.get(file).and_then(|a|a.iter().rfind(|(n,_,from,to)|n==name && *from<=line && line<=*to)) {return Ok(Some(target.clone()));}
+        if let Some((target,_))=self.cpp_namespaces.aliases.get(file).and_then(|a|a.get(name)).filter(|(_,at)|*at<=line) {return Ok(Some(target.clone()));}
         let visible=self.namespace_visible_files(file,"cpp")?;
-        let aliases:HashSet<_>=visible.iter().filter_map(|file|self.cpp_namespaces.aliases.get(file).and_then(|a|a.get(name))).cloned().collect();
+        let declaring:Vec<(String,String)>=visible.iter().filter(|f|f.as_str()!=file).filter_map(|f|self.cpp_namespaces.aliases.get(f).and_then(|a|a.get(name)).map(|(target,_)|(f.clone(),target.clone()))).collect();
+        let mut aliases=HashSet::new();
+        for (declarer,target) in declaring {
+            if self.cpp_included_before(file,line,&declarer,"cpp")? {aliases.insert(target);}
+        }
         Ok((aliases.len()==1).then(||aliases.into_iter().next().unwrap()))
     }
-    /// `qualified` spelled through the name macros `file` sees, when that differs: rocksdb's types
-    /// are `ROCKSDB_NAMESPACE::DB` in the index and `rocksdb::DB` to code that names them, under
-    /// `#define ROCKSDB_NAMESPACE rocksdb`; a tree declaring `namespace rocksdb` itself is named
-    /// `ROCKSDB_NAMESPACE::Cache` the other way round.
-    pub(super) fn cpp_name_macro_spelling(&mut self,file:&str,qualified:&str)->Res<Option<String>> {
+    /// Whether the `#include`s `file` writes before line `line` bring in `target`, directly or
+    /// through what those files include. An include in a branch only a build with a flag nothing
+    /// sets compiles (`#if 0`) counts only for a line in such a branch too.
+    pub(super) fn cpp_included_before(&mut self,file:&str,line:i64,target:&str,language:&str)->Res<bool> {
+        self.cpp_included_between(file,0,line,target,language)
+    }
+    /// `cpp_included_before`, counting only the includes written after line `from`.
+    fn cpp_included_between(&mut self,file:&str,from:i64,line:i64,target:&str,language:&str)->Res<bool> {
+        let imports:Vec<(i64,char,String)>=self.nodes_in_file(file)?.iter()
+            .filter(|n|n.kind=="import" && matches!(n.language.as_str(),"c"|"cpp") && n.start_line>from && n.start_line<line)
+            .map(|n|(n.start_line,if n.signature.as_deref().is_some_and(|s|s.contains('<')) {'<'} else {'"'},n.name.clone())).collect();
+        if imports.is_empty() {return Ok(false);}
+        let off_here=self.is_off_by_default(file,line);
+        for (at,delimiter,spec) in imports {
+            let Some(included)=self.resolve_cpp_include(file,delimiter,&spec,language)? else {continue};
+            if included!=target && !self.namespace_visible_files(&included,language)?.contains(target) {continue;}
+            if off_here || !self.is_off_by_default(file,at) {return Ok(true);}
+        }
+        Ok(false)
+    }
+    /// `qualified` spelled through the name macros the file of `r` sees, when that differs:
+    /// rocksdb's types are `ROCKSDB_NAMESPACE::DB` in the index and `rocksdb::DB` to code that
+    /// names them, under `#define ROCKSDB_NAMESPACE rocksdb`; a tree declaring `namespace rocksdb`
+    /// itself is named `ROCKSDB_NAMESPACE::Cache` the other way round. A macro the reference writes
+    /// spells it only where it is defined: not before its `#define`, nor after an `#undef`.
+    pub(super) fn cpp_name_macro_spelling(&mut self,r:&ResolveRefIn,qualified:&str)->Res<Option<String>> {
         self.prepare_namespace_macros()?;
         if self.cpp_namespaces.replacements.is_empty() {return Ok(None);}
+        let file=r.file_path.as_str();
         let visible=self.namespace_visible_files(file,"cpp")?;
+        let mut written=Vec::new();
         let spelled:Vec<String>=qualified.split("::").map(|segment| {
             let forward:HashSet<_>=self.cpp_namespaces.replacements.iter().filter(|((f,name),_)|visible.contains(f) && name==segment).map(|(_,body)|body.clone()).collect();
-            if forward.len()==1 {return forward.into_iter().next().unwrap();}
+            if forward.len()==1 {written.push(segment.to_string());return forward.into_iter().next().unwrap();}
             let reverse:HashSet<_>=self.cpp_namespaces.replacements.iter().filter(|((f,_),body)|visible.contains(f) && *body==segment).map(|((_,name),_)|name.clone()).collect();
             if reverse.len()==1 {reverse.into_iter().next().unwrap()} else {segment.to_string()}
         }).collect();
+        for name in written {
+            if !self.cpp_name_macro_defined_at(r,&name)? {return Ok(None);}
+        }
         let spelled=spelled.join("::");
         Ok((spelled!=qualified).then_some(spelled))
+    }
+    /// Whether the name macro `name` is defined where `r` writes it: by the last `#define` or
+    /// `#undef` of it before the reference in its own file, else by an include written after
+    /// that directive (or anywhere before the reference, with no directive) of a file that
+    /// defines it. A directive in a branch only an unset flag compiles counts only for a
+    /// reference in such a branch too.
+    fn cpp_name_macro_defined_at(&mut self,r:&ResolveRefIn,name:&str)->Res<bool> {
+        let file=r.file_path.as_str();
+        let directives=match self.cpp_namespaces.directives.get(file) {
+            Some(hit)=>hit.clone(),
+            None=>{
+                let text=self.read_file(file).map(|s|s.text().to_string()).unwrap_or_default();
+                let found:Vec<(i64,String,bool)>=super::cpp::directive_lines(&text).iter().enumerate()
+                    .filter_map(|(i,line)|re!(r"^\s*#\s*(define|undef)\s+([A-Za-z_]\w*)").captures(line).map(|m|(i as i64+1,m[2].to_string(),&m[1]=="define"))).collect();
+                let found=Rc::new(found);
+                self.cpp_namespaces.directives.insert(file.to_string(),found.clone());found
+            }
+        };
+        let off_here=self.is_off_by_default(file,r.line);
+        let mut last=None;
+        for (line,n,define) in directives.iter().rev() {
+            if *line<r.line && n==name && (off_here || !self.is_off_by_default(file,*line)) {last=Some((*line,*define));break;}
+        }
+        if let Some((_,true))=last {return Ok(true);}
+        let from=last.map_or(0,|(line,_)|line);
+        let definers:Vec<String>=self.cpp_namespaces.replacements.keys().filter(|(f,n)|n==name && f!=file).map(|(f,_)|f.clone()).collect();
+        for definer in definers {
+            if self.cpp_included_between(file,from,r.line,&definer,&r.language)? {return Ok(true);}
+        }
+        Ok(false)
     }
     pub(super) fn match_cpp_macro_namespaced(&mut self,r:&ResolveRefIn)->Res<Option<KCand>> {
         if !matches!(r.language.as_str(),"c"|"cpp") || !r.reference_name.trim_start_matches("::").contains("::") {return Ok(None);}
@@ -140,7 +219,7 @@ impl KernelResolver {
         let visible=self.namespace_visible_files(&r.file_path,&r.language)?;
         let mut parts:Vec<String>=r.reference_name.split("::").filter(|p|!p.is_empty()).map(str::to_string).collect();
         if let Some(first)=parts.first().cloned() {
-            if let Some(alias)=self.cpp_namespace_alias(&r.file_path,&first)? {parts.splice(0..1,alias.split("::").map(str::to_string));}
+            if let Some(alias)=self.cpp_namespace_alias(&r.file_path,&first,r.line)? {parts.splice(0..1,alias.split("::").filter(|p|!p.is_empty()).map(str::to_string));}
         }
         let Some(name)=parts.last() else {return Ok(None)};
         let candidates=self.nodes_by_name(name)?;
@@ -172,4 +251,54 @@ impl KernelResolver {
         };
         Ok(best.map(|node|KCand{node,confidence:0.8,resolved_by:"qualified-name"}))
     }
+}
+
+/// `namespace name = target;` at the start of a line (`target` keeps a leading `::`).
+fn namespace_alias_pattern() -> Rc<Regex> {
+    re!(r"(?m)^\s*namespace\s+(\w+)\s*=\s*((?:::)?[\w:]+)\s*;")
+}
+
+/// The namespace aliases `text` (comments blanked) declares, in order: name, target, line, and
+/// for one a function or other block declares, the last line of that block, where it stops
+/// applying. One a namespace's body or `extern "C"` declares is the file's.
+fn cpp_namespace_alias_declarations(text: &str) -> Vec<(String, String, i64, Option<i64>)> {
+    let found: Vec<(usize, String, String)> = namespace_alias_pattern().captures_iter(text).filter_map(|m| Some((m.get(1)?.start(), m[1].to_string(), m[2].to_string()))).collect();
+    let bytes = text.as_bytes();
+    let mut out: Vec<(String, String, i64, Option<i64>)> = Vec::new();
+    // Each open block: whether it is a namespace's (or `extern "C"`'s).
+    let mut blocks: Vec<bool> = Vec::new();
+    // Aliases a block declares, with how many blocks were open around them.
+    let mut pending: Vec<(usize, usize)> = Vec::new();
+    let (mut next, mut line, mut statement, mut i) = (0usize, 1i64, 0usize, 0usize);
+    while i < bytes.len() {
+        while next < found.len() && found[next].0 <= i {
+            let (_, name, target) = &found[next];
+            out.push((name.clone(), target.clone(), line, None));
+            if blocks.iter().any(|namespace| !namespace) { pending.push((out.len() - 1, blocks.len())); }
+            next += 1;
+        }
+        match bytes[i] {
+            b'\n' => line += 1,
+            quote @ (b'"' | b'\'') => {
+                let mut j = i + 1;
+                while j < bytes.len() && bytes[j] != quote && bytes[j] != b'\n' { j += if bytes[j] == b'\\' { 2 } else { 1 }; }
+                i = j.min(bytes.len() - 1);
+                if bytes[i] == b'\n' { continue; }
+            }
+            b'{' => {
+                blocks.push(re!(r#"(?:\bnamespace\b[^;{}]*|\bextern\s*"[^"]*"\s*)$"#).is_match(&text[statement..i]));
+                statement = i + 1;
+            }
+            b'}' => {
+                blocks.pop();
+                pending.retain(|&(at, depth)| if depth > blocks.len() { out[at].3 = Some(line); false } else { true });
+                statement = i + 1;
+            }
+            b';' => statement = i + 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    for (at, _) in pending { out[at].3 = Some(line); }
+    out
 }

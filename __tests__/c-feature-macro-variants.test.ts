@@ -184,3 +184,129 @@ describe('a C call past a definition only a flag nothing sets compiles', () => {
     expect(calls('client_version')).toEqual(['include/api.h:4']);
   });
 });
+
+/**
+ * Where a flag counts as set: an empty build file still bounds a component, a
+ * `#define` in a comment or a raw string sets nothing, and a nested component's
+ * `#define` does not set the flag for the component around it.
+ */
+describe('a C flag set only in a comment, a nested component or beyond an empty build file', () => {
+  const FILES: Record<string, string> = {
+    'lib/CMakeLists.txt': lines(
+      'add_library(lib other.c)',
+    ),
+    'lib/other.c': lines(
+      '#define USE_FAST 1',
+      'int other(void) { return 0; }',
+    ),
+    'lib/sub/CMakeLists.txt': '',
+    'lib/sub/f.h': lines(
+      '#ifdef USE_FAST',
+      'static inline int f(void) { return 1; }',
+      '#else',
+      'int f(void);',
+      '#endif',
+    ),
+    'lib/sub/f.c': lines(
+      'int f(void) { return 0; }',
+    ),
+    'lib/sub/use.c': lines(
+      '#include "f.h"',
+      'int g(void) { return f(); }',
+    ),
+    'doc/CMakeLists.txt': lines(
+      'add_library(doc f.c)',
+    ),
+    'doc/notes.c': lines(
+      '/*',
+      '#define USE_NOTE 1',
+      '*/',
+      'int notes(void) { return 0; }',
+    ),
+    'doc/raw.cc': lines(
+      'const char* text = R"(',
+      '#define USE_RAW 1',
+      ')";',
+    ),
+    'doc/f.h': lines(
+      '#ifdef USE_NOTE',
+      'static inline int nt(void) { return 1; }',
+      '#else',
+      'int nt(void);',
+      '#endif',
+      '#ifdef USE_RAW',
+      'static inline int rw(void) { return 1; }',
+      '#else',
+      'int rw(void);',
+      '#endif',
+    ),
+    'doc/f.c': lines(
+      'int nt(void) { return 0; }',
+      'int rw(void) { return 0; }',
+    ),
+    'doc/use.c': lines(
+      '#include "f.h"',
+      'int note_use(void) { return nt(); }',
+      'int raw_use(void) { return rw(); }',
+    ),
+    'outer/CMakeLists.txt': lines(
+      'add_library(outer f.c)',
+    ),
+    'outer/plugin/CMakeLists.txt': lines(
+      'add_library(plugin p.c)',
+    ),
+    'outer/plugin/p.c': lines(
+      '#define USE_PLUGIN 1',
+      'int p(void) { return 0; }',
+    ),
+    'outer/f.h': lines(
+      '#ifdef USE_PLUGIN',
+      'static inline int nf(void) { return 1; }',
+      '#else',
+      'int nf(void);',
+      '#endif',
+    ),
+    'outer/f.c': lines(
+      'int nf(void) { return 0; }',
+    ),
+    'outer/use.c': lines(
+      '#include "f.h"',
+      'int ng(void) { return nf(); }',
+    ),
+  };
+
+  let root: string;
+  let cg: CodeGraph;
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-c-feature-components-'));
+    for (const [file, text] of Object.entries(FILES)) {
+      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+      fs.writeFileSync(path.join(root, file), text);
+    }
+    cg = await CodeGraph.init(root, { index: true });
+  }, 120_000);
+
+  afterAll(() => {
+    cg?.close();
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** What a function or method calls, as `qualifiedName@file:line`. */
+  const callees = (caller: string): string[] => {
+    const fn = [...cg.getNodesByKind('function'), ...cg.getNodesByKind('method')].find((n) => n.qualifiedName === caller);
+    expect(fn, caller).toBeDefined();
+    return cg.getCallees(fn!.id).filter((c) => c.edge.kind === 'calls').map((c) => `${c.node.qualifiedName}@${c.node.filePath}:${c.node.startLine}`).sort();
+  };
+
+  it('an empty build file bounds a component', () => {
+    expect(callees('g')).toEqual(['f@lib/sub/f.c:1']);
+  });
+  it('a `#define` in a comment or a raw string defines nothing', () => {
+    expect(callees('note_use')).toEqual(['nt@doc/f.c:1']);
+    expect(callees('raw_use')).toEqual(['rw@doc/f.c:2']);
+  });
+  it("a nested component's `#define` is not the outer component's", () => {
+    expect(callees('ng')).toEqual(['nf@outer/f.c:1']);
+  });
+});

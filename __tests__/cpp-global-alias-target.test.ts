@@ -11,7 +11,7 @@
  * `arena_.Fuse(other.arena_)` fell back to the type's last name, landing on
  * the calling method `hpb::Arena::Fuse`.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -212,5 +212,70 @@ describe('other C++ names written from the global scope', () => {
     } finally {
       cg.close();
     }
+  });
+});
+
+/**
+ * A namespace alias applies where C++ declares it: from its declaration on, and
+ * only inside the function that declares it. An alias of `::lib` names the global
+ * `lib`, not a `lib` nested in the namespace around the code.
+ */
+describe('a C++ namespace alias applies where it is declared', () => {
+  const FILES: Record<string, string> = {
+    'lib.h': lines(
+      'namespace lib { struct Type { void Run() {} }; }',
+    ),
+    'a.cc': lines(
+      '#include "lib.h"',
+      'void Setup() {',
+      '  namespace x = lib;',
+      '}',
+      'void UseLocal(x::Type t) { t.Run(); }',
+      'void UseBefore(y::Type t) { t.Run(); }',
+      'namespace y = lib;',
+      'namespace z = lib;',
+      'void UseAfter(z::Type t) { t.Run(); }',
+    ),
+    'scope.h': lines(
+      'namespace glob { struct Type { void Run() {} }; }',
+      'namespace scope {',
+      'namespace glob { struct Type { void Run() {} }; }',
+      'namespace a = ::glob;',
+      'void Use(a::Type t) { t.Run(); }',
+      '}',
+    ),
+  };
+
+  let root: string;
+  let cg: CodeGraph;
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-cpp-alias-scope-'));
+    for (const [file, text] of Object.entries(FILES)) {
+      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+      fs.writeFileSync(path.join(root, file), text);
+    }
+    cg = await CodeGraph.init(root, { index: true });
+  }, 120_000);
+
+  afterAll(() => {
+    cg?.close();
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** What a function or method calls, as `qualifiedName@file:line`. */
+  const callees = (caller: string): string[] => {
+    const fn = [...cg.getNodesByKind('function'), ...cg.getNodesByKind('method')].find((n) => n.qualifiedName === caller);
+    expect(fn, caller).toBeDefined();
+    return cg.getCallees(fn!.id).filter((c) => c.edge.kind === 'calls').map((c) => `${c.node.qualifiedName}@${c.node.filePath}:${c.node.startLine}`).sort();
+  };
+
+  it('not outside the function that declares it, nor before its declaration', () => {
+    expect(callees('UseLocal')).toEqual([]);
+    expect(callees('UseBefore')).toEqual([]);
+    expect(callees('UseAfter')).toEqual(['lib::Type::Run@lib.h:1']);
+  });
+  it('an alias of `::glob` names the global namespace', () => {
+    expect(callees('scope::Use')).toEqual(['glob::Type::Run@scope.h:1']);
   });
 });

@@ -127,3 +127,62 @@ describe("a C call reaches the function its file sees, not another file's static
     expect(cg.getFileDependencies('src/sort.c')).not.toContain('deps/jemalloc/test/include/test/math.h');
   });
 });
+
+/**
+ * A `static` function another source file defines is visible through an
+ * `#include` of that file only where the include is compiled and written before
+ * the call: not under `#if 0`, and not after the call.
+ */
+describe("a C call sees another source file's static only through an include before it", () => {
+  const FILES: Record<string, string> = {
+    'deps/dict.c': lines(
+      'static unsigned dictHash(const char* k) { return 0; }',
+    ),
+    'inactive.c': lines(
+      '#if 0',
+      '#include "deps/dict.c"',
+      '#endif',
+      'unsigned h1(void) { return dictHash("a"); }',
+    ),
+    'later.c': lines(
+      'unsigned h2(void) { return dictHash("a"); }',
+      '#include "deps/dict.c"',
+    ),
+    'active.c': lines(
+      '#include "deps/dict.c"',
+      'unsigned h3(void) { return dictHash("a"); }',
+    ),
+  };
+
+  let root: string;
+  let cg: CodeGraph;
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-c-static-include-order-'));
+    for (const [file, text] of Object.entries(FILES)) {
+      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+      fs.writeFileSync(path.join(root, file), text);
+    }
+    cg = await CodeGraph.init(root, { index: true });
+  }, 120_000);
+
+  afterAll(() => {
+    cg?.close();
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** What a function or method calls, as `qualifiedName@file:line`. */
+  const callees = (caller: string): string[] => {
+    const fn = [...cg.getNodesByKind('function'), ...cg.getNodesByKind('method')].find((n) => n.qualifiedName === caller);
+    expect(fn, caller).toBeDefined();
+    return cg.getCallees(fn!.id).filter((c) => c.edge.kind === 'calls').map((c) => `${c.node.qualifiedName}@${c.node.filePath}:${c.node.startLine}`).sort();
+  };
+
+  it('not through an include under `#if 0` or after the call', () => {
+    expect(callees('h1')).toEqual([]);
+    expect(callees('h2')).toEqual([]);
+  });
+  it('through an include before the call', () => {
+    expect(callees('h3')).toEqual(['dictHash@deps/dict.c:1']);
+  });
+});

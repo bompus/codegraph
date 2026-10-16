@@ -66,15 +66,22 @@ pub(super) fn cpp_type_category(ty: &str) -> CppTypeCategory {
     if STRING_TYPES.contains(&last.as_str()) { String } else { Class }
 }
 
-/// A C++ parameter declaration's type: without its default argument and its name.
-/// An array type (`Char[]`) as the pointer to its element an argument of it decays to (`Char*`).
+/// An array type (`Char[]`) as the pointer to its element an argument of it decays to (`Char*`);
+/// a multidimensional one (`int[][]`) as the pointer to its first row (`int[]*`).
 fn cpp_array_as_pointer(text: String) -> String {
     match super::cpp_range_for::cpp_array_split(&text) {
-        Some((base, dimensions)) if dimensions > 0 => format!("{base}*"),
+        Some((base, dimensions)) if dimensions > 0 => format!("{base}{}*", "[]".repeat(dimensions - 1)),
         _ => text,
     }
 }
 
+/// Whether the C++ type `ty` is a pointer to an array: an argument's `int[]*`, a parameter's
+/// `int (*rows)[4]` or `int rows[][4]`.
+fn cpp_pointer_to_array(ty: &str) -> bool {
+    re!(r"\[\s*\]\s*\*|\(\s*\*[^()]*\)\s*\[|\]\s*\[").is_match(ty)
+}
+
+/// A C++ parameter declaration's type: without its default argument and its name.
 pub(super) fn cpp_parameter_type(param: &str) -> String {
     let mut text = param;
     let mut depth = 0i32;
@@ -140,13 +147,21 @@ impl KernelResolver {
         let tied: Vec<_> = overloads.iter().zip(&fits).filter(|(_, f)| **f == top).map(|(n, _)| n.clone()).collect();
         if tied.len() == 1 || args.is_empty() { return Ok(tied[0].clone()); }
         let first = tied[0].clone();
-        Ok(self.cpp_argument_type_choice(tied, name, r)?.unwrap_or(first))
+        Ok(self.cpp_argument_type_ranking(tied, name, r)?.map_or(first, |(choice, _)| choice))
     }
 
     /// Of overloads a call's arguments fit alike by count (in preference order), the one the types
-    /// the arguments have where the call reads them fit best; the first of those that fit best
-    /// alike. None when no argument's type can be read, or every overload fits the types alike.
+    /// the arguments have where the call reads them fit best. None when no argument's type can be
+    /// read, or several fit the types best alike (however many fit them worse) and no const twin
+    /// tells them apart: `f(short)` beside `f(long)`, `f(int)` and `f(char)` is none of them.
     pub(super) fn cpp_argument_type_choice(&mut self, tied: Vec<Arc<KNode>>, name: &str, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        Ok(self.cpp_argument_type_ranking(tied, name, r)?.and_then(|(choice, decided)| decided.then_some(choice)))
+    }
+
+    /// `cpp_argument_type_choice`'s ranking: the first of the overloads the argument types fit
+    /// best, or its const twin, and whether it alone fits them best. None when no argument's type
+    /// can be read.
+    fn cpp_argument_type_ranking(&mut self, tied: Vec<Arc<KNode>>, name: &str, r: &ResolveRefIn) -> Res<Option<(Arc<KNode>, bool)>> {
         let Some(types) = self.cpp_call_argument_types(name, r)? else { return Ok(None) };
         if types.iter().all(Option::is_none) { return Ok(None); }
         let mut fits = Vec::with_capacity(tied.len());
@@ -155,10 +170,11 @@ impl KernelResolver {
         let at = fits.iter().position(|f| *f == top).unwrap_or(0);
         let best = tied[at].clone();
         let others: Vec<_> = tied.iter().zip(&fits).enumerate().filter(|(i, (_, f))| **f == top && *i != at).map(|(_, (n, _))| n.clone()).collect();
-        // Fit alike by type: decided only when a const twin is.
-        let alike = others.len() + 1 == tied.len();
+        // Several fit the types best: decided only when a const twin is.
+        let alone = others.is_empty();
         let choice = self.cpp_const_twin_choice(best.clone(), others, &types, r);
-        Ok((!alike || choice.id != best.id || at != 0).then_some(choice))
+        let decided = alone || choice.id != best.id;
+        Ok(Some((choice, decided)))
     }
 
     /// The C++ function a call of `chosen`'s name reaches among `candidates` (cppFunctionOverload,
@@ -297,10 +313,13 @@ impl KernelResolver {
     /// `DynamicCastMessage<T>(*msg)` takes a reference, and rocksdb's `db_->Put(opts, key, ts,
     /// value)` on a `char key[]` no `ColumnFamilyHandle*`. A pointer or reference to a non-const
     /// type never takes a const object, nor a reference a value a call returns (`lvalue` false).
-    /// None of that holds for an argument of a template parameter's type (`dependent`), and the
-    /// pointer and `const` rules not for a parameter whose type the function's own template
-    /// parameter is (`deduced`). (Of two overloads alike but for a `const`, which one a non-const
-    /// object takes is `cpp_const_twin_choice`'s.)
+    /// An object of the parameter's own type that a name or dereference reads (`lvalue`) never
+    /// binds an rvalue reference: `Foo x; Take(x)` is `Take(const Foo&)`, not `Take(Foo&&)`; an
+    /// `int` converted to a `Value` is a temporary, which does. None of that holds for an argument of a
+    /// template parameter's type (`dependent`), and the pointer, `const` and rvalue rules not for a
+    /// parameter whose type the function's own template parameter is (`deduced`). (Of two
+    /// overloads alike but for a `const`, which one a non-const object takes is
+    /// `cpp_const_twin_choice`'s.)
     fn cpp_written_type_fit(&mut self, argument: &str, param: &str, category: CppTypeCategory, lvalue: Option<bool>, dependent: bool, deduced: bool) -> Res<i64> {
         use CppTypeCategory::*;
         let fit = self.cpp_unqualified_type_fit(argument, param, category)?;
@@ -309,6 +328,10 @@ impl KernelResolver {
         if category == Pointer && argument_category == Class { return Ok(-3); }
         if !deduced && category == Pointer && argument_category == CString && !re!(r"\bvoid\b").is_match(param) { return Ok(-3); }
         if category == CString && argument_category == Pointer { return Ok(-3); }
+        // A pointer to an array (`int a[3][4]` decayed) is no pointer to its element, nor the other
+        // way round; `void*` takes either.
+        if !deduced && matches!(category, Pointer | CString) && cpp_pointer_to_array(argument) != cpp_pointer_to_array(param) && !re!(r"\bvoid\b").is_match(param) { return Ok(-3); }
+        if !deduced && lvalue == Some(true) && fit == 3 && re!(r"&&\s*$").is_match(&strip_template_arguments(param)) { return Ok(-3); }
         if cpp_refers_to_const(param) != Some(false) { return Ok(fit); }
         if !deduced && cpp_argument_const(argument, param) == Some(true) { return Ok(-3); }
         Ok(if lvalue == Some(false) && !strip_template_arguments(param).contains('*') { -3 } else { fit })

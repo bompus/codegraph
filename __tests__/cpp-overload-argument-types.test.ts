@@ -10,7 +10,7 @@
  * or `nullptr` literal, a name the calling function declares (or its
  * address), or an expression whose type is known.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -511,5 +511,49 @@ describe('C++ overloads chosen by argument types', () => {
     } finally {
       cg.close();
     }
+  });
+});
+
+/**
+ * A multidimensional array decays to a pointer to its first row, not to its
+ * element: `int a[3][4]` is an `int (*)[4]`, not an `int*`.
+ */
+describe('a C++ multidimensional array argument', () => {
+  const FILES: Record<string, string> = {
+    'a.cc': lines(
+      'void f(int* p) {}',
+      'void f(int (*p)[4]) {}',
+      'void TwoDim() { int a[3][4]; f(a); }',
+      'void OneDim() { int b[3]; f(b); }',
+    ),
+  };
+
+  let root: string;
+  let cg: CodeGraph;
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-cpp-multidim-array-'));
+    for (const [file, text] of Object.entries(FILES)) {
+      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+      fs.writeFileSync(path.join(root, file), text);
+    }
+    cg = await CodeGraph.init(root, { index: true });
+  }, 120_000);
+
+  afterAll(() => {
+    cg?.close();
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** What a function or method calls, as `qualifiedName@file:line`. */
+  const callees = (caller: string): string[] => {
+    const fn = [...cg.getNodesByKind('function'), ...cg.getNodesByKind('method')].find((n) => n.qualifiedName === caller);
+    expect(fn, caller).toBeDefined();
+    return cg.getCallees(fn!.id).filter((c) => c.edge.kind === 'calls').map((c) => `${c.node.qualifiedName}@${c.node.filePath}:${c.node.startLine}`).sort();
+  };
+
+  it('a two-dimensional array takes the pointer to its row', () => {
+    expect(callees('TwoDim')).toEqual(['f@a.cc:2']);
+    expect(callees('OneDim')).toEqual(['f@a.cc:1']);
   });
 });

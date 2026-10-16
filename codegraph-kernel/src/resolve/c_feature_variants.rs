@@ -160,15 +160,18 @@ impl KernelResolver {
         text
     }
 
-    /// The nearest directory at or above `dir` with a build file, else the project root.
+    /// The nearest directory at or above `dir` with a build file, else the project root. An empty
+    /// build file bounds a component as well.
     fn variant_component(&mut self, dir: &str) -> String {
         if let Some(hit) = self.c_variants.components.get(dir) { return hit.clone(); }
-        let component = if dir.is_empty() || !self.variant_build_text(dir).trim().is_empty() { dir.to_string() } else { self.variant_component(dir_of(dir)) };
+        let component = if dir.is_empty() || BUILD_FILES.iter().any(|name| self.file_exists(&format!("{dir}/{name}"))) { dir.to_string() } else { self.variant_component(dir_of(dir)) };
         self.c_variants.components.insert(dir.to_string(), component.clone());
         component
     }
 
-    /// Does a C or C++ file under `component` `#define` `name`? Read only from files whose bytes hold the name.
+    /// Does a C or C++ file of `component` `#define` `name`? Read only from files whose bytes hold
+    /// the name; a `#define` in a comment or raw string is none, and a file of a component nested
+    /// inside it (under a directory with a build file of its own) is that component's.
     fn variant_defined_in(&mut self, name: &str, component: &str) -> bool {
         let key = (name.to_string(), component.to_string());
         if let Some(&hit) = self.c_variants.defines.get(&key) { return hit; }
@@ -187,7 +190,9 @@ impl KernelResolver {
         let prefix = if component.is_empty() { String::new() } else { format!("{component}/") };
         let defined = shared_regex(&format!(r"(?m)^[ \t]*#[ \t]*define[ \t]+{}\b", regex::escape(name))).is_ok_and(|define| {
             files.iter().any(|file| file.starts_with(&prefix)
-                && self.read_file_uncached(file).is_some_and(|s| s.text().contains(name) && define.is_match(s.text())))
+                && self.read_file_uncached(file).is_some_and(|s| s.text().contains(name) && define.is_match(s.text())
+                    && directive_lines(s.text()).iter().any(|line| define.is_match(line)))
+                && self.variant_component(dir_of(file)) == component)
         });
         self.c_variants.defines.insert(key, defined);
         defined

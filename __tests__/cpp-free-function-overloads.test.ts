@@ -255,3 +255,60 @@ describe('a C++ call picks the free-function overload its arguments fit', () => 
     expect(calls('WarnCode')).toEqual(['lg::Warn@log.cc:4']);
   });
 });
+
+/**
+ * Overloads the argument's type fits equally well are a tie even when another
+ * overload fits it worse: `f(short)` beside `f(long)`, `f(int)` and `f(char)`
+ * is not `f(long)` because it is declared first. The overloads sit in a
+ * namespace a macro opens, where only the qualified-name step can place the
+ * call; in a namespace written out, the name step picks among overloads the
+ * arguments fit alike by where they are, as above.
+ */
+describe('a C++ call whose best-fitting overloads tie', () => {
+  const FILES: Record<string, string> = {
+    'real.h': lines(
+      '#define REAL_BEGIN namespace real {',
+      '#define REAL_END }',
+      'REAL_BEGIN',
+      'void f(long v) {}',
+      'void f(int v) {}',
+      'void f(char v) {}',
+      'REAL_END',
+    ),
+    'use.cc': lines(
+      '#include "real.h"',
+      'namespace r = real;',
+      'void Direct() { short s = 1; real::f(s); }',
+      'void ThroughAlias() { short s = 1; r::f(s); }',
+    ),
+  };
+
+  let root: string;
+  let cg: CodeGraph;
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-cpp-overload-top-tie-'));
+    for (const [file, text] of Object.entries(FILES)) {
+      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+      fs.writeFileSync(path.join(root, file), text);
+    }
+    cg = await CodeGraph.init(root, { index: true });
+  }, 120_000);
+
+  afterAll(() => {
+    cg?.close();
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** What a function or method calls, as `qualifiedName@file:line`. */
+  const callees = (caller: string): string[] => {
+    const fn = [...cg.getNodesByKind('function'), ...cg.getNodesByKind('method')].find((n) => n.qualifiedName === caller);
+    expect(fn, caller).toBeDefined();
+    return cg.getCallees(fn!.id).filter((c) => c.edge.kind === 'calls').map((c) => `${c.node.qualifiedName}@${c.node.filePath}:${c.node.startLine}`).sort();
+  };
+
+  it('links none of the tied overloads', () => {
+    expect(callees('Direct')).toEqual([]);
+    expect(callees('ThroughAlias')).toEqual([]);
+  });
+});

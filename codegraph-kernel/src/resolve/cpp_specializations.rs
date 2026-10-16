@@ -17,17 +17,29 @@ impl KernelResolver {
     ///  - a call that writes none, or another reference, reaches a specialization only when there
     ///    is nothing else.
     ///
-    /// The candidates as they are when none is a specialization.
+    /// The candidates as they are when none is a specialization. Each template's specializations
+    /// choose among the candidates of its own qualified name only: one of `a::f` leaves a call's
+    /// `b::f` in place, for the call's scope to choose between them.
     pub(super) fn cpp_specialization_pool(&mut self, candidates: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Vec<Arc<KNode>> {
         if r.language != "cpp" { return candidates; }
         let written: Vec<Option<Rc<Vec<String>>>> = candidates.iter().map(|n| self.cpp_specialization_arguments(n)).collect();
         if written.iter().all(Option::is_none) { return candidates; }
-        let others: Vec<Arc<KNode>> = candidates.iter().zip(&written).filter(|(_, w)| w.is_none()).map(|(n, _)| n.clone()).collect();
-        let Some(args) = self.cpp_call_template_arguments(r) else { return if others.is_empty() { candidates } else { others } };
-        let named: Vec<Arc<KNode>> = candidates.iter().zip(&written)
-            .filter(|(_, w)| w.as_ref().is_some_and(|w| cpp_template_arguments_match(w, &args)))
-            .map(|(n, _)| n.clone()).collect();
-        if named.is_empty() { others } else { named }
+        let args = self.cpp_call_template_arguments(r);
+        let mut families: Vec<&str> = Vec::new();
+        for n in &candidates { if !families.contains(&n.qualified_name.as_str()) { families.push(&n.qualified_name); } }
+        let mut kept: HashSet<usize> = HashSet::new();
+        for family in families {
+            let members: Vec<usize> = (0..candidates.len()).filter(|&i| candidates[i].qualified_name == family).collect();
+            let others: Vec<usize> = members.iter().copied().filter(|&i| written[i].is_none()).collect();
+            if others.len() == members.len() { kept.extend(members); continue; }
+            let Some(args) = &args else {
+                kept.extend(if others.is_empty() { members } else { others });
+                continue;
+            };
+            let named: Vec<usize> = members.iter().copied().filter(|&i| written[i].as_ref().is_some_and(|w| cpp_template_arguments_match(w, args))).collect();
+            kept.extend(if named.is_empty() { others } else { named });
+        }
+        candidates.into_iter().enumerate().filter(|(i, _)| kept.contains(i)).map(|(_, n)| n).collect()
     }
 
     /// The template arguments the C++ function or method `n` is an explicit specialization for,
@@ -72,7 +84,8 @@ impl KernelResolver {
 
 /// The template arguments `text` writes right after `name`, the first time from `from` on it is
 /// written as a word of its own, as they compare (cpp_template_argument_key). None when it writes
-/// none there, or `<>`.
+/// none there, or `<>`. A receiver or qualifier of the same name is passed over: in
+/// `foo.foo<long>()` the arguments follow the second `foo`.
 fn cpp_template_arguments_after(text: &str, name: &str, from: usize) -> Option<Vec<String>> {
     if name.is_empty() { return None; }
     let bytes = text.as_bytes();
@@ -80,7 +93,8 @@ fn cpp_template_arguments_after(text: &str, name: &str, from: usize) -> Option<V
     let mut at = text.get(from..).and_then(|rest| rest.find(name)).map(|i| i + from);
     while let Some(start) = at {
         let open = start + name.len();
-        if !word(start.checked_sub(1).and_then(|i| bytes.get(i))) && !word(bytes.get(open)) {
+        let receiver = re!(r"^\s*(?:\.|->|::)").is_match(text.get(open..).unwrap_or(""));
+        if !word(start.checked_sub(1).and_then(|i| bytes.get(i))) && !word(bytes.get(open)) && !receiver {
             let end = if bytes.get(open) == Some(&b'<') { cpp_template_arguments_end(bytes, open) } else { None };
             let args: Vec<String> = end.map(|end| split_cpp_top_level(&text[open + 1..end]).iter().map(|a| cpp_template_argument_key(a)).collect()).unwrap_or_default();
             return (!args.is_empty()).then_some(args);
