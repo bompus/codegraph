@@ -20,6 +20,9 @@ on:
       - '__tests__/status-index-health.test.ts'
       - '__tests__/fixtures/older-daemon.cjs'
       - '.github/workflows/daemon-lifecycle.yml'
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
