@@ -63,11 +63,14 @@ it('keeps an inner free call separate from an outer same-named method', async ()
   const targets=graph.getOutgoingEdgesFrom(graph.getNodesInFile('use.cpp').map(n=>n.id)).filter(e=>e.kind==='calls').map(e=>graph!.getNode(e.target)!.qualifiedName).sort();
   expect(targets).toEqual(['Json::dump','dump']);
 });
-it('refuses an ambiguous C++ method overload set on a subscript result', async () => {
+it('picks the C++ method overload its argument count fits on a subscript result', async () => {
   root=fs.mkdtempSync(path.join(os.tmpdir(),'cg-cpp-alias-'));
   fs.writeFileSync(path.join(root,'use.cpp'),'class Json {public: using reference=Json&; reference operator[](int){return *this;} void dump(){} void dump(int){} };\nvoid run(){Json j; j[0].dump(); j[0].dump(1);}\n');
   graph=await CodeGraph.init(root,{index:true});
-  expect(graph.getOutgoingEdgesFrom(graph.getNodesInFile('use.cpp').map(n=>n.id)).filter(e=>e.kind==='calls')).toEqual([]);
+  // The subscript reads `Json&` (upstream #2602), so each call reaches the overload of its arity:
+  // `dump()` at column 84, `dump(int)` at column 98.
+  const targets=graph.getOutgoingEdgesFrom(graph.getNodesInFile('use.cpp').map(n=>n.id)).filter(e=>e.kind==='calls').map(e=>`${graph!.getNode(e.target)!.qualifiedName}:${graph!.getNode(e.target)!.startColumn}`).sort();
+  expect(targets).toEqual(['Json::dump:84','Json::dump:98']);
 });
 it('does not resolve an unsubstituted generic field to a same-named global class', async () => {
   root=fs.mkdtempSync(path.join(os.tmpdir(),'cg-cpp-alias-'));

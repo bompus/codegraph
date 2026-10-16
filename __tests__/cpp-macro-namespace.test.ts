@@ -28,6 +28,7 @@ OVERLOAD_END
 `,
     'overloads.cc': `#include "overloads.h"
 int overload_call() { return overloaded::choose(1); }
+int overload_unread(int n) { return overloaded::choose(mystery(n)); }
 `,
     'alpha.h': `#define PROJECT_BEGIN namespace alpha {
 #define PROJECT_END }
@@ -104,9 +105,16 @@ afterAll(() => {
 });
 
 describe('C++ namespaces opened by a macro', () => {
-  it('declines a visible overload set without argument-type evidence', () => {
-    const ids = cg.getNodesInFile('overloads.cc').map(n => n.id);
-    expect(cg.getOutgoingEdgesFrom(ids).filter(e => e.kind === 'calls')).toEqual([]);
+  it('picks the visible overload its arguments fit, and declines one they leave undecided', () => {
+    // A literal `1` fits `choose(int)`, never `choose(const char*)` (upstream #2612's argument
+    // types); an argument whose type can't be read leaves the overload set undecided.
+    const calls = (fn: string) => {
+      const caller = cg.getNodesByKind('function').find(n => n.name === fn)!;
+      return cg.getOutgoingEdgesFrom([caller.id]).filter(e => e.kind === 'calls')
+        .map(e => `${cg.getNode(e.target)!.filePath}:${cg.getNode(e.target)!.startLine}`);
+    };
+    expect(calls('overload_call')).toEqual(['overloads.h:4']);
+    expect(calls('overload_unread')).toEqual([]);
   });
   it('uses the namespace macro definition visible in each translation unit', () => {
     for (const owner of ['alpha', 'beta']) {
