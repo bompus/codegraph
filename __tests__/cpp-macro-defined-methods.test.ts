@@ -323,6 +323,27 @@ describe('a C++ method a macro defines', () => {
     }
   });
 
+  it('keeps a default argument its class declares when a macro defines the method inside a namespace', async () => {
+    const cg = await indexed({
+      'src/widget.h': lines(
+        'namespace shop {',
+        'class Widget {',
+        ' public:',
+        '  int Get(int index = 0) const;',
+        '};',
+        '#define DEFINE_GET(C) inline int C::Get(int index) const { return index; }',
+        'DEFINE_GET(Widget)',
+        '}',
+      ),
+      'src/use.cpp': lines('#include "widget.h"', 'int Use(shop::Widget& w) {', '  return w.Get();', '}'),
+    });
+    try {
+      expect(calls(cg, 'Use')).toEqual(['shop::Widget::Get@src/widget.h:7']);
+    } finally {
+      cg.close();
+    }
+  });
+
   it('is minted alike whether the kernel or the wasm extractor reads the file', () => {
     const minted = (kernel: boolean): string[] => {
       const saved = process.env.CODEGRAPH_KERNEL;

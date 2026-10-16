@@ -439,7 +439,11 @@ impl KernelResolver {
             while let Some(node) = queue.pop() {
                 if node.kind() == "function_declarator" && cpp_function_identity(node, &source).is_some_and(|(name, _)| name == n.name) {
                     let params = node.child_by_field_name("parameters").filter(|p| cpp_parameter_shape_complete(*p))?;
-                    return Some(cpp_parameters(node, params, &source, &n.file_path, &[], &[]));
+                    let mut facts = cpp_parameters(node, params, &source, &n.file_path, &[], &[]);
+                    // The expansion is parsed alone, so it knows only the qualifiers it writes; the
+                    // extractor composed the enclosing namespaces into the qualified name.
+                    facts.owner = n.qualified_name.rsplit_once("::").map(|(owner, _)| owner.split("::").map(str::to_string).collect()).unwrap_or_default();
+                    return Some(facts);
                 }
                 queue.extend(super::iteration::named_children(node));
             }
