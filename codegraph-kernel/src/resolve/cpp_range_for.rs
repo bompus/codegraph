@@ -618,8 +618,13 @@ impl KernelResolver {
                     "field_expression" => {
                         let Some((object, method, template_arguments)) = self.cpp_member_object_of(function, source, r, depth)? else { return Ok(None) };
                         if template_arguments.is_none() {
-                            // `logs_.begin()`, `map.find(key)`: the iterator a library container hands out.
-                            if let Some(iterator) = cpp_library_iterator_of(&object, &method) { return Ok(Some(iterator)); }
+                            // `logs_.begin()`, `map.find(key)`: the iterator a library container hands
+                            // out. (A container a name declares `const` keeps it: its declared type
+                            // leaves the `const` out.)
+                            let constant = function.child_by_field_name("argument").filter(|a| a.kind() == "identifier")
+                                .is_some_and(|name| super::cpp_receivers::cpp_declared_const(name, source));
+                            let container = if constant { CppWritten { text: format!("const {}", object.text), site: object.site.clone() } } else { object.clone() };
+                            if let Some(iterator) = cpp_library_iterator_of(&container, &method) { return Ok(Some(iterator)); }
                             // `ws.front()`, `m.at(key)`, `p.get()`, `s.value()`: what it holds.
                             if let Some(element) = self.cpp_library_element_of(&object, &method, r)? { return Ok(Some(element)); }
                         }
@@ -725,11 +730,16 @@ impl KernelResolver {
     /// `std::deque<Slice>::const_iterator`, protobuf's `SourceCodeInfo_Location` for
     /// `RepeatedPtrField<SourceCodeInfo_Location>::iterator`. None for any other type, and for an
     /// element a class template's own `begin()` or `operator*` writes with its template parameter
-    /// (googletest's `ParamGenerator<T>::iterator`), which the specialization decides.
+    /// (googletest's `ParamGenerator<T>::iterator`), which the specialization decides. A
+    /// `const_iterator`'s element is const (`const Slice`); a pointer element stays as it is.
     pub(super) fn cpp_iterator_target(&mut self, iterator: CppWritten, r: &ResolveRefIn) -> Res<Option<CppWritten>> {
         let Some(container) = iterator_container(&iterator.text) else { return Ok(None) };
         let Some(element) = self.cpp_range_element_of(CppWritten { text: container, site: iterator.site.clone() }, r, 1)? else { return Ok(None) };
         if element.site.from_node_id != iterator.site.from_node_id && self.cpp_written_template_parameter(&element)? { return Ok(None); }
+        let constant = re!(r"::\s*const_(?:reverse_)?iterator\s*$").is_match(&without_type_keywords(&iterator.text));
+        if constant && !top_level_pointer(&element.text) && !re!(r"^\s*const\b").is_match(&element.text) {
+            return Ok(Some(CppWritten { text: format!("const {}", element.text), site: element.site }));
+        }
         Ok(Some(element))
     }
 
@@ -1008,7 +1018,7 @@ impl KernelResolver {
 /// The iterator the member `member` of a standard library or abseil container of the type `object`
 /// returns, where the container's type is written: `std::deque<LogWriterNumber>::iterator` for
 /// rocksdb's `logs_.begin()`, whose `->` reaches the container's element (`cpp_iterator_target`).
-/// None for any other member or type.
+/// A const container's is its `const_iterator`. None for any other member or type.
 fn cpp_library_iterator_of(object: &CppWritten, member: &str) -> Option<CppWritten> {
     let kind = ITERATOR_MEMBERS.iter().find(|(m, _)| *m == member)?.1;
     if top_level_pointer(&object.text) { return None; }
@@ -1016,6 +1026,8 @@ fn cpp_library_iterator_of(object: &CppWritten, member: &str) -> Option<CppWritt
     let parts = type_segments(&container)?;
     let last = parts.last()?.as_str();
     if parts[0] != "std" && parts[0] != "absl" { return None; }
+    let constant = !kind.starts_with("const_") && re!(r"\bconst\b").is_match(&super::cpp_implicit_this::strip_template_arguments(&object.text));
+    let kind = if constant { format!("const_{kind}") } else { kind.to_string() };
     (LIBRARY_SEQUENCES.contains(&last) || LIBRARY_MAPS.contains(&last)).then(|| CppWritten { text: format!("{container}::{kind}"), site: object.site.clone() })
 }
 

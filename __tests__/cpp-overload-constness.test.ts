@@ -196,7 +196,8 @@ describe("a C++ call picks between const and non-const overloads by its argument
 
 /**
  * More of what an argument's constness and value category decide: an lvalue never
- * binds `Foo&&`, and a `constexpr` pointer is itself const, not what it points at.
+ * binds `Foo&&`; a `constexpr` pointer is itself const, not what it points at; and
+ * an element read through a const container's iterator is const.
  */
 describe('a C++ argument binds a reference by its value category and constness', () => {
   const FILES: Record<string, string> = {
@@ -215,6 +216,10 @@ describe('a C++ argument binds a reference by its value category and constness',
       'void ConstexprPointer() { constexpr Widget* p = &global; Point(p); }',
       'void ConstPointer() { const Widget* p = &global; Point(p); }',
       'void ConstexprObject() { constexpr Widget w{}; Point(&w); }',
+      'void Bind(Foo& f) {}',
+      'void Bind(const Foo& f) {}',
+      'void ConstContainer(const std::vector<Foo>& v) { Bind(*v.begin()); }',
+      'void MutableContainer(std::vector<Foo>& v) { Bind(*v.begin()); }',
     ),
     'b.cc': lines(
       'struct Value { Value(int v) {} };',
@@ -260,5 +265,9 @@ describe('a C++ argument binds a reference by its value category and constness',
     expect(callees('ConstexprPointer')).toEqual(['Point@a.cc:9']);
     expect(callees('ConstPointer')).toEqual(['Point@a.cc:10']);
     expect(callees('ConstexprObject')).toEqual(['Point@a.cc:10']);
+  });
+  it("a const container's element is const", () => {
+    expect(callees('ConstContainer')).toEqual(['Bind@a.cc:16']);
+    expect(callees('MutableContainer')).toEqual(['Bind@a.cc:15']);
   });
 });
