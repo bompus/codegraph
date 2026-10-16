@@ -322,7 +322,10 @@ impl KernelResolver {
                 || !self.is_static_c_function(candidate)?
                 || (matches!(r.language.as_str(), "c" | "cpp")
                     && (self.c_includes(&r.file_path, &candidate.file_path)?
-                        || self.c_sole_includer(candidate, &r.file_path)?));
+                        || self.c_sole_includer(candidate, &r.file_path)?
+                        // Or by any path its include writes: hiredis's async.c includes
+                        // `deps/hiredis/dict.c`.
+                        || self.namespace_visible_files(&r.file_path, &r.language)?.contains(&candidate.file_path)));
             // So is what a source file's unnamed namespace declares, and a type only source files
             // declare, with its members (cpp_translation_unit).
             return Ok(static_seen && !self.cpp_translation_unit_local(candidate, r)?);

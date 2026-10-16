@@ -167,14 +167,23 @@ impl KernelResolver {
     /// pick a function by where it is; protobuf's `ParseWithLimit(limit, data, result)` on an
     /// `int32_t result` is the overload taking an `int32_t&`, not the `int64_t&` one nearer the
     /// call. A function hides a class of its name, so a call is to the function when `chosen` is
-    /// that class. `chosen` itself for anything but a C++ call, or when no function is in sight.
+    /// that class. `chosen` itself for anything but a C or C++ call, or when no function is in sight.
     pub(super) fn cpp_function_overload(&mut self, chosen: Arc<KNode>, candidates: &[Arc<KNode>], r: &ResolveRefIn) -> Res<Arc<KNode>> {
-        if r.language != "cpp" || r.reference_kind != "calls" { return Ok(chosen); }
+        if !matches!(r.language.as_str(), "c" | "cpp") || r.reference_kind != "calls" { return Ok(chosen); }
         let mut overloads = Vec::new();
         for n in candidates {
             if n.kind == "function" && n.qualified_name == chosen.qualified_name && self.is_visible_across_files(n, r)? { overloads.push(n.clone()); }
         }
         if overloads.is_empty() { return Ok(chosen); }
+        // C has no overloads: a C call reaches the function of the name its file sees, its own or
+        // one a header it includes defines, else one with external linkage, the best placed of
+        // them. jemalloc's tests call the `static inline do_arena_create` of the arena_util.h they
+        // include, not a neighbouring test's own `static do_arena_create`.
+        if r.language == "c" {
+            let visible = self.namespace_visible_files(&r.file_path, "c")?;
+            let own: Vec<_> = overloads.iter().filter(|n| n.file_path == r.file_path || visible.contains(&n.file_path)).cloned().collect();
+            return Ok(self.find_best_match(r, if own.is_empty() { &overloads } else { &own }).unwrap_or(chosen));
+        }
         if let Some(at) = overloads.iter().position(|n| n.id == chosen.id) {
             let own = overloads.remove(at);
             overloads.insert(0, own);

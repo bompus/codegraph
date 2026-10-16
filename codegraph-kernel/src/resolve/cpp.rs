@@ -293,7 +293,9 @@ impl KernelResolver {
         } else {
             self.resolve_import_path(spec, file, language)?
         };
-        if target.is_none() {
+        // By the end of its path when nothing else places it (jemalloc's `jemalloc/internal/*.h`),
+        // but a standard header is never the project's: `<math.h>` is not jemalloc's test/math.h.
+        if target.is_none() && !self.is_external_import(spec, language, file) {
             if self.cpp_macros.by_basename.is_none() {
                 let files: Vec<String> = match self.sorted_files() {
                     Some(files) => files.to_vec(),
