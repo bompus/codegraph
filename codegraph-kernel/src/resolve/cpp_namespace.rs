@@ -22,7 +22,9 @@ impl KernelResolver {
             if !re!(r"(?i)\.(?:h|hh|hpp|hxx|inl|ipp|tcc|c|cc|cpp|cxx)$").is_match(file) {continue;}
             let Some(source)=self.read_file(file) else {continue};
             let code=super::awaited::strip_ts_comments(&source.text().replace("\\\r\n"," ").replace("\\\n"," "));
-            for m in re!(r"(?m)^\s*namespace\s+(\w+)\s*=\s*(?:::)?([\w:]+)\s*;").captures_iter(&code) {cache.aliases.entry(file.clone()).or_default().insert(m[1].to_string(),m[2].to_string());}
+            // (Of a file's alternatives for one build or another, `#if … namespace backend = …upb;
+            // #elif … namespace backend = …cpp;`, the first.)
+            for m in re!(r"(?m)^\s*namespace\s+(\w+)\s*=\s*(?:::)?([\w:]+)\s*;").captures_iter(&code) {cache.aliases.entry(file.clone()).or_default().entry(m[1].to_string()).or_insert_with(|| m[2].to_string());}
             for m in re!(r"(?m)^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)(\(\s*([A-Za-z_]\w*)?\s*\))?[ \t]+([^\n]*)$").captures_iter(&code) {
                 let body=m[4].trim();
                 if re!(r"^(?:[A-Za-z_]\w*\s+)*\}(?:\s*\})*\s*;?$").is_match(body) {cache.closers.insert((file.clone(),m[1].to_string()));}
@@ -106,15 +108,39 @@ impl KernelResolver {
         }
         self.cpp_namespaces.includes.insert(file.to_string(),seen.clone());Ok(seen)
     }
+    /// The namespace `name` is an alias of where `file` writes it: `pybind11` for `py` under
+    /// `namespace py = pybind11;`, declared in the file itself, else alike in the files it includes.
+    pub(super) fn cpp_namespace_alias(&mut self,file:&str,name:&str)->Res<Option<String>> {
+        self.prepare_namespace_macros()?;
+        if let Some(local)=self.cpp_namespaces.aliases.get(file).and_then(|a|a.get(name)) {return Ok(Some(local.clone()));}
+        let visible=self.namespace_visible_files(file,"cpp")?;
+        let aliases:HashSet<_>=visible.iter().filter_map(|file|self.cpp_namespaces.aliases.get(file).and_then(|a|a.get(name))).cloned().collect();
+        Ok((aliases.len()==1).then(||aliases.into_iter().next().unwrap()))
+    }
+    /// `qualified` spelled through the name macros `file` sees, when that differs: rocksdb's types
+    /// are `ROCKSDB_NAMESPACE::DB` in the index and `rocksdb::DB` to code that names them, under
+    /// `#define ROCKSDB_NAMESPACE rocksdb`; a tree declaring `namespace rocksdb` itself is named
+    /// `ROCKSDB_NAMESPACE::Cache` the other way round.
+    pub(super) fn cpp_name_macro_spelling(&mut self,file:&str,qualified:&str)->Res<Option<String>> {
+        self.prepare_namespace_macros()?;
+        if self.cpp_namespaces.replacements.is_empty() {return Ok(None);}
+        let visible=self.namespace_visible_files(file,"cpp")?;
+        let spelled:Vec<String>=qualified.split("::").map(|segment| {
+            let forward:HashSet<_>=self.cpp_namespaces.replacements.iter().filter(|((f,name),_)|visible.contains(f) && name==segment).map(|(_,body)|body.clone()).collect();
+            if forward.len()==1 {return forward.into_iter().next().unwrap();}
+            let reverse:HashSet<_>=self.cpp_namespaces.replacements.iter().filter(|((f,_),body)|visible.contains(f) && *body==segment).map(|((_,name),_)|name.clone()).collect();
+            if reverse.len()==1 {reverse.into_iter().next().unwrap()} else {segment.to_string()}
+        }).collect();
+        let spelled=spelled.join("::");
+        Ok((spelled!=qualified).then_some(spelled))
+    }
     pub(super) fn match_cpp_macro_namespaced(&mut self,r:&ResolveRefIn)->Res<Option<KCand>> {
         if !matches!(r.language.as_str(),"c"|"cpp") || !r.reference_name.trim_start_matches("::").contains("::") {return Ok(None);}
         self.prepare_namespace_macros()?;
         let visible=self.namespace_visible_files(&r.file_path,&r.language)?;
         let mut parts:Vec<String>=r.reference_name.split("::").filter(|p|!p.is_empty()).map(str::to_string).collect();
-        if let Some(first)=parts.first() {
-            let local=self.cpp_namespaces.aliases.get(&r.file_path).and_then(|a|a.get(first)).cloned();
-            let aliases:HashSet<_>=visible.iter().filter_map(|file|self.cpp_namespaces.aliases.get(file).and_then(|a|a.get(first))).cloned().collect();
-            if let Some(alias)=local.or_else(||(aliases.len()==1).then(||aliases.into_iter().next().unwrap())) {parts.splice(0..1,alias.split("::").map(str::to_string));}
+        if let Some(first)=parts.first().cloned() {
+            if let Some(alias)=self.cpp_namespace_alias(&r.file_path,&first)? {parts.splice(0..1,alias.split("::").map(str::to_string));}
         }
         let Some(name)=parts.last() else {return Ok(None)};
         let candidates=self.nodes_by_name(name)?;
@@ -128,14 +154,22 @@ impl KernelResolver {
             path.extend(n.qualified_name.split("::").map(str::to_string));
             if path==parts {matches.push(n.clone());}
         }
+        let matches=self.cpp_specialization_pool(matches,r);
         let args = if r.reference_kind=="calls" { self.call_arguments(r,name) } else { None };
-        let mut best=None; let mut best_score=i64::MIN;let mut tied=false;
+        let mut best:Vec<Arc<KNode>>=Vec::new(); let mut best_score=i64::MIN;
         for n in matches {
             if args.as_ref().is_some_and(|args| !self.cpp_overload_compatible(&n,args,r)) {continue;}
             let score=if is_test_path(&n.file_path){-10}else{0} + args.as_ref().map(|args|self.cpp_overload_fit(&n,args,r)).unwrap_or(0);
-            if score>best_score {best_score=score;best=Some(n);tied=false;}else if score==best_score{tied=true;}
+            if score>best_score {best_score=score;best=vec![n];}else if score==best_score{best.push(n);}
         }
-        if tied{return Ok(None);}
+        // Overloads the arguments fit alike by count are told apart by the types they have (fmt's
+        // `write(out, count)` on an `int count`), else the call is left alone.
+        let best=match best.len() {
+            0=>None,
+            1=>best.pop(),
+            _ if args.is_some()=>self.cpp_argument_type_choice(best,name,r)?,
+            _=>None,
+        };
         Ok(best.map(|node|KCand{node,confidence:0.8,resolved_by:"qualified-name"}))
     }
 }

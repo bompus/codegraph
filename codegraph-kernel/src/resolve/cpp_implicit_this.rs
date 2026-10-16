@@ -283,6 +283,7 @@ impl KernelResolver {
             }
             if belongs { own.push(n); }
         }
+        let own = self.cpp_specialization_pool(own, r);
         let holder = if scope.holds { scope.decls.first() } else { None };
         let (inline, rest): (Vec<_>, Vec<_>) = match holder {
             Some(h) => own.into_iter().partition(|n| n.file_path == h.file_path && range_within(n, h)),
@@ -313,17 +314,26 @@ impl KernelResolver {
                     .iter().filter(|n| n.id != inherited.id && n.kind == "method" && c_family(&n.language)).cloned().collect();
                 let mut overloads = vec![inherited];
                 overloads.extend(prefer_call_site_file(siblings, &r.file_path));
+                let overloads = self.cpp_specialization_pool(overloads, r);
+                if overloads.is_empty() { return Ok(Lookup::Missing); }
                 return Ok(Lookup::Found(self.cpp_overload_for(overloads, name, r)?));
             }
         }
         Ok(Lookup::Missing)
     }
 
-    /// C++ class `cls`'s method `name`: its own, else the nearest one of a class it derives from,
-    /// through the base edges every declaration of `cls` has.
+    /// C++ class `cls`'s method `name`: its own (of a member template's explicit specializations,
+    /// the one its template arguments name, cpp_specialization_pool; None when it names none of
+    /// them and they are all `cls` has), else the nearest one of a class it derives from, through
+    /// the base edges every declaration of `cls` has.
     pub(super) fn cpp_method_of(&mut self, cls: &KNode, name: &str, r: &ResolveRefIn, depth: usize, seen: &mut HashSet<String>) -> Res<Option<Arc<KNode>>> {
-        let own: Vec<_> = self.nodes_by_qualified_name(&format!("{}::{name}", cls.qualified_name))?
+        let family: Vec<_> = self.nodes_by_qualified_name(&format!("{}::{name}", cls.qualified_name))?
             .iter().filter(|n| n.kind == "method" && c_family(&n.language)).cloned().collect();
+        let had = !family.is_empty();
+        let own = self.cpp_specialization_pool(family, r);
+        // Specializations of the class's own member template, none the call's: what C++ finds is
+        // the template, which has no body here.
+        if own.is_empty() && had { return Ok(None); }
         if !own.is_empty() {
             // Of its overloads, the one the call's arguments fit; a chained call `inner(…).name(…)`
             // keeps the first, since the arguments at its position are the inner call's.

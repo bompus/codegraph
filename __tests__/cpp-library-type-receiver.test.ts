@@ -233,7 +233,8 @@ describe('a C++ receiver declared as a library type with a lowercase name', () =
     });
     try {
       expect(calls(cg, 'leveldb::DictSize')).toEqual([]);
-      expect(calls(cg, 'leveldb::Drop')).toEqual([]);
+      // A standard container's `value_type` is its element (upstream #2573), so `first` is a Slice.
+      expect(calls(cg, 'leveldb::Drop')).toEqual(['leveldb::Slice::remove_prefix']);
     } finally {
       cg.close();
     }
@@ -291,8 +292,9 @@ describe('a declaration that is not the receiver\'s does not rule a guess out', 
     });
     try {
       expect(calls(cg, 'leveldb::Trim')).toEqual(['leveldb::Slice::remove_prefix']);
-      // The closed block cannot type the new binding; its auto initializer is unproven.
-      expect(calls(cg, 'leveldb::Flush')).toEqual([]);
+      // The closed block's `buf.clear()` is the string's; the `auto` one holds `caches[0]`, an
+      // element of a `Cache*`, which the subscript reads (upstream #2602).
+      expect(calls(cg, 'leveldb::Flush')).toEqual(['leveldb::Cache::reset']);
     } finally {
       cg.close();
     }

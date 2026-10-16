@@ -1234,6 +1234,16 @@ fn is_statement_keyword(text: &str) -> bool {
     matches!(text, "if" | "else" | "while" | "for" | "do" | "switch" | "return" | "catch")
 }
 
+/// cppQualifiedIdName (languages/c-cpp.ts): the name a `qualified_identifier`
+/// ends in, past its scopes. None when the tree lacks one.
+fn cpp_qualified_id_name(qid: Node) -> Option<Node> {
+    let mut name = qid;
+    while name.kind() == "qualified_identifier" {
+        name = name.child_by_field_name("name")?;
+    }
+    Some(name)
+}
+
 /// findDeclaratorQualifiedId (languages/c-cpp.ts:13): BFS for the declarator's
 /// `qualified_identifier`, skipping parameter_list + trailing_return_type so a
 /// qualified PARAMETER type can't be mistaken for the method name.

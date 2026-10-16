@@ -26,6 +26,7 @@ import type { LanguageExtractor, ExtractorContext } from './tree-sitter-types';
 import { EXTRACTORS } from './languages';
 import { stripCppTemplateArgs, isCppConstructorDeclaration, cDeclaratorIdentifier, isClassLikeDefinition } from './languages/c-cpp';
 import { NestedIntervals, scanCppBraceScopes, type CppBraceScopes } from './languages/cpp-brace-scopes';
+import { appendCppMacroMethods } from './languages/cpp-macro-methods';
 import { rustImplTypeName } from './languages/rust';
 import { goAliasTypeNames, goEmbeddedTypeName } from './languages/go';
 import { dartMisparsedGenericCall, dartReceiverOf, isDartTypeName, pushDartTypeRefs } from './languages/dart';
@@ -8634,6 +8635,12 @@ export function extractFromSource(
       // No walker for this language (or the stack guard deferred): the
       // generic extractor over the kernel's serialized tree.
       result = new TreeSitterExtractor(filePath, source, detectedLanguage).extract();
+    }
+    // C++ methods the file's own macros define, read from the original source
+    // after either extractor so both mint them (cpp-macro-methods.ts).
+    if (detectedLanguage === 'cpp') {
+      const preParse = EXTRACTORS.cpp?.preParse;
+      appendCppMacroMethods(result, filePath, source, (text) => (preParse ? preParse(text, filePath) : text));
     }
   }
 

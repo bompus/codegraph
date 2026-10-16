@@ -14,9 +14,9 @@
 use super::*;
 
 /// Three-valued: `None` = depends on an unknown build flag.
-type Truth = Option<bool>;
+pub(super) type Truth = Option<bool>;
 
-fn and(a: Truth, b: Truth) -> Truth {
+pub(super) fn and(a: Truth, b: Truth) -> Truth {
     match (a, b) {
         (Some(false), _) | (_, Some(false)) => Some(false),
         (Some(true), Some(true)) => Some(true),
@@ -24,7 +24,7 @@ fn and(a: Truth, b: Truth) -> Truth {
     }
 }
 
-fn or(a: Truth, b: Truth) -> Truth {
+pub(super) fn or(a: Truth, b: Truth) -> Truth {
     match (a, b) {
         (Some(true), _) | (_, Some(true)) => Some(true),
         (Some(false), Some(false)) => Some(false),
@@ -32,7 +32,7 @@ fn or(a: Truth, b: Truth) -> Truth {
     }
 }
 
-fn not(a: Truth) -> Truth {
+pub(super) fn not(a: Truth) -> Truth {
     a.map(|v| !v)
 }
 
@@ -293,7 +293,9 @@ impl KernelResolver {
         } else {
             self.resolve_import_path(spec, file, language)?
         };
-        if target.is_none() {
+        // By the end of its path when nothing else places it (jemalloc's `jemalloc/internal/*.h`),
+        // but a standard header is never the project's: `<math.h>` is not jemalloc's test/math.h.
+        if target.is_none() && !self.is_external_import(spec, language, file) {
             if self.cpp_macros.by_basename.is_none() {
                 let files: Vec<String> = match self.sorted_files() {
                     Some(files) => files.to_vec(),
@@ -845,7 +847,7 @@ fn wraps_file(lines: &[String], index: usize, define: usize) -> bool {
 /// The file's lines with comments removed only as far as the preprocessor
 /// needs: a line inside a block comment is blank, a directive line loses its
 /// trailing `//` / `/* … */`, and every other line is kept verbatim.
-fn directive_lines(source: &str) -> Vec<String> {
+pub(super) fn directive_lines(source: &str) -> Vec<String> {
     let masked = mask_cpp_raw_strings(source);
     let mut out = Vec::new();
     let mut in_block = false;
