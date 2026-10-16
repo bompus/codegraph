@@ -463,3 +463,66 @@ describe('a C++ call reaches the specialization its template arguments name', ()
     expect(overriders('pb::Field::Visit', 13)).toEqual([]);
   });
 });
+
+/**
+ * Explicit specializations choose among one template's candidates only: a
+ * specialization of `a::f` does not crowd out `b::f` for a call inside namespace
+ * `b`. And the template arguments a call writes are read after the name it calls,
+ * not after a receiver of the same name (`foo.foo<long>()`).
+ */
+describe('a C++ specialization chooses only among its own template and the name the call writes', () => {
+  const FILES: Record<string, string> = {
+    'a.h': lines(
+      'namespace a {',
+      'template <typename T> void f(T v) {}',
+      'template <> void f<int>(int v) {}',
+      '}',
+      'namespace b {',
+      'template <typename T> void f(T v) {}',
+      'void g() { f<int>(1); }',
+      '}',
+      'struct Foo {',
+      '  template <typename T> void foo() {}',
+      '};',
+      'template <> void Foo::foo<int>() {}',
+      'template <> void Foo::foo<long>() {}',
+    ),
+    'a.cc': lines(
+      '#include "a.h"',
+      'void sameName(Foo& foo) { foo.foo<long>(); }',
+      'void otherName(Foo& x) { x.foo<long>(); }',
+    ),
+  };
+
+  let root: string;
+  let cg: CodeGraph;
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-cpp-specialization-family-'));
+    for (const [file, text] of Object.entries(FILES)) {
+      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+      fs.writeFileSync(path.join(root, file), text);
+    }
+    cg = await CodeGraph.init(root, { index: true });
+  }, 120_000);
+
+  afterAll(() => {
+    cg?.close();
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** What a function or method calls, as `qualifiedName@file:line`. */
+  const callees = (caller: string): string[] => {
+    const fn = [...cg.getNodesByKind('function'), ...cg.getNodesByKind('method')].find((n) => n.qualifiedName === caller);
+    expect(fn, caller).toBeDefined();
+    return cg.getCallees(fn!.id).filter((c) => c.edge.kind === 'calls').map((c) => `${c.node.qualifiedName}@${c.node.filePath}:${c.node.startLine}`).sort();
+  };
+
+  it('a call in namespace `b` reaches `b::f`, not a specialization of `a::f`', () => {
+    expect(callees('b::g')).toEqual(['b::f@a.h:6']);
+  });
+  it('`foo.foo<long>()` reads the arguments after the method, not the receiver', () => {
+    expect(callees('sameName')).toEqual(['Foo::foo@a.h:13']);
+    expect(callees('otherName')).toEqual(['Foo::foo@a.h:13']);
+  });
+});
