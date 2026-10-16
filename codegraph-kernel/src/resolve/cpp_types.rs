@@ -144,7 +144,7 @@ impl KernelResolver {
         // A name written through a namespace alias another file declares: protobuf hpb's
         // `backend::Arena` under `namespace backend = hpb::internal::backend::upb;`.
         if let Some((head, rest)) = ty.split_once("::").filter(|_| !raw.trim_start().starts_with("::")) {
-            if let Some(target) = self.cpp_namespace_alias(&r.file_path, head)? {
+            if let Some(target) = self.cpp_namespace_alias(&r.file_path, head, r.line)? {
                 if let Some(found) = self.cpp_type_owner_visible(&format!("{target}::{rest}"), r, depth + 1, constructor, included)? { return Ok(Some(found)); }
             }
         }
