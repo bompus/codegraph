@@ -154,6 +154,7 @@ impl KernelResolver {
             path.extend(n.qualified_name.split("::").map(str::to_string));
             if path==parts {matches.push(n.clone());}
         }
+        let matches=self.cpp_specialization_pool(matches,r);
         let args = if r.reference_kind=="calls" { self.call_arguments(r,name) } else { None };
         let mut best:Vec<Arc<KNode>>=Vec::new(); let mut best_score=i64::MIN;
         for n in matches {

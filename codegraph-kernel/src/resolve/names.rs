@@ -831,6 +831,7 @@ impl KernelResolver {
         // A bare Dart call means the nearest member of the hierarchy around it.
         let candidates = self.nearest_dart_members(candidates, r)?;
         let candidates = self.nearest_swift_members(candidates, r)?;
+        let candidates = self.cpp_specialization_pool(candidates, r);
 
         // C/C++ call-site form.
         let Some(cpp_form) = self.apply_cpp_call_site_form(r, candidates)? else {
@@ -980,6 +981,7 @@ impl KernelResolver {
         } else {
             same_language
         };
+        let final_candidates = self.cpp_specialization_pool(final_candidates, r);
         if final_candidates.len() == 1 {
             let only = final_candidates[0].clone();
             let reachable = self.is_lexically_reachable(&only, r)?
@@ -1380,6 +1382,7 @@ impl KernelResolver {
                     *start <= node.start_line && node.start_line <= *end) { continue; }
                 exact.push(node);
             }
+            let exact = self.cpp_specialization_pool(exact, r);
             let exact = prefer_call_site_file(exact, &r.file_path);
             let Some(first) = exact.first().filter(|node| exact.len() == 1 || node.file_path == r.file_path || cpp_overload_set(&exact)).cloned() else { return Ok(None) };
             let node = self.cpp_function_overload(first, &exact, r)?;
@@ -1397,6 +1400,7 @@ impl KernelResolver {
                 let named = keep_for_ref(&self.nodes_by_qualified_name(&qualified)?);
                 let candidates: Vec<_> = named.into_iter().filter(|n| matches!(n.language.as_str(), "c" | "cpp") && visible.contains(&n.file_path)).collect();
                 if candidates.is_empty() { continue; }
+                let candidates = self.cpp_specialization_pool(candidates, r);
                 let candidates = prefer_call_site_file(candidates, &r.file_path);
                 let Some(first) = candidates.first().filter(|n| candidates.len() == 1 || n.file_path == r.file_path || cpp_overload_set(&candidates)).cloned() else { return Ok(None) };
                 let node = self.cpp_function_overload(first, &candidates, r)?;
@@ -1424,6 +1428,7 @@ impl KernelResolver {
             }
             found
         } else { keep_for_ref(&self.nodes_by_qualified_name(&r.reference_name)?) };
+        let candidates = self.cpp_specialization_pool(candidates, r);
         if candidates.len() == 1 {
             return Ok(Some(KCand {
                 node: candidates[0].clone(),
@@ -1479,6 +1484,7 @@ impl KernelResolver {
                 .into_iter()
                 .filter(|n| n.qualified_name.ends_with(&r.reference_name))
                 .collect();
+            let partial = self.cpp_specialization_pool(partial, r);
             let chosen = prefer_call_site_file(partial, &r.file_path);
             if let Some(first) = chosen.first().cloned() {
                 return Ok(Some(KCand {

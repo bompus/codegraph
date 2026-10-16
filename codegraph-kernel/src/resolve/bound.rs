@@ -261,6 +261,14 @@ if site.language == "dart" && site.reference_kind == "calls" {
         if let Some(m) = member {
             return Ok(Some(bound_member_cand(m)));
         }
+        // Specializations of the class's own member template, none the call's: what C++ finds is
+        // the template, which has no body here, not a base's namesake (`IntCodec::Put` hides
+        // `Codec::Put`).
+        if site.language == "cpp" && site.reference_kind == "calls" {
+            let family = self.nodes_by_qualified_name(&format!("{}::{}", owner.qualified_name, method))?;
+            let family: Vec<_> = family.iter().filter(|n| n.kind == "method" && n.language == "cpp").cloned().collect();
+            if !family.is_empty() && self.cpp_specialization_pool(family, site).is_empty() { return Ok(None); }
+        }
         // A db that may lack supertype edges (a pool worker's snapshot taken
         // mid-prerequisite phase — unreachable since the snapshot refreshes
         // before the first calls batch) gets no walk: a miss, never a guess.
@@ -726,6 +734,9 @@ if site.language == "dart" && site.reference_kind == "calls" {
             })
             .cloned()
             .collect();
+        // Of a member template's explicit specializations, the one the call's template arguments
+        // name (cpp_specialization_pool).
+        let members = self.cpp_specialization_pool(members, site);
         if members.len() > 1 && site.language == "cpp" && site.reference_kind == "calls" && !site.reference_name.contains("().") {
             // A C++ call on a typed receiver takes the overload its arguments fit, not the first
             // one declared (a chained call `inner(…).name(…)` keeps the first: the arguments at
@@ -1293,6 +1304,10 @@ Ok(self.dart_member_of(type_name, method, r, false)?
             }
             return Ok(None);
         }
+        // Of a member template's explicit specializations, the one the call's template arguments
+        // name; none of them when it names another (cpp_specialization_pool).
+        let matches = self.cpp_specialization_pool(matches, r);
+        if matches.is_empty() { return Ok(None); }
         let matches = self.cpp_visible_first(matches, r)?;
         // A C++ call on a typed receiver takes the overload its arguments fit, not the first one
         // declared (a chained call `inner(…).name(…)` keeps the first: the arguments at its

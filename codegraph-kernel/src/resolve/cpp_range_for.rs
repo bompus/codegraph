@@ -536,9 +536,14 @@ impl KernelResolver {
         let Some(cls) = self.cpp_written_class(&object, r)? else {
             return Ok(if self.cpp_outside_qualified_type(&object.text, &object.site)? { Some(None) } else { None });
         };
-        if let Some(method) = self.cpp_methods_named(&cls, &chain.1, r)?.into_iter().next() {
+        let methods = self.cpp_methods_named(&cls, &chain.1, r)?;
+        let named = !methods.is_empty();
+        // Of a member template's explicit specializations, the one the call's template arguments
+        // name; none of them when it names another (cpp_specialization_pool).
+        if let Some(method) = self.cpp_specialization_pool(methods, r).into_iter().next() {
             return Ok(Some(Some(KCand { node: method, confidence: 0.85, resolved_by: "instance-method" })));
         }
+        if named { return Ok(Some(None)); }
         if self.supertypes_complete && !self.cpp_alias_template_owner(&cls, r)? && self.cpp_bases_known(&cls, 0, &mut HashSet::new())? { return Ok(Some(None)); }
         Ok(None)
     }

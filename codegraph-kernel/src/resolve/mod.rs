@@ -587,6 +587,7 @@ mod cpp_annotations;
 mod cpp_construction;
 mod cpp_overloads;
 mod c_feature_variants;
+mod cpp_specializations;
 mod cpp_translation_unit;
 mod inherited_method;
 mod store;
@@ -758,6 +759,8 @@ pub struct KernelResolver {
     cpp_namespaces: cpp_namespace::NamespaceCache,
     /// C definitions only an unset build flag compiles (c_feature_variants).
     c_variants: c_feature_variants::VariantCache,
+    /// A C++ function's id → the template arguments it is an explicit specialization for.
+    cpp_specializations: HashMap<String, Option<Rc<Vec<String>>>>,
     inherited_class_methods: HashMap<(String,String), Option<Arc<KNode>>>,
     /// A Python class and its in-repo ancestors, by class id.
     python_hierarchies: HashMap<String, Rc<Vec<Arc<KNode>>>>,
@@ -942,6 +945,7 @@ impl KernelResolver {
             cpp_macros: cpp::MacroCache::default(),
             cpp_namespaces: cpp_namespace::NamespaceCache::default(),
             c_variants: c_feature_variants::VariantCache::default(),
+            cpp_specializations: HashMap::new(),
             inherited_class_methods: HashMap::new(),
             python_hierarchies: HashMap::new(),
             python_rebinds: HashMap::new(),
