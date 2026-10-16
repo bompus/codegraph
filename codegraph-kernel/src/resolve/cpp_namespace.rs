@@ -117,6 +117,22 @@ impl KernelResolver {
         let aliases:HashSet<_>=visible.iter().filter_map(|file|self.cpp_namespaces.aliases.get(file).and_then(|a|a.get(name))).cloned().collect();
         Ok((aliases.len()==1).then(||aliases.into_iter().next().unwrap()))
     }
+    /// Whether the `#include`s `file` writes before line `line` bring in `target`, directly or
+    /// through what those files include. An include in a branch only a build with a flag nothing
+    /// sets compiles (`#if 0`) counts only for a line in such a branch too.
+    pub(super) fn cpp_included_before(&mut self,file:&str,line:i64,target:&str,language:&str)->Res<bool> {
+        let imports:Vec<(i64,char,String)>=self.nodes_in_file(file)?.iter()
+            .filter(|n|n.kind=="import" && matches!(n.language.as_str(),"c"|"cpp") && n.start_line<line)
+            .map(|n|(n.start_line,if n.signature.as_deref().is_some_and(|s|s.contains('<')) {'<'} else {'"'},n.name.clone())).collect();
+        if imports.is_empty() {return Ok(false);}
+        let off_here=self.is_off_by_default(file,line);
+        for (at,delimiter,spec) in imports {
+            let Some(included)=self.resolve_cpp_include(file,delimiter,&spec,language)? else {continue};
+            if included!=target && !self.namespace_visible_files(&included,language)?.contains(target) {continue;}
+            if off_here || !self.is_off_by_default(file,at) {return Ok(true);}
+        }
+        Ok(false)
+    }
     /// `qualified` spelled through the name macros `file` sees, when that differs: rocksdb's types
     /// are `ROCKSDB_NAMESPACE::DB` in the index and `rocksdb::DB` to code that names them, under
     /// `#define ROCKSDB_NAMESPACE rocksdb`; a tree declaring `namespace rocksdb` itself is named
