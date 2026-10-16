@@ -331,7 +331,11 @@ describe('a qualified type whose last name finds only namesakes', () => {
     try {
       expect(calls(cg, 'google::protobuf::compiler::Reset')).toEqual(['google::protobuf::DescriptorProto::Clear']);
       expect(calls(cg, 'google::protobuf::compiler::Compare')).toEqual(['google::protobuf::util::SimpleFieldComparator::set_treat_nan_as_equal']);
-      expect(calls(cg, 'hpb::internal::Iterator::Next')).toEqual(['hpb::internal::ScalarIteratorPolicy::Payload::AddOffset']);
+      // `typename PolicyT::Payload` is whatever the template argument makes it. Upstream then
+      // matches `AddOffset` by its name alone; the fork's resolver leaves such a call unlinked
+      // (README, "About this fork": where the type cannot be read, a template parameter's, the
+      // call stays unlinked).
+      expect(calls(cg, 'hpb::internal::Iterator::Next')).toEqual([]);
     } finally {
       cg.close();
     }
@@ -424,7 +428,10 @@ describe('a qualified type whose last name finds only namesakes', () => {
       ),
     });
     try {
-      expect(calls(cg, 'Paint')).toEqual(['Widget::Draw']);
+      // `widget` is declared in `Load`, not in `Paint`, so nothing in scope gives it a type.
+      // Upstream matches `Draw` by its name alone; the fork's resolver leaves such a call unlinked
+      // (README, "About this fork": upstream guesses a callee from the receiver's name).
+      expect(calls(cg, 'Paint')).toEqual([]);
     } finally {
       cg.close();
     }
