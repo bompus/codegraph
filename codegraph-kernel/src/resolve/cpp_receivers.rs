@@ -153,14 +153,23 @@ impl KernelResolver {
                 if owner.is_none() { owner = self.cpp_type_via_using(primary, &parts, &site, &included)?; }
             }
         }
+        // A class whose methods alone are indexed: protobuf's `descriptor.pb.h`, too large to index,
+        // declares `DescriptorProto`, and `descriptor.pb.cc` defines `DescriptorProto::Clear`.
+        if owner.is_none() {
+            if let Some(method) = self.cpp_unindexed_class_method(primary, method, &site)? {
+                return Ok(Some(Some(KCand { node: method, confidence: 0.85, resolved_by: "instance-method" })));
+            }
+        }
         let Some(owner) = owner else {
             // A held type that is an alias of a library type holds no project class.
             let aliased_library = held && self.cpp_alias_expansion(primary, &site, 0, &included)?
                 .is_some_and(|alias| alias.raw.as_deref().is_some_and(|ty| ty.trim_start_matches("::").starts_with("std::")));
             return Ok(aliased_library.then_some(None));
         };
-        // Preserve the existing guarded alias and specialization fallback on a miss.
-        let member = self.match_bound_type_member(&owner.qualified_name, method, r)?;
+        // Preserve the existing guarded alias and specialization fallback on a miss. (The owner's
+        // qualified name is looked up from the global scope: inside `namespace hpb`, `upb::Arena`
+        // would find `hpb::upb::Arena`.)
+        let member = self.match_bound_type_member(&format!("::{}", owner.qualified_name), method, r)?;
         // A class that lacks the method, and whose bases lack it too, is called nothing (but a
         // class template's specialization may declare it, and so may a base the index doesn't link,
         // held in a smart pointer or not).
@@ -168,6 +177,31 @@ impl KernelResolver {
             && (held || self.cpp_methods_named(&owner, method, r)?.is_empty())
             && self.cpp_bases_known(&owner, 0, &mut HashSet::new())? { return Ok(Some(None)); }
         Ok(member.map(Some))
+    }
+
+    /// The method `method` of the class `ty` names where only the class's methods are indexed:
+    /// looked up as `ty` is, from the scopes around `site` innermost first, and only where no
+    /// class, struct, union or alias of that name is indexed at all.
+    fn cpp_unindexed_class_method(&mut self, ty: &str, method: &str, site: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        let Some(parts) = super::cpp_aliases::type_segments(ty) else { return Ok(None) };
+        let global = ty.trim_start().starts_with("::");
+        let ty = parts.join("::");
+        let scopes: Vec<String> = if global { Vec::new() } else {
+            self.node_by_id(&site.from_node_id)?.map(|n| n.qualified_name.split("::").map(str::to_string).collect()).unwrap_or_default()
+        };
+        let mut names: Vec<String> = (1..scopes.len()).rev().map(|i| format!("{}::{ty}", scopes[..i].join("::"))).collect();
+        names.push(ty.clone());
+        for owner in names {
+            if self.nodes_by_qualified_name(&owner)?.iter().any(|n| matches!(n.language.as_str(), "c" | "cpp")) { return Ok(None); }
+            let methods = self.nodes_by_qualified_name(&format!("{owner}::{method}"))?;
+            let methods: Vec<_> = methods.iter().filter(|n| n.language == "cpp" && n.kind == "method").cloned().collect();
+            match methods.as_slice() {
+                [] => continue,
+                [only] => return Ok(Some(only.clone())),
+                _ => return Ok(None),
+            }
+        }
+        Ok(None)
     }
 
     /// A class `ty` names from inside a class that declares or inherits it, which
@@ -262,7 +296,7 @@ impl KernelResolver {
             if self.cpp_written_template_parameter(&object)? { return Ok((object.site.from_node_id == r.from_node_id).then_some(None)); }
             return Ok(self.cpp_outside_qualified_type(&object.text, &object.site)?.then_some(None));
         };
-        if let Some(member) = self.match_bound_type_member(&cls.qualified_name, &r.reference_name, r)? { return Ok(Some(Some(member))); }
+        if let Some(member) = self.match_bound_type_member(&format!("::{}", cls.qualified_name), &r.reference_name, r)? { return Ok(Some(Some(member))); }
         if self.supertypes_complete && !self.cpp_alias_template_owner(&cls, r)? && self.cpp_methods_named(&cls, &r.reference_name, r)?.is_empty()
             && self.cpp_bases_known(&cls, 0, &mut HashSet::new())? { return Ok(Some(None)); }
         Ok(None)
