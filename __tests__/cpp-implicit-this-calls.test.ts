@@ -20,6 +20,8 @@ import * as os from 'os';
 import * as path from 'path';
 import { CodeGraph } from '../src';
 
+const lines = (...l: string[]): string => [...l, ''].join('\n');
+
 function writeProject(prefix: string, files: Record<string, string>): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   for (const [rel, content] of Object.entries(files)) {
@@ -520,5 +522,59 @@ class IntList : public ListBase<int> {
 
   it('looks it up in a base with no template parameter of the class in it', () => {
     expect(callsFrom(cg, 'src/util/list.h', 'util::IntList::Push')).toEqual(['Grow -> util::ListBase::Grow']);
+  });
+});
+
+/**
+ * A bare or `this->` call to a member template whose class defines only explicit
+ * specializations of it: `Put<long>()` in a class that specializes only `Put<int>`
+ * calls the class's own template, which has no body here. Before, lookup went on
+ * past the class to the base class's `Put`.
+ */
+describe('a C++ call to a member template its class only specializes for other arguments', () => {
+  const FILES: Record<string, string> = {
+    'a.h': lines(
+      'struct Base { template <typename T> void Put() {} };',
+      'struct Codec { void Put() {} };',
+      'struct Writer : Base {',
+      '  template <typename T> void Put();',
+      '  void Run() { Put<long>(); }',
+      '  void RunThis() { this->Put<long>(); }',
+      '  void RunInt() { Put<int>(); }',
+      '};',
+      'template <> void Writer::Put<int>() {}',
+    ),
+  };
+
+  let root: string;
+  let cg: CodeGraph;
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-cpp-implicit-specialization-'));
+    for (const [file, text] of Object.entries(FILES)) {
+      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+      fs.writeFileSync(path.join(root, file), text);
+    }
+    cg = await CodeGraph.init(root, { index: true });
+  }, 120_000);
+
+  afterAll(() => {
+    cg?.close();
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** What a function or method calls, as `qualifiedName@file:line`. */
+  const callees = (caller: string): string[] => {
+    const fn = [...cg.getNodesByKind('function'), ...cg.getNodesByKind('method')].find((n) => n.qualifiedName === caller);
+    expect(fn, caller).toBeDefined();
+    return cg.getCallees(fn!.id).filter((c) => c.edge.kind === 'calls').map((c) => `${c.node.qualifiedName}@${c.node.filePath}:${c.node.startLine}`).sort();
+  };
+
+  it("links nothing: neither the base class's template nor a namesake", () => {
+    expect(callees('Writer::Run')).toEqual([]);
+    expect(callees('Writer::RunThis')).toEqual([]);
+  });
+  it('still reaches the specialization the call names', () => {
+    expect(callees('Writer::RunInt')).toEqual(['Writer::Put@a.h:9']);
   });
 });

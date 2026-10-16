@@ -29,6 +29,10 @@ enum Lookup {
     Missing,
     /// The class may declare the name through a macro: lookup stops.
     Stop,
+    /// The class declares the name as a member template whose explicit specializations, none of
+    /// them the call's, are all the index has of it: the call reaches the template, which has no
+    /// body here, so no other method or function of that name is called.
+    Refused,
 }
 
 /// One class C++ lookup passes through, with the declarations that are the class there.
@@ -112,16 +116,19 @@ pub(super) fn contains_word(text: &str, word: &str) -> bool {
 }
 
 impl KernelResolver {
-    /// The method a receiver-less (or `this`) C++ call reaches from the member function it is in.
-    pub(super) fn cpp_implicit_this(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+    /// The method a receiver-less (or `this`) C++ call reaches from the member function it is in:
+    /// Some(None) when C++ lookup reaches a member template of the class whose specializations are
+    /// none the call's (Lookup::Refused), so nothing else of that name may be linked.
+    pub(super) fn cpp_implicit_this(&mut self, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
         let name = r.reference_name.as_str();
         if r.language != "cpp" || r.reference_kind != "calls" || !re!(r"^[A-Za-z_][A-Za-z0-9_]*$").is_match(name) { return Ok(None); }
         let Some(receiver) = self.cpp_implicit_receiver(r) else { return Ok(None) };
         let Some(caller) = self.node_by_id(&r.from_node_id)? else { return Ok(None) };
-        let Some(node) = self.cpp_implicit_this_lookup(name, receiver, &caller, r)? else { return Ok(None) };
+        let found = self.cpp_implicit_this_lookup(name, receiver, &caller, r)?;
+        if !matches!(found, Lookup::Found(_) | Lookup::Refused) { return Ok(None); }
         // (A recursive call names the function itself, which no local shadows.)
         if receiver == Receiver::Bare && name != caller.name && self.cpp_local_name(name, &caller, r, false)? { return Ok(None); }
-        Ok(Some(KCand { node, confidence: 0.9, resolved_by: "instance-method" }))
+        Ok(Some(match found { Lookup::Found(node) => Some(KCand { node, confidence: 0.9, resolved_by: "instance-method" }), _ => None }))
     }
 
     /// The method a C++ call of `name` written on `this` reaches from `caller` by C++ lookup, as
@@ -130,26 +137,26 @@ impl KernelResolver {
     pub(super) fn cpp_implicit_this_method(&mut self, name: &str, caller: &Arc<KNode>, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
         // A local of that name (a lambda, a callable) is what a bare call calls.
         if name != caller.name && self.cpp_local_name(name, caller, r, true)? { return Ok(None); }
-        self.cpp_implicit_this_lookup(name, Receiver::This, caller, r)
+        Ok(match self.cpp_implicit_this_lookup(name, Receiver::This, caller, r)? { Lookup::Found(node) => Some(node), _ => None })
     }
 
     /// The method a C++ call of `name` with no receiver, or on `this`, reaches from `caller`: of the
     /// caller's class, a class it derives from, or one it is nested in. A gtest `TEST_F(Fixture, …)`
     /// or `TEST_P` body is a method of a class gtest derives from `Fixture`, so the fixture's methods
-    /// are its own: rocksdb's tests call `DBTestBase`'s `Put(…)` and `NewIterator(…)` bare. None when
-    /// the caller is no member function, or no class on the way has a method of that name. (Whether
+    /// are its own: rocksdb's tests call `DBTestBase`'s `Put(…)` and `NewIterator(…)` bare. Missing
+    /// when the caller is no member function, or no class on the way has a method of that name. (Whether
     /// a local of the caller's shadows it is the caller's to ask.)
-    fn cpp_implicit_this_lookup(&mut self, name: &str, receiver: Receiver, caller: &Arc<KNode>, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+    fn cpp_implicit_this_lookup(&mut self, name: &str, receiver: Receiver, caller: &Arc<KNode>, r: &ResolveRefIn) -> Res<Lookup> {
         let owner = match self.cpp_member_owner(caller)? {
             Some(owner) => owner,
-            None => match self.cpp_gtest_fixture(caller, r)? { Some(fixture) => fixture, None => return Ok(None) },
+            None => match self.cpp_gtest_fixture(caller, r)? { Some(fixture) => fixture, None => return Ok(Lookup::Missing) },
         };
         let mut found = Lookup::Missing;
         for scope in self.cpp_enclosing_classes(&owner, caller)? {
             found = self.cpp_scope_method(&scope, name, receiver, r)?;
             if !matches!(found, Lookup::Missing) || receiver == Receiver::This { break; }
         }
-        Ok(match found { Lookup::Found(node) => Some(node), _ => None })
+        Ok(found)
     }
 
     /// How a C++ call the extractor recorded by its bare name is written, read at its column:
@@ -283,7 +290,9 @@ impl KernelResolver {
             }
             if belongs { own.push(n); }
         }
+        let had = !own.is_empty();
         let own = self.cpp_specialization_pool(own, r);
+        if own.is_empty() && had { return Ok(Lookup::Refused); }
         let holder = if scope.holds { scope.decls.first() } else { None };
         let (inline, rest): (Vec<_>, Vec<_>) = match holder {
             Some(h) => own.into_iter().partition(|n| n.file_path == h.file_path && range_within(n, h)),
