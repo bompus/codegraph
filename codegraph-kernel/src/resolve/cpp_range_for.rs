@@ -328,6 +328,11 @@ impl KernelResolver {
         if owner.is_none() {
             let included = self.namespace_visible_files(&r.file_path, "cpp")?;
             owner = self.cpp_type_owner_visible(primary, &written.site, 0, false, &included)?;
+            // A name a `using leveldb::WriteBatch;` before where it is written brings in: a global
+            // struct's `WriteBatch rep;`.
+            if owner.is_none() {
+                if let Some(parts) = type_segments(primary) { owner = self.cpp_type_via_using(primary, &parts, &written.site, &included)?; }
+            }
         }
         Ok(owner.filter(|n| cpp_class_node(n)))
     }

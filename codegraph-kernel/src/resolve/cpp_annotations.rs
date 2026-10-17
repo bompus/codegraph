@@ -212,11 +212,64 @@ fn declarator_attribute_spans(code: &[u8], spans: &mut Vec<(usize, usize)>) {
     }
 }
 
+/// The end of the template arguments opening at `open` (`<`), outside parentheses; None at a `;`,
+/// `{` or `}` first.
+fn angle_arguments_end(code: &[u8], open: usize) -> Option<usize> {
+    let (mut angles, mut parens) = (0usize, 0usize);
+    for (i, &b) in code.iter().enumerate().skip(open).take(4000) {
+        match b {
+            b'(' => parens += 1,
+            b')' => parens = parens.checked_sub(1)?,
+            b';' | b'{' | b'}' => return None,
+            b'<' if parens == 0 => angles += 1,
+            b'>' if parens == 0 && code[i - 1] != b'-' => { angles -= 1; if angles == 0 { return Some(i + 1); } }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The spans of the macros, with their arguments, between `class` or `struct` and the name of the
+/// class it defines: leveldb's `class SCOPED_LOCKABLE MutexLock {` and `struct LEVELDB_EXPORT
+/// Options {`, protobuf's `class PROTOBUF_EXPORT Any final : public Message`, rocksdb's `struct
+/// ALIGN_AS(64U) HandleImpl : public ClockHandle`. The name may be followed by template arguments
+/// and `final`, then the body or the base list. tree-sitter takes the macro for the class's name.
+///
+/// Port of c-cpp.ts's preParse pass `blankCppExportMacros`.
+fn class_head_macro_spans(code: &[u8], spans: &mut Vec<(usize, usize)>) {
+    let code_text = String::from_utf8_lossy(code);
+    let token = re!(r"[A-Z][A-Z0-9_]*(?:\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\))?");
+    for head in re!(r"\b(?:class|struct)\s+((?:[A-Z][A-Z0-9_]+(?:\s*\((?:[^()]|\([^()]*\))*\))?\s+)+)([A-Za-z_]\w*(?:\s*::\s*[A-Za-z_]\w*)*)").captures_iter(&code_text) {
+        let (Some(whole), Some(run), Some(name)) = (head.get(0), head.get(1), head.get(2)) else { continue };
+        // Not on a preprocessor line.
+        let line = code_text[..whole.start()].rfind('\n').map_or(0, |n| n + 1);
+        if code_text[line..whole.start()].trim_start().starts_with('#') { continue; }
+        let mut macros: Vec<_> = token.find_iter(run.as_str()).map(|t| (run.start() + t.start(), run.start() + t.end())).collect();
+        let mut i = name.end();
+        // `class FOO final {`: `final` is no name, so the last macro is the class.
+        if name.as_str() == "final" {
+            let Some(last) = macros.pop().filter(|(start, end)| code[*start..*end].iter().all(|b| is_word(*b))) else { continue };
+            if macros.is_empty() { continue; }
+            i = last.1;
+        }
+        i = skip_space(code, i);
+        if code.get(i) == Some(&b'<') {
+            let Some(end) = angle_arguments_end(code, i) else { continue };
+            i = skip_space(code, end);
+        }
+        if code[i..].starts_with(b"final") && !code.get(i + 5).is_some_and(|b| is_word(*b)) { i = skip_space(code, i + 5); }
+        let opens = match code.get(i) { Some(b'{') => true, Some(b':') => code.get(i + 1) != Some(&b':'), _ => false };
+        if opens { spans.extend(macros); }
+    }
+}
+
 /// C++ `text` with the annotation macros extraction blanks before parsing replaced by spaces.
 pub(super) fn cpp_without_annotations(text: &str) -> Cow<'_, str> {
-    if !re!(r"[*&]\s*[A-Z][A-Z0-9]*_|[\w\]]\s+[A-Z][A-Z0-9]*_[A-Z0-9_]*\s*[(;=,)]").is_match(text) { return Cow::Borrowed(text); }
+    let class_head = re!(r"\b(?:class|struct)\s+[A-Z][A-Z0-9_]").is_match(text);
+    if !class_head && !re!(r"[*&]\s*[A-Z][A-Z0-9]*_|[\w\]]\s+[A-Z][A-Z0-9]*_[A-Z0-9_]*\s*[(;=,)]").is_match(text) { return Cow::Borrowed(text); }
     let code = masked_code(text);
     let mut spans = Vec::new();
+    if class_head { class_head_macro_spans(&code, &mut spans); }
     pointer_annotation_spans(&code, text, &mut spans);
     declarator_attribute_spans(&code, &mut spans);
     if spans.is_empty() { return Cow::Borrowed(text); }
@@ -255,6 +308,30 @@ mod tests {
         let text = "Printer* PROTOBUF_NONNULL printer_;\nconst Foo* PROTOBUF_NULLABLE ns::Bar::run();\nstd::vector<int> items_ GUARDED_BY(mu_);\n";
         let out = cpp_without_annotations(text);
         assert!(!out.contains("PROTOBUF_NONNULL") && !out.contains("PROTOBUF_NULLABLE") && !out.contains("GUARDED_BY"), "{out}");
+    }
+
+    #[test]
+    fn blanks_class_head_macros_before_a_body_or_base_list() {
+        let blank = |name: &str| " ".repeat(name.len());
+        for (text, macros) in [
+            ("class SCOPED_LOCKABLE MutexLock {\n", vec!["SCOPED_LOCKABLE"]),
+            ("struct LEVELDB_EXPORT Options {\n", vec!["LEVELDB_EXPORT"]),
+            ("class PROTOBUF_EXPORT WARN_UNUSED Any final : public Message {\n", vec!["PROTOBUF_EXPORT", "WARN_UNUSED"]),
+            ("struct ALIGN_AS(64U) HandleImpl : public ClockHandle {\n", vec!["ALIGN_AS(64U)"]),
+            ("class API_EXPORT Proxy<Element, Set> {\n", vec!["API_EXPORT"]),
+            ("class API_EXPORT Last final {\n", vec!["API_EXPORT"]),
+        ] {
+            let out = cpp_without_annotations(text);
+            assert_eq!(out.len(), text.len());
+            let mut expected = text.to_string();
+            for name in macros { expected = expected.replacen(name, &blank(name), 1); }
+            assert_eq!(out, expected);
+        }
+        // A forward declaration, a class named in capitals, a `final` class without a macro, a
+        // directive and a comment stay as written.
+        for text in ["class LEVELDB_EXPORT Cache;\n", "struct FOO_BAR {\n", "class FOO final {\n", "#define DECLARE class API_EXPORT Foo {\n", "// class API_EXPORT Foo {\n"] {
+            assert_eq!(cpp_without_annotations(text), text);
+        }
     }
 
     #[test]
