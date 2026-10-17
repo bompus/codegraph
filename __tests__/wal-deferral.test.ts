@@ -16,6 +16,7 @@ import * as path from 'path';
 import { DatabaseConnection } from '../src/db';
 import { WalCheckpointValve, WalValveAbortError, resolveWalValveMb } from '../src/db/wal-valve';
 import CodeGraph from '../src/index';
+import { ReferenceResolver } from '../src/resolution';
 
 const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
 
@@ -557,5 +558,41 @@ describe('resolveWalValveMb DB-size scaling (§7a.2 fold-tax reduction)', () => 
     expect(resolveWalValveMb(undefined, 40 * GB)).toBe(2048); // ceiling
     expect(resolveWalValveMb('64', 40 * GB)).toBe(64); // env override wins
     expect(resolveWalValveMb(undefined, 0)).toBe(256); // unknown size → default
+  });
+});
+
+describe('fast init: a resolver pool that boots mid-resolution', () => {
+  // Below the fixed pool gate, a fresh index resolves in memory-journal mode
+  // and the adaptive engage switches it to WAL part-way through
+  // (ensureWalForPool). That switch must not bring SQLite's default
+  // 1000-page autocheckpoint into the batch commits: the deferral and the
+  // valve have to be in place for the whole resolution phase, as they are
+  // when the pool starts up front.
+  it('keeps autocheckpointing deferred after the mid-run WAL switch and restores it after', async () => {
+    writeFixtureProject();
+    const cg = CodeGraph.initSync(tmpDir);
+    const conn = (cg as unknown as { db: DatabaseConnection }).db;
+    const seen: { mode: string; interval: number; valve: boolean }[] = [];
+    const original = ReferenceResolver.prototype.resolveAndPersistBatched;
+    const spy = vi.spyOn(ReferenceResolver.prototype, 'resolveAndPersistBatched').mockImplementation(
+      async function (this: ReferenceResolver, ...args: Parameters<typeof original>) {
+        const parallel = args[3];
+        // What the adaptive engage does when the pool boots part-way through.
+        expect(parallel?.ensureWalForPool?.()).toBe(true);
+        seen.push({ mode: conn.getJournalMode(), interval: conn.getWalAutocheckpoint(), valve: !!parallel?.walValve });
+        return original.apply(this, args);
+      }
+    );
+    try {
+      const r = await cg.indexAll();
+      expect(r.success).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(seen).toEqual([{ mode: 'wal', interval: 0, valve: true }]);
+    // Scoped to the run: the durable defaults are back afterwards.
+    expect(conn.getJournalMode()).toBe('wal');
+    expect(conn.getWalAutocheckpoint()).toBe(1000);
+    await cg.close();
   });
 });
