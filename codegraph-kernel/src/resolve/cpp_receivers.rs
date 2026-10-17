@@ -428,7 +428,10 @@ impl KernelResolver {
             let Some(parent) = node.parent() else { break }; node = parent;
         }
         let mut declarations = Vec::new();
-        if node.child_by_field_name("name").is_some_and(|name| source.text()[name.start_byte()..name.end_byte()] == owner.name) {
+        // A nested class defined out of line is named as qualified: `struct DBImpl::CompactionState {`.
+        let mut name = node.child_by_field_name("name");
+        while let Some(qualified) = name.filter(|n| n.kind() == "qualified_identifier") { name = qualified.child_by_field_name("name"); }
+        if name.is_some_and(|name| source.text()[name.start_byte()..name.end_byte()] == owner.name) {
             if let Some(body) = node.child_by_field_name("body") { declarations.extend(named_children(body).into_iter().filter(|n| n.kind() == "field_declaration")); }
         }
         let mut types = Vec::new();
@@ -589,29 +592,16 @@ pub(super) fn cpp_binding_type(parent: tree_sitter::Node, at: tree_sitter::Node,
     if block || initializer.is_some() {
         let children = if block { named_children(parent) } else { initializer.into_iter().collect() };
         for declaration in children.into_iter().rev().filter(|n| n.kind() == "declaration" && n.end_byte() <= at.start_byte()) {
-            // C++ parses a parenthesized initializer as a function declarator.
-            // Recognize only a standard smart pointer initialized from a known pointer value.
+            // C++ parses a parenthesized initializer as a function declarator: `SharedState
+            // shared(n);`, `std::unique_ptr<Foo> owned(raw);`. Where each of its parameters is a
+            // bare name a declaration in scope binds as a variable, it is an object constructed
+            // from them, since C++ reads a name it finds as a variable as no type.
             if let Some(declarator) = declaration.child_by_field_name("declarator").filter(|n| n.kind() == "function_declarator") {
-                if declarator.child_by_field_name("declarator").is_some_and(|n| cpp_declarator_name(n, source) == name) {
+                if let Some(inner) = declarator.child_by_field_name("declarator").filter(|n| cpp_declarator_name(*n, source) == name) {
                     let ty = declaration.child_by_field_name("type")?;
-                    let raw = &source.text()[ty.start_byte()..ty.end_byte()];
-                    if re!(r"^std::(?:unique_ptr|shared_ptr)\s*<\s*[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*\s*>$").is_match(raw) {
-                        let parameters = declarator.child_by_field_name("parameters").map(named_children).unwrap_or_default();
-                        if let [parameter] = parameters.as_slice() {
-                            if parameter.child_by_field_name("declarator").is_none() {
-                                if let Some(argument) = parameter.child_by_field_name("type").filter(|n| n.kind() == "type_identifier") {
-                                    let argument = &source.text()[argument.start_byte()..argument.end_byte()];
-                                    let mut child = declaration;
-                                    while let Some(scope) = child.parent() {
-                                        if let Some(bound) = cpp_binding_type(scope, child, argument, source) {
-                                            if bound.ends_with('*') && !bound.contains('[') { return Some(raw.to_string()); }
-                                            break;
-                                        }
-                                        child = scope;
-                                    }
-                                }
-                            }
-                        }
+                    let parameters = declarator.child_by_field_name("parameters").map(named_children).unwrap_or_default();
+                    if !parameters.is_empty() && parameters.iter().all(|parameter| cpp_names_variable(*parameter, declaration, source)) {
+                        return Some(cpp_ast_declared_type(ty, inner, source));
                     }
                     // This declaration shadows the receiver even when its type is unproven.
                     return Some(String::new());
@@ -635,6 +625,21 @@ pub(super) fn cpp_binding_type(parent: tree_sitter::Node, at: tree_sitter::Node,
         }
     }
     None
+}
+
+/// Whether `parameter`, of a declaration tree-sitter reads as a function's, is a bare name that a
+/// declaration in scope before `declaration` binds as a variable of a known type: `n` in
+/// `SharedState shared(n);` after `int n`. Not a name it can't place, which may be a type.
+fn cpp_names_variable(parameter: tree_sitter::Node, declaration: tree_sitter::Node, source: &SourceFile) -> bool {
+    if parameter.kind() != "parameter_declaration" || parameter.child_by_field_name("declarator").is_some() { return false; }
+    let Some(argument) = parameter.child_by_field_name("type").filter(|n| n.kind() == "type_identifier") else { return false };
+    let argument = &source.text()[argument.start_byte()..argument.end_byte()];
+    let mut child = declaration;
+    while let Some(scope) = child.parent() {
+        if let Some(bound) = cpp_binding_type(scope, child, argument, source) { return !bound.is_empty(); }
+        child = scope;
+    }
+    false
 }
 
 /// Whether the declaration of the name `node` in scope writes `const` (or `constexpr`) in front of
