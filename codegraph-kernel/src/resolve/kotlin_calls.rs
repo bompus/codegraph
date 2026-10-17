@@ -250,3 +250,50 @@ impl KernelResolver {
             || (!companion && source_companion && (here.imports.contains(&format!("{object}.Companion.{}", n.name)) || here.stars.contains(&format!("{object}.Companion")))))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A declaration in a DSL block the head-only scan leaves untyped, in a project whose
+    /// source spells `Companion.(`: the check falls back to the full frames, which type the
+    /// block by its function's lambda receiver.
+    #[test]
+    fn companion_check_types_dsl_blocks_when_a_lambda_receiver_names_companion() {
+        let dir = std::env::temp_dir().join(format!("cg-kotlin-companion-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("dsl.kt"), "fun companionScope(block: Companion.() -> Unit) {}\nfun builderScope(block: Builder.() -> Unit) {}\n\nval a = companionScope {\n    fun inCompanion() {}\n}\nval b = builderScope {\n    fun inBuilder() {}\n}\n").unwrap();
+        let db = dir.join("graph.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, \
+             qualified_name TEXT NOT NULL, file_path TEXT NOT NULL, language TEXT NOT NULL, \
+             start_line INTEGER NOT NULL, end_line INTEGER NOT NULL, start_column INTEGER NOT NULL, \
+             end_column INTEGER NOT NULL, signature TEXT, visibility TEXT, \
+             is_exported INTEGER NOT NULL DEFAULT 0, return_type TEXT, type_parameters TEXT, decorators TEXT, \
+             is_async INTEGER NOT NULL DEFAULT 0, is_static INTEGER NOT NULL DEFAULT 0); \
+             CREATE TABLE files (path TEXT PRIMARY KEY); \
+             INSERT INTO files(path) VALUES ('dsl.kt');",
+        ).unwrap();
+        for (id, name, line, column) in [("n1", "companionScope", 1, 0), ("n2", "builderScope", 2, 0), ("n3", "inCompanion", 5, 4), ("n4", "inBuilder", 8, 4)] {
+            conn.execute(
+                "INSERT INTO nodes(id, kind, name, qualified_name, file_path, language, start_line, \
+                 end_line, start_column, end_column) VALUES (?1, 'function', ?2, ?2, 'dsl.kt', 'kotlin', ?3, ?3, ?4, ?4)",
+                rusqlite::params![id, name, line, column],
+            ).unwrap();
+        }
+        drop(conn);
+        let mut resolver = KernelResolver::new(KernelResolverConfig {
+            db_path: db.to_string_lossy().into_owned(), project_root: dir.to_string_lossy().into_owned(), aliases: None,
+            scoped_aliases: None, workspaces: None, go_modules: None, cpp_include_dirs: None, node_builtin_specifiers: Vec::new(),
+            frameworks_active: false, framework_names: None, ambiguous_name_ceiling: None, generation: None,
+            supertypes_complete: None, snapshot: Some(true), query_lookups: None,
+        }).unwrap();
+        let node = |r: &KernelResolver, name: &str| r.nodes_by_name(name).ok().and_then(|l| l.first().cloned()).unwrap();
+        let (in_companion, in_builder) = (node(&resolver, "inCompanion"), node(&resolver, "inBuilder"));
+        assert!(resolver.in_kotlin_companion(&in_companion));
+        assert!(!resolver.in_kotlin_companion(&in_builder));
+        drop(resolver);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
