@@ -1223,29 +1223,57 @@ fn per_ref<T>(r: &ResolveRefIn, fallback: T, f: impl FnOnce() -> Res<T>) -> Res<
 
 impl KernelResolver {
     /// A name-parameterized regex with no Affix split form (a pattern that
-    /// must match the name case-insensitively, say), compiled once per thread
-    /// and pattern. The cache keeps the recently used patterns only (see
-    /// Generations): a searched regex holds 50-100 KB, and a worker meets
-    /// some 10,000 distinct patterns on a large Python and C repository but
-    /// reuses a few hundred at a time.
+    /// must match the name case-insensitively, say). The resolver workers
+    /// share one cache of compiled regexes, so a cached pattern is compiled
+    /// once for all of them, and each thread searches through its own clone
+    /// (see thread_regex for why), kept in a small cache of its own. Both keep
+    /// the recently used patterns only (see Generations): a compiled pattern
+    /// here holds 5-800 KB before any search (the most with a capture group
+    /// or a Unicode `\b`, which add a one-pass DFA), and a worker meets some
+    /// 10,000 distinct patterns on a large Python and C repository but reuses
+    /// a few hundred at a time.
     fn cached_regex(pattern: &str) -> Res<Rc<Regex>> {
-        thread_local! {
-            static CACHE: RefCell<Generations<Rc<Regex>>> = RefCell::new(Generations::new(REGEX_GENERATION));
-        }
-        CACHE.with(|cell| {
-            let mut cache = cell.borrow_mut();
-            if let Some(re) = cache.get(pattern) {
-                return Ok(re);
-            }
-            let re = Rc::new(Regex::new(pattern).map_err(|e| Error::from_reason(e.to_string()))?);
-            cache.insert(pattern.to_string(), re.clone());
-            Ok(re)
-        })
+        Ok(cached_pattern(pattern).map_err(|e| Error::from_reason(e.to_string()))?)
     }
 }
 
-/// Entries per generation of the cached_regex cache.
-const REGEX_GENERATION: usize = 256;
+/// cached_regex's caches, apart from the N-API error type.
+fn cached_pattern(pattern: &str) -> std::result::Result<Rc<Regex>, regex::Error> {
+    static SHARED: LazyLock<Mutex<Generations<Regex>>> =
+        LazyLock::new(|| Mutex::new(Generations::new(REGEX_GENERATION)));
+    thread_local! {
+        static LOCAL: RefCell<Generations<Rc<Regex>>> = RefCell::new(Generations::new(REGEX_THREAD_GENERATION));
+    }
+    let shared = || SHARED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    LOCAL.with(|cell| {
+        let mut local = cell.borrow_mut();
+        if let Some(re) = local.get(pattern) {
+            return Ok(re);
+        }
+        let hit = shared().get(pattern);
+        let re = match hit {
+            Some(re) => re,
+            None => {
+                // Compiled outside the lock: workers missing the same pattern
+                // at once each compile it, and the last insert stays.
+                let re = Regex::new(pattern)?;
+                #[cfg(test)]
+                tests::count_regex_compile(pattern);
+                shared().insert(pattern.to_string(), re.clone());
+                re
+            }
+        };
+        let re = Rc::new(re);
+        local.insert(pattern.to_string(), re.clone());
+        Ok(re)
+    })
+}
+
+/// Entries per generation of the cache of compiled cached_regex patterns
+/// that every resolver thread shares.
+const REGEX_GENERATION: usize = 512;
+/// Entries per generation of each thread's cache of its own clones.
+const REGEX_THREAD_GENERATION: usize = 16;
 
 /// A two-generation cache: an approximate LRU of between `cap` and `2 * cap`
 /// entries with O(1) operations. A hit in the older generation moves the entry
@@ -1337,6 +1365,30 @@ mod tests {
             assert!(cache.young.len() + cache.old.len() <= 8);
         }
         assert_eq!(cache.get("k0"), None);
+    }
+
+    static REGEX_COMPILES: LazyLock<Mutex<HashMap<String, usize>>> = LazyLock::new(Default::default);
+
+    pub(super) fn count_regex_compile(pattern: &str) {
+        *REGEX_COMPILES.lock().unwrap().entry(pattern.to_string()).or_default() += 1;
+    }
+
+    /// A pattern one resolver thread compiled is reused by the others instead
+    /// of being compiled again. The threads run one after another; concurrent
+    /// misses may each compile.
+    #[test]
+    fn cached_regex_compiles_once_across_threads() {
+        let pattern = r"(?:^|[^\w])(cached_regex_across_threads)\s*\(";
+        for _ in 0..3 {
+            let start = std::thread::spawn(move || {
+                let re = cached_pattern(pattern).unwrap();
+                re.captures("x.cached_regex_across_threads (1)").map(|m| m.get(1).unwrap().start())
+            })
+            .join()
+            .unwrap();
+            assert_eq!(start, Some(2));
+        }
+        assert_eq!(REGEX_COMPILES.lock().unwrap().get(pattern), Some(&1));
     }
 
     #[test]
