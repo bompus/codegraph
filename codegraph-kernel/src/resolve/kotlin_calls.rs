@@ -4,6 +4,9 @@ use super::call_shape::flat_head;
 
 pub(crate) struct KotlinFrame { start: i64, end: i64, names: Vec<String> }
 
+/// The name a head-only frame scan gives a DSL lambda block it did not type; not a Kotlin identifier.
+const UNTYPED_LAMBDA: &str = "?lambda";
+
 fn head_names(head: &str) -> Vec<String> {
     if re!(r"\bcompanion\s+object(?:\s+\w+)?\s*$").is_match(head) { return vec!["Companion".to_string()]; }
     let flat = flat_head(head, false);
@@ -35,6 +38,43 @@ fn platform_supers(name: &str) -> &'static [&'static str] {
 impl KernelResolver {
     fn kotlin_frames(&mut self, file: &str) -> Rc<Vec<KotlinFrame>> {
         if let Some(hit) = self.kotlin_frames_memo.get(file) { return hit.clone(); }
+        let frames = Rc::new(self.scan_kotlin_frames(file, true));
+        self.kotlin_frames_memo.insert(file.to_string(), frames.clone()); frames
+    }
+    /// The frames `head_names` and `with`/`apply`/`run` give, without typing DSL lambdas:
+    /// a block whose receiver only a lambda lookup could name is kept as an `UNTYPED_LAMBDA` frame.
+    fn kotlin_head_frames(&mut self, file: &str) -> Rc<Vec<KotlinFrame>> {
+        if let Some(hit) = self.kotlin_head_frames_memo.get(file) { return hit.clone(); }
+        let frames = Rc::new(self.scan_kotlin_frames(file, false));
+        self.kotlin_head_frames_memo.insert(file.to_string(), frames.clone()); frames
+    }
+    /// Whether a declaration lies in a companion object body. Companion frames come from
+    /// declaration heads alone, so the full frames, whose lambda lookups parse the files
+    /// every called DSL function lives in, are built only when a DSL lambda encloses it and
+    /// some lambda type could name `Companion` as its receiver.
+    fn in_kotlin_companion(&mut self, n: &KNode) -> bool {
+        let encloses = |f: &&KotlinFrame| f.start <= n.start_line && f.end >= n.end_line;
+        let head = self.kotlin_head_frames(&n.file_path);
+        if head.iter().filter(encloses).any(|f| f.names.iter().any(|name| name == "Companion")) { return true; }
+        if !head.iter().filter(encloses).any(|f| f.names.iter().any(|name| name == UNTYPED_LAMBDA)) { return false; }
+        if !self.kotlin_companion_lambda_receiver() { return false; }
+        self.kotlin_frames(&n.file_path).iter().filter(encloses).any(|f| f.names.iter().any(|name| name == "Companion"))
+    }
+    /// Whether any Kotlin source spells `Companion.(` (type arguments allowed): the only text
+    /// from which `kotlin_lambda_type_receiver` can read `Companion` as a lambda receiver,
+    /// directly or through a type alias.
+    fn kotlin_companion_lambda_receiver(&mut self) -> bool {
+        if let Some(hit) = self.kotlin_companion_receiver_memo { return hit; }
+        let files = match self.sorted_files() {
+            Some(files) => files,
+            None => Arc::new(self.table().map(|t| t.files.iter().cloned().collect()).unwrap_or_default()),
+        };
+        let found = files.iter().filter(|f| f.ends_with(".kt") || f.ends_with(".kts")).any(|file| {
+            self.read_file(file).is_some_and(|source| re!(r"Companion\s*(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?\s*\.\s*\(").is_match(source.text()))
+        });
+        self.kotlin_companion_receiver_memo = Some(found); found
+    }
+    fn scan_kotlin_frames(&mut self, file: &str, type_lambdas: bool) -> Vec<KotlinFrame> {
         let source = self.read_file(file).map(|s| super::awaited::blank_string_contents(&super::awaited::strip_ts_comments(s.text()))).unwrap_or_default();
         let mut frames = Vec::new();
         let mut stack = Vec::new();
@@ -50,14 +90,15 @@ impl KernelResolver {
                     if names.is_empty() {
                         let call = re!(r"(?:^|[^\w$])([a-z_]\w*)\s*(?:<[^<>{}]*>)?\s*(?:\([^(){}]*\))?\s*$").captures(&pending).map(|m| m[1].to_string());
                         if let Some(call) = call.filter(|name| !matches!(name.as_str(), "if" | "else" | "for" | "while" | "do" | "when" | "try" | "catch" | "finally" | "init" | "get" | "set" | "constructor" | "fun" | "class" | "object" | "interface" | "return" | "by" | "lazy" | "apply" | "run" | "also" | "let" | "with" | "use")) {
+                            if !type_lambdas { stack.push((line, vec![UNTYPED_LAMBDA.to_string()])); pending.clear(); continue; }
                             let site = ResolveRefIn { row_id: None, from_node_id: String::new(), reference_name: call.clone(), reference_kind: "calls".to_string(), line, column: 0, candidates: None, file_path: file.to_string(), language: "kotlin".to_string(), failure_reason: None };
                             let mut owners: HashSet<String> = stack.iter().flat_map(|(_, names): &(i64, Vec<String>)| names.iter().filter(|name| name.as_str() != "*").cloned()).collect();
                             // An explicit typed receiver also proves dispatch: m.single { ... }, m: Module.
-                            if let Ok(pattern) = Self::cached_regex(&format!(r"(?:^|[^\w$])([A-Za-z_]\w*)\s*\.\s*{}\s*(?:<[^<>{{}}]*>)?\s*(?:\([^(){{}}]*\))?\s*$", regex::escape(&call))) {
-                                if let Some(receiver) = pattern.captures(&pending) {
-                                    if let Ok(Some(ty)) = self.infer_local_receiver_type(&receiver[1], &site, true) {
-                                        owners.insert(ty.split('<').next().unwrap_or(&ty).trim_end_matches('?').to_string());
-                                    }
+                            // One shared pattern with the callee captured, not a pattern compiled per call name:
+                            // the callee before the trailing arguments is the same identifier `call` names.
+                            if let Some(receiver) = re!(r"(?:^|[^\w$])([A-Za-z_]\w*)\s*\.\s*([a-z_]\w*)\s*(?:<[^<>{}]*>)?\s*(?:\([^(){}]*\))?\s*$").captures(&pending).filter(|m| m[2] == call) {
+                                if let Ok(Some(ty)) = self.infer_local_receiver_type(&receiver[1], &site, true) {
+                                    owners.insert(ty.split('<').next().unwrap_or(&ty).trim_end_matches('?').to_string());
                                 }
                             }
                             let mut queue: VecDeque<_> = owners.iter().cloned().collect();
@@ -81,8 +122,7 @@ impl KernelResolver {
                 _ => { pending.push(ch); if pending.len() > 600 { let at = pending.char_indices().nth(300).map(|(i, _)| i).unwrap_or(0); pending.drain(..at); } }
             }
         }
-        let frames = Rc::new(frames);
-        self.kotlin_frames_memo.insert(file.to_string(), frames.clone()); frames
+        frames
     }
     pub(super) fn lexical_kotlin_members(&mut self, candidates: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
         if candidates.len() < 2 { return Ok(candidates); }
@@ -204,7 +244,7 @@ impl KernelResolver {
         }
         let pkg = self.kotlin_file_scope(&n.file_path).pkg.clone();
         let object = format!("{}{}{}", if pkg.is_empty() { String::new() } else { format!("{pkg}.") }, owner, if companion { ".Companion" } else { "" });
-        let source_companion = self.kotlin_frames(&n.file_path).iter().any(|f| f.start <= n.start_line && f.end >= n.end_line && f.names.iter().any(|name| name == "Companion"));
+        let source_companion = self.in_kotlin_companion(n);
         let here = self.kotlin_file_scope(&r.file_path);
         Ok(here.imports.contains(&format!("{object}.{}", n.name)) || here.stars.contains(&object)
             || (!companion && source_companion && (here.imports.contains(&format!("{object}.Companion.{}", n.name)) || here.stars.contains(&format!("{object}.Companion")))))
