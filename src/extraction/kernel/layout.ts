@@ -30,6 +30,7 @@ export const BINDING_ROW_SIZE = 64;
 /** meta byte offsets */
 export const META = {
   version: 0, // u8
+  flags: 1, // u8 (bit 0 META_PARSED_CLEAN; 0 from an older v3 kernel)
   nodeCount: 4, // u32
   edgeCount: 8, // u32
   refCount: 12, // u32
@@ -39,6 +40,9 @@ export const META = {
   durationMs: 28, // f64 (kernel-side wall; introspection only)
   bindingCount: 36, // u32 (v3)
 } as const;
+
+/** META.flags bit: the walker's tree has no ERROR or MISSING node. */
+export const META_PARSED_CLEAN = 1;
 
 /** binding row byte offsets (v3) — see BindingRow in buffers.rs */
 export const BINDING = {
