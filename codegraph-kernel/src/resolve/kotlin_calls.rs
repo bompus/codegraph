@@ -53,6 +53,9 @@ impl KernelResolver {
     /// every called DSL function lives in, are built only when a DSL lambda encloses it and
     /// some lambda type could name `Companion` as its receiver.
     fn in_kotlin_companion(&mut self, n: &KNode) -> bool {
+        if std::env::var("CODEGRAPH_PROBE_COMPANION").is_ok_and(|v| v == "f0") {
+            return self.kotlin_frames(&n.file_path).iter().any(|f| f.start <= n.start_line && f.end >= n.end_line && f.names.iter().any(|name| name == "Companion"));
+        }
         let encloses = |f: &&KotlinFrame| f.start <= n.start_line && f.end >= n.end_line;
         let head = self.kotlin_head_frames(&n.file_path);
         if head.iter().filter(encloses).any(|f| f.names.iter().any(|name| name == "Companion")) { return true; }
@@ -65,13 +68,37 @@ impl KernelResolver {
     /// directly or through a type alias.
     fn kotlin_companion_lambda_receiver(&mut self) -> bool {
         if let Some(hit) = self.kotlin_companion_receiver_memo { return hit; }
+        let mode = std::env::var("CODEGRAPH_PROBE_COMPANION").unwrap_or_default();
+        if mode == "skip" { self.kotlin_companion_receiver_memo = Some(false); return false; }
+        if mode == "uncached" || mode == "rawtext" {
+            let files = match self.sorted_files() {
+                Some(files) => files,
+                None => Arc::new(self.table().map(|t| t.files.iter().cloned().collect()).unwrap_or_default()),
+            };
+            let (mut n, mut bytes) = (0usize, 0usize);
+            let found = files.iter().filter(|f| f.ends_with(".kt") || f.ends_with(".kts")).any(|file| {
+                n += 1;
+                if mode == "uncached" {
+                    self.read_file_uncached(file).is_some_and(|source| { bytes += source.text().len(); re!(r"Companion\s*(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?\s*\.\s*\(").is_match(source.text()) })
+                } else {
+                    std::fs::read(super::pos_resolve(&self.root_abs, file)).ok().is_some_and(|b| { bytes += b.len(); re!(r"Companion\s*(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?\s*\.\s*\(").is_match(&String::from_utf8_lossy(&b)) })
+                }
+            });
+            self.probe_stats(&format!("companion-scan {mode} files={n} bytes={bytes} found={found}"));
+            self.kotlin_companion_receiver_memo = Some(found); return found;
+        }
+        self.probe_stats("companion-scan before");
+        super::probe_regex_cache("companion-scan before", false);
+        let mut scanned = 0usize;
         let files = match self.sorted_files() {
             Some(files) => files,
             None => Arc::new(self.table().map(|t| t.files.iter().cloned().collect()).unwrap_or_default()),
         };
         let found = files.iter().filter(|f| f.ends_with(".kt") || f.ends_with(".kts")).any(|file| {
+            scanned += 1;
             self.read_file(file).is_some_and(|source| re!(r"Companion\s*(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?\s*\.\s*\(").is_match(source.text()))
         });
+        self.probe_stats(&format!("companion-scan after files={scanned} found={found}"));
         self.kotlin_companion_receiver_memo = Some(found); found
     }
     fn scan_kotlin_frames(&mut self, file: &str, type_lambdas: bool) -> Vec<KotlinFrame> {
@@ -96,6 +123,15 @@ impl KernelResolver {
                             // An explicit typed receiver also proves dispatch: m.single { ... }, m: Module.
                             // One shared pattern with the callee captured, not a pattern compiled per call name:
                             // the callee before the trailing arguments is the same identifier `call` names.
+                            if std::env::var("CODEGRAPH_PROBE_REGEX").is_ok_and(|v| v == "pername") {
+                                if let Ok(pattern) = Self::cached_regex(&format!(r"(?:^|[^\w$])([A-Za-z_]\w*)\s*\.\s*{}\s*(?:<[^<>{{}}]*>)?\s*(?:\([^(){{}}]*\))?\s*$", regex::escape(&call))) {
+                                    if let Some(receiver) = pattern.captures(&pending) {
+                                        if let Ok(Some(ty)) = self.infer_local_receiver_type(&receiver[1], &site, true) {
+                                            owners.insert(ty.split('<').next().unwrap_or(&ty).trim_end_matches('?').to_string());
+                                        }
+                                    }
+                                }
+                            } else
                             if let Some(receiver) = re!(r"(?:^|[^\w$])([A-Za-z_]\w*)\s*\.\s*([a-z_]\w*)\s*(?:<[^<>{}]*>)?\s*(?:\([^(){}]*\))?\s*$").captures(&pending).filter(|m| m[2] == call) {
                                 if let Ok(Some(ty)) = self.infer_local_receiver_type(&receiver[1], &site, true) {
                                     owners.insert(ty.split('<').next().unwrap_or(&ty).trim_end_matches('?').to_string());

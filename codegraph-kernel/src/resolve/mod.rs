@@ -966,6 +966,8 @@ impl KernelResolver {
     #[napi]
     pub fn close(&mut self) {
         self.debug_stats("close");
+        self.probe_stats("close");
+        probe_regex_cache("close", false);
         self.release_conn();
         self.table.take();
         self.file_cache.clear();
@@ -988,6 +990,26 @@ impl KernelResolver {
 
     /// `CODEGRAPH_KERNEL_STATS=1`: the per-instance cache sizes, to stderr —
     /// what a resolver holds by the end of a run.
+    /// Probe only: file_cache residency, lines vs whole-file text copies.
+    pub(super) fn probe_stats(&self, at: &str) {
+        if !std::env::var_os("CODEGRAPH_KERNEL_STATS").is_some_and(|v| v == "1") {
+            return;
+        }
+        let (mut files, mut lines, mut line_bytes, mut text_files, mut text_bytes, mut kt, mut kt_text) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+        for (k, v) in &self.file_cache.map {
+            let Some(f) = v else { continue };
+            files += 1; lines += f.lines.len();
+            line_bytes += f.lines.capacity() * 24 + f.lines.iter().map(|s| s.capacity()).sum::<usize>();
+            let is_kt = k.ends_with(".kt") || k.ends_with(".kts");
+            if is_kt { kt += 1; }
+            if let Some(t) = f.text.get() { text_files += 1; text_bytes += t.capacity(); if is_kt { kt_text += 1; } }
+        }
+        eprintln!(
+            "[probe-stats] tid={:?} {at}: cache files={files} kt={kt} lines={lines} line_bytes={line_bytes} text_files={text_files} kt_text_files={kt_text} text_bytes={text_bytes} head_frames_memo={} frames_memo={} trees={}",
+            std::thread::current().id(), self.kotlin_head_frames_memo.len(), self.kotlin_frames_memo.len(), self.tree_cache.map.len()
+        );
+    }
+
     fn debug_stats(&self, at: &str) {
         if !std::env::var_os("CODEGRAPH_KERNEL_STATS").is_some_and(|v| v == "1") {
             return;
@@ -1229,19 +1251,46 @@ impl KernelResolver {
     /// some 10,000 distinct patterns on a large Python and C repository but
     /// reuses a few hundred at a time.
     fn cached_regex(pattern: &str) -> Res<Rc<Regex>> {
-        thread_local! {
-            static CACHE: RefCell<Generations<Rc<Regex>>> = RefCell::new(Generations::new(REGEX_GENERATION));
-        }
-        CACHE.with(|cell| {
+        REGEX_CACHE.with(|cell| {
             let mut cache = cell.borrow_mut();
             if let Some(re) = cache.get(pattern) {
+                PROBE_REGEX_COUNTS.with(|c| c.set((c.get().0 + 1, c.get().1)));
                 return Ok(re);
             }
+            PROBE_REGEX_COUNTS.with(|c| c.set((c.get().0, c.get().1 + 1)));
             let re = Rc::new(Regex::new(pattern).map_err(|e| Error::from_reason(e.to_string()))?);
             cache.insert(pattern.to_string(), re.clone());
             Ok(re)
         })
     }
+}
+
+thread_local! {
+    static REGEX_CACHE: RefCell<Generations<Rc<Regex>>> = RefCell::new(Generations::new(REGEX_GENERATION));
+    /// Probe only: (hits, compiles) of cached_regex on this thread.
+    static PROBE_REGEX_COUNTS: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+#[repr(C)]
+struct ProbeMallinfo2 { arena: usize, ordblks: usize, smblks: usize, hblks: usize, hblkhd: usize, usmblks: usize, fsmblks: usize, uordblks: usize, fordblks: usize, keepcost: usize }
+extern "C" { fn mallinfo2() -> ProbeMallinfo2; }
+
+/// Probe only: this thread's regex cache entries and counters; with `drop`, clears the cache and
+/// reports the in-use malloc bytes that clearing freed (process-wide counter, read immediately around the drop).
+fn probe_regex_cache(at: &str, drop: bool) {
+    if !std::env::var_os("CODEGRAPH_KERNEL_STATS").is_some_and(|v| v == "1") {
+        return;
+    }
+    let (hits, compiles) = PROBE_REGEX_COUNTS.with(|c| c.get());
+    let (young, old) = REGEX_CACHE.with(|c| { let c = c.borrow(); (c.young.len(), c.old.len()) });
+    let freed = if drop {
+        let before = unsafe { mallinfo2() }.uordblks;
+        let (y, o) = REGEX_CACHE.with(|c| { let mut c = c.borrow_mut(); (std::mem::take(&mut c.young), std::mem::take(&mut c.old)) });
+        std::mem::drop(y); std::mem::drop(o);
+        let after = unsafe { mallinfo2() }.uordblks;
+        before as i64 - after as i64
+    } else { 0 };
+    eprintln!("[probe-regex] tid={:?} {at}: entries young={young} old={old} hits={hits} compiles={compiles} freed_on_clear={freed}", std::thread::current().id());
 }
 
 /// Entries per generation of the cached_regex cache.
@@ -1290,6 +1339,8 @@ impl From<&KCand> for KernelCandidateOut {
 impl Drop for KernelResolver {
     fn drop(&mut self) {
         self.debug_stats("drop");
+        self.probe_stats("drop");
+        probe_regex_cache("drop", true);
         prof_dump("drop");
         self.release_conn();
     }
