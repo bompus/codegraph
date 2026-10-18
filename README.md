@@ -213,6 +213,8 @@ A [2026-10-15 mid-size comparison](docs/benchmarks/midsize-sweep-2026-10-15.md) 
 | supabase (React + Next.js + TS, 10,716 files) | 20.5 s, 4.57 GiB | 20.8 s, 3.81 GiB | 21.3 s, 3.56 GiB |
 | n8n (Vue + TS, 24,434 files) | 88.3 s, 9.81 GiB | 71.2 s, 6.53 GiB | 73.5 s, 6.21 GiB |
 
+The Alamofire row is from the 2026-10-14 run and predates the resolver change above. The [2026-10-15 mid-size comparison](docs/benchmarks/midsize-sweep-2026-10-15.md), which includes it, has the fork at 1.44 s and 1,042 MiB on Alamofire against upstream's 1.38 s (no clear change) and 791 MiB (+31.7%). A later three-run check of the current fork build on Node, without an upstream run, took 1.31 to 1.61 s and peaked at 919 to 930 MiB.
+
 Upstream at `6560052` took 2.0 to 2.7 times as long to index Python as at `290e03f` (pretix 9.2 s to 18.8 s, CPython 35.6 s to 95.3 s; [a same-host check](docs/benchmarks/fork-vs-upstream-node-bun-2026-10-03.md#since-2026-09-28) put the cause in upstream's code). At `3f714bcc` it is back near those earlier times (pretix 9.9 s, CPython 47 s on a host where most corpora indexed 9–19% slower than on 2026-10-13), so the fork's lead on those two corpora in the 2026-10-12 run (1.7 and 2.3 times) is gone on pretix, where the fork is 15% slower, and 13% on CPython.
 
 **One-file sync** (edit one file, `codegraph sync`):
@@ -268,7 +270,7 @@ The [benchmark](#benchmark-results) and [speed](#built-for-speed--the-rust-kerne
 
 - **Larger database:** 11–21% bigger on the other six corpora above, and 37% on supabase, which has 1,978 Markdown files. It holds Markdown, binding rows and more nodes.
 - **Fewer edges on some projects:** 5% fewer on pretix and 2% fewer on CPython, because the fork declines links it cannot confirm. Some of those were correct links.
-- **Slower to index some projects:** against upstream's current build, Alamofire took 1.90 s to index against 1.70 s (+12% on Node, +11% on Bun) and pretix 11.3 s against 9.85 s (+15%, +15%); supabase took 21.3 s against 20.3 s on Bun (+5%). pretix also peaked at 3.35 GiB against 2.95 GiB on Node (+14%). A one-file sync peaks higher on CPython (1.22 GiB against 889 MiB on Node, +40%), Alamofire (+17%) and gin (+12%). A warm question on gin takes 18 ms against 26 ms on Node and 21 ms against 23 ms on Bun.
+- **Slower to index some projects:** against upstream's current build in the 2026-10-14 run, Alamofire took 1.90 s to index against 1.70 s (+12% on Node, +11% on Bun; after the resolver change, the mid-size comparison found no clear wall-time difference) and pretix 11.3 s against 9.85 s (+15%, +15%); supabase took 21.3 s against 20.3 s on Bun (+5%). pretix also peaked at 3.35 GiB against 2.95 GiB on Node (+14%). A one-file sync peaks higher on CPython (1.22 GiB against 889 MiB on Node, +40%), Alamofire (+17%) and gin (+12%). A warm question on gin takes 18 ms against 26 ms on Node and 21 ms against 23 ms on Bun.
 - **On Bun:** slower concurrent explores on small projects, and an idle CPU a few milliseconds per second higher than Node's in the benchmark, as above.
 
 ---
