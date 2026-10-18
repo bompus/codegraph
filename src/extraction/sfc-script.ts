@@ -21,6 +21,106 @@ export function sfcFileNode(filePath: string, source: string, language: Language
   };
 }
 
+const NAME = /[A-Za-z_$][\w$]*/g;
+/** Quoted text and comments, which can hold arrow-like text that declares nothing. */
+const QUOTED_OR_COMMENT = /'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`|\/\*[\s\S]*?\*\/|\/\/.*$/gm;
+
+/** The parameter names of one arrow function and the span of its body in the expression. */
+export interface ArrowScope {
+  names: Set<string>;
+  start: number;
+  end: number;
+}
+
+function closeOf(code: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < code.length; i++) {
+    if ('([{'.includes(code[i]!)) depth++;
+    else if (')]}'.includes(code[i]!) && --depth === 0) return i;
+  }
+  return code.length;
+}
+
+function openOf(code: string, close: number): number {
+  let depth = 0;
+  for (let i = close; i >= 0; i--) {
+    if (')]}'.includes(code[i]!)) depth++;
+    else if ('([{'.includes(code[i]!) && --depth === 0) return i;
+  }
+  return 0;
+}
+
+/** Where an expression-bodied arrow stops: a comma or closer its own nesting does not open. */
+function bodyEnd(code: string, start: number): number {
+  let depth = 0;
+  for (let i = start; i < code.length; i++) {
+    const ch = code[i]!;
+    if ('([{'.includes(ch)) depth++;
+    else if (')]}'.includes(ch)) {
+      if (--depth < 0) return i;
+    } else if (ch === ',' && depth === 0) return i;
+  }
+  return code.length;
+}
+
+function paramNames(list: string): string[] {
+  const names: string[] = [];
+  let depth = 0;
+  let from = 0;
+  for (let i = 0; i <= list.length; i++) {
+    const ch = list[i];
+    if (ch !== undefined && '([{'.includes(ch)) depth++;
+    else if (ch !== undefined && ')]}'.includes(ch)) depth--;
+    else if ((ch === ',' || ch === undefined) && depth === 0) {
+      const param = list.slice(from, i);
+      const declared = param.slice(0, topLevelEquals(param)).trim();
+      const pattern = declared.startsWith('{') || declared.startsWith('[');
+      names.push(...(declared.match(NAME)?.slice(0, pattern ? undefined : 1) ?? []));
+      from = i + 1;
+    }
+  }
+  return names;
+}
+
+function topLevelEquals(param: string): number {
+  let depth = 0;
+  for (let i = 0; i < param.length; i++) {
+    if ('([{'.includes(param[i]!)) depth++;
+    else if (')]}'.includes(param[i]!)) depth--;
+    else if (param[i] === '=' && depth === 0) return i;
+  }
+  return param.length;
+}
+
+/**
+ * The arrow functions in one markup expression, each with the names it declares
+ * as parameters and the span of its body (`rows.map((count) => …)`,
+ * `rows.map(count => …)`, `({ count }) => …`). Markup has no binding rows, so a
+ * call on one of these names inside the body would otherwise link to a script
+ * import of the same name; a call outside the body still does.
+ */
+export function arrowScopes(expr: string): ArrowScope[] {
+  const code = expr.replace(QUOTED_OR_COMMENT, (text) => ' '.repeat(text.length));
+  const scopes: ArrowScope[] = [];
+  for (const arrow of code.matchAll(/=>/g)) {
+    let end = arrow.index - 1;
+    while (end >= 0 && /\s/.test(code[end]!)) end--;
+    let names: string[];
+    if (code[end] === ')') names = paramNames(code.slice(openOf(code, end) + 1, end));
+    else names = code.slice(0, end + 1).match(/[A-Za-z_$][\w$]*$/)?.slice(0, 1) ?? [];
+    if (names.length === 0) continue;
+    let start = arrow.index + 2;
+    while (/\s/.test(code[start] ?? '')) start++;
+    scopes.push({ names: new Set(names), start, end: code[start] === '{' ? closeOf(code, start) + 1 : bodyEnd(code, start) });
+  }
+  return scopes;
+}
+
+/** Whether `name`, used at `index` in the expression, is a parameter of an arrow function around it. */
+export function declaredByArrow(scopes: ArrowScope[], name: string, index: number): boolean {
+  return scopes.some((scope) => index >= scope.start && index < scope.end && scope.names.has(name));
+}
+
 export interface ScriptFold {
   filePath: string;
   componentNodeId: string;
