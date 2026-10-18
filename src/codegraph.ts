@@ -1076,9 +1076,11 @@ export class CodeGraph {
             // now resolve, and nothing else ever revisits them (their rows
             // were parked as status='failed' by an earlier completed pass).
             // Look them up by the symbol names the changed files now carry
-            // and module keys for renamed/default imports, then re-resolve that set.
-            // On a sync where no failed ref
-            // matches, this is one indexed lookup.
+            // and module keys for renamed/default imports and for a direct
+            // member reference through any binding (`LIST.includes(x)` after
+            // `import { LIST } from './constants'`), then re-resolve that set.
+            // On a sync where no failed ref matches, this is a few indexed
+            // lookups.
             const tRetry = Date.now();
             edgesBeforeRetry = this.queries.getMaxEdgeId();
             const retryable = this.queries.getRetryableFailedReferences([...new Set([
