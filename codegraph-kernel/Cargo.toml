@@ -87,6 +87,12 @@ libc = "0.2"
 napi-build = "2"
 cc = "1"
 
+# Unit tests run outside Node: load the N-API symbols at run time instead of
+# linking them, so a test that builds a KernelResolver links. Release builds
+# keep the features above.
+[dev-dependencies]
+napi = { version = "3", default-features = false, features = ["napi8", "dyn-symbols"] }
+
 [profile.release]
 # Never `panic = "abort"`: lib.rs walk_file turns a walker panic into a
 # per-file error the TS side recovers from; abort would kill the indexer.
