@@ -63,7 +63,7 @@ parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: st
             nodes: [],
             edges: [],
             // Read beside the kernel's tables (extractFromSource's own post-step).
-            unresolvedReferences: commonJsRequireRefs(filePath!, content!, language),
+            unresolvedReferences: commonJsRequireRefs(filePath!, content!, language, raw.sourceParsedClean),
             errors: raw.errors,
             durationMs: 0,
             kernelBuffers: raw.buffers,

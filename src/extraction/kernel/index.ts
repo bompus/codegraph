@@ -21,6 +21,7 @@ import { captureLiterals } from '../literal-capture';
 import {
   KERNEL_ABI_VERSION as LAYOUT_ABI,
   META as LAYOUT_META,
+  META_PARSED_CLEAN,
   NONE as LAYOUT_NONE,
 } from './layout';
 
@@ -68,6 +69,13 @@ export interface KernelRawResult {
   buffers: NonNullable<ExtractionResult['kernelBuffers']>;
   counts: { nodes: number; edges: number; refs: number };
   errors: ExtractionResult['errors'];
+  /** The kernel parsed `source` itself, not a pre-parsed rewrite, without a syntax error. */
+  sourceParsedClean: boolean;
+}
+
+/** Whether the walker's tree is `source`'s own and has no ERROR or MISSING node. */
+function sourceParsedClean(meta: Buffer, pre: string, source: string): boolean {
+  return (meta.readUInt8(LAYOUT_META.flags) & META_PARSED_CLEAN) !== 0 && pre === source;
 }
 
 /**
@@ -106,7 +114,7 @@ export function tryKernelExtractRaw(
         buffers.arena.toString('utf8', errorsOff, errorsOff + errorsLen)
       ) as ExtractionResult['errors'];
     }
-    return { buffers: { ...buffers, literalSource: pre }, counts, errors };
+    return { buffers: { ...buffers, literalSource: pre }, counts, errors, sourceParsedClean: sourceParsedClean(meta, pre, source) };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     // `defer:` is the stack guard's signal; the generic extractor takes the
@@ -179,7 +187,7 @@ export function tryKernelExtract(
     // finding holders.
     captureLiterals(pre, result.nodes);
     // Read beside the tables, as TreeSitterExtractor does (a CommonJS `require`).
-    result.unresolvedReferences.push(...commonJsRequireRefs(filePath, source, language));
+    result.unresolvedReferences.push(...commonJsRequireRefs(filePath, source, language, sourceParsedClean(buffers.meta, pre, source)));
     result.durationMs = Date.now() - t0;
     return result;
   } catch (err) {
