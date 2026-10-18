@@ -10,6 +10,37 @@ const SVELTE_RUNES = new Set([
   '$inspect', '$host', '$snippet',
 ]);
 
+const IDENTIFIER = /[A-Za-z_$][\w$]*/g;
+
+/** Index of the `}` that closes the tag opened at `start`, or -1 when the line ends first. */
+function tagEnd(line: string, start: number): number {
+  let depth = 0;
+  for (let i = start; i < line.length; i++) {
+    if (line[i] === '{') depth++;
+    else if (line[i] === '}' && --depth === 0) return i;
+  }
+  return -1;
+}
+
+/**
+ * The names a markup tag declares for the block it opens (`{#each rows as row, i}`,
+ * `{#snippet item(a, b)}`, `{#await p then v}`), continues (`{:then v}`, `{:catch e}`)
+ * or sits in (`{@const x = ...}`). Destructuring patterns and default values
+ * yield every identifier in them, which can hide a few more names than they declare.
+ */
+function templateTagNames(tag: string): string[] {
+  const identifiers = (text: string): string[] => text.match(IDENTIFIER) ?? [];
+  let m: RegExpMatchArray | null;
+  if ((m = /^#each\s[\s\S]*?\sas\s+([\s\S]*)$/.exec(tag))) {
+    return identifiers(m[1]!.replace(/\s*\([^)]*\)\s*$/, ''));
+  }
+  if ((m = /^#snippet\s+[\w$]+\s*\(([\s\S]*)\)\s*$/.exec(tag))) return identifiers(m[1]!);
+  if ((m = /^#await\s[\s\S]*?\s(?:then|catch)\s+([\s\S]+)$/.exec(tag))) return identifiers(m[1]!);
+  if ((m = /^:(?:then|catch)\s+([\s\S]+)$/.exec(tag))) return identifiers(m[1]!);
+  if ((m = /^@const\s+([\s\S]+?)\s*=/.exec(tag))) return identifiers(m[1]!);
+  return [];
+}
+
 /**
  * SvelteExtractor - Extracts code relationships from Svelte component files
  *
@@ -216,15 +247,38 @@ export class SvelteExtractor {
     // Find template expressions: {...} outside of script/style blocks
     // Matches curly-brace expressions, excluding Svelte block syntax ({#if}, {:else}, {/if}, {@html}, {@render})
     const lines = this.source.split('\n');
-    const exprRegex = /\{([^}#/:@][^}]*)\}/g;
+    const exprRegex = /\{([^}#/:@][^}]*)\}/y;
+    // Names the enclosing `{#each}`, `{#snippet}`, `{#await}` and `{@const}`
+    // tags declare, innermost last. A call on one of them is not a call on a
+    // script import or function of the same name.
+    const blocks: Array<Set<string>> = [];
 
     for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
       // Skip lines inside script/style blocks
       if (coveredRanges.some(([start, end]) => lineIdx >= start && lineIdx <= end)) continue;
 
       const line = lines[lineIdx]!;
-      let exprMatch;
-      while ((exprMatch = exprRegex.exec(line)) !== null) {
+      for (let at = line.indexOf('{'); at !== -1; at = line.indexOf('{', at + 1)) {
+        const sigil = line[at + 1];
+        if (sigil === '#' || sigil === ':' || sigil === '/' || sigil === '@') {
+          const end = tagEnd(line, at);
+          if (end === -1) continue;
+          const tag = line.slice(at + 1, end).trim();
+          const names = templateTagNames(tag);
+          if (sigil === '#') blocks.push(new Set(names));
+          else if (sigil === '/') blocks.pop();
+          else if (blocks.length > 0) {
+            const top = blocks[blocks.length - 1]!;
+            if (sigil === ':') top.clear();
+            for (const name of names) top.add(name);
+          }
+          at = end;
+          continue;
+        }
+        exprRegex.lastIndex = at;
+        const exprMatch = exprRegex.exec(line);
+        if (!exprMatch) continue;
+        at = at + exprMatch[0].length - 1;
         const expr = exprMatch[1]!;
         // Extract function calls: identifiers followed by (
         // Matches: cn(...), buttonVariants(...), obj.method(...)
@@ -235,6 +289,7 @@ export class SvelteExtractor {
           // Skip Svelte runes, control flow keywords, and common non-function patterns
           if (SVELTE_RUNES.has(calleeName)) continue;
           if (calleeName === 'if' || calleeName === 'else' || calleeName === 'each' || calleeName === 'await') continue;
+          if (blocks.some((names) => names.has(calleeName.split('.')[0]!))) continue;
 
           this.unresolvedReferences.push({
             fromNodeId: componentNodeId,

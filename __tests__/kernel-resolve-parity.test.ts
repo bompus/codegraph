@@ -1063,11 +1063,13 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(walked.status).toBe('resolved');
     expect(walked.targetNodeId).toBe(nodeId('call', 'base.ts', 'method'));
     // A member neither the shared instance's type nor its supertype declares
-    // (`unrelated` is only a free function elsewhere) settles natively once
-    // the walk may run, the same way as TS — the byte-compare leg over this
-    // fixture pins the TS side.
+    // (`unrelated` is only a free function elsewhere) is not that free
+    // function. The call still goes through the imported `shared`, so it
+    // settles on that constant once the walk may run, the same way as TS — the
+    // byte-compare leg over this fixture pins the TS side.
     const nope = walkedAll[idx.get('shared.unrelated@calls@src/main.ts')!]!;
-    expect(nope.status).toBe('unresolved');
+    expect(nope.status).toBe('resolved');
+    expect(nope.targetNodeId).toBe(nodeId('shared', 'facade.ts', 'constant'));
     // Object-literal aliases: `Facade.helper` follows the literal's shorthand
     // into facade.ts's own import; `Facade.go` names a local function.
     const facadeHelper = at('Facade.helper', 'src/main.ts', 'calls');
@@ -1085,8 +1087,11 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(sharedRun.targetNodeId).toBe(
       byName('run', 'method').find((n) => n.qualifiedName === 'Service::run')!.id,
     );
-    // A miss on the inferred type needs the supertype walk — none here: a miss.
-    expect(at('shared.unrelated', 'src/main.ts', 'calls').status).toBe('unresolved');
+    // A miss on the inferred type needs the supertype walk — none here: the
+    // call settles on the imported `shared` itself, not on a member of it.
+    const unrelated = at('shared.unrelated', 'src/main.ts', 'calls');
+    expect(unrelated.status).toBe('resolved');
+    expect(unrelated.targetNodeId).toBe(nodeId('shared', 'facade.ts', 'constant'));
     // `über.run`: ASCII word boundaries miss the non-ASCII receiver in both
     // engines, and the receiver's `local` row makes the bound-receiver claim
     // exclusive — a refused claim is terminal. With Unicode boundaries the

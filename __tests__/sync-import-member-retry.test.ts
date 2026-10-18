@@ -67,21 +67,17 @@ const MODULES: Files = {
   'src/table.ts': "export const COLUMNS = [{ name: 'a' }];\n",
 };
 
-/**
- * What a full index links through the bindings: `<refName>: <edge> <source kind> <file> -> <target kind> <file>::<name>`.
- *
- * Fork: the kernel links a member call through an import only to a callable
- * target (a function, method, class or component, or a store's `getState`),
- * so `NODE_PATH_EXCLUDELIST.includes`, `store.get` and the other calls on an
- * imported constant stay unresolved in a full index and after a sync alike.
- * Upstream links them to the constant. Each is still parked under its module
- * (the tail assertions below), and every sync is compared with a full index.
- */
+/** What a full index links through the bindings: `<refName>: <edge> <source kind> <file> -> <target kind> <file>::<name>`. */
 const LINKS = [
+  'COLUMNS.map: calls component src/components/Panel.vue -> constant src/table.ts::COLUMNS',
+  'NODE_PATH_EXCLUDELIST.includes: calls function src/diff-utils.ts -> constant src/constants.ts::NODE_PATH_EXCLUDELIST',
+  'REGISTERED_FLAGS.get: calls function src/flags.ts -> constant src/flags/registry.ts::REGISTERED_FLAGS',
   'api.get: calls function src/client.ts -> function src/api.ts::get',
+  'store.get: calls function src/save.ts -> constant src/store.ts::store',
+  'store.set: calls function src/save.ts -> constant src/store.ts::store',
+  'useStore.setState: calls function src/entry.ts -> constant src/entry-store.ts::useEntryStore',
 ];
-/** Fork: a member call on an imported constant is not linked (see LINKS). */
-const FLAGS_LINKS: string[] = [];
+const FLAGS_LINKS = ['FLAGS.includes: calls function src/use-flags.ts -> constant src/shared/flags.ts::FLAGS'];
 
 let roots: string[] = [];
 let graphs: CodeGraph[] = [];

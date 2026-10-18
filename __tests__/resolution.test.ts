@@ -2865,13 +2865,14 @@ export function remoteUse() { return obj.m(); }
         await cg.indexAll();
         // `obj` holds a call result, not a literal: the same-named top-level
         // `m` lies outside its declaration, so containment finds nothing and
-        // both calls stay unresolved rather than targeting the receiver constant.
+        // neither call targets `m`. The imported call still goes through the
+        // receiver constant, so `remoteUse` links to `obj` and nothing else.
         expect(await callersOf(cg, 'm', 'function')).toEqual([]);
         const obj = (await cg.searchNodes('obj', { limit: 5 })).find((r) => r.node.kind === 'constant');
         const remote = (await cg.searchNodes('remoteUse', { limit: 5 })).find((r) => r.node.kind === 'function');
         expect(
-          cg.getOutgoingEdges(remote!.node.id).some((e) => e.kind === 'calls' && e.target === obj!.node.id)
-        ).toBe(false);
+          cg.getOutgoingEdges(remote!.node.id).filter((e) => e.kind === 'calls').map((e) => e.target)
+        ).toEqual([obj!.node.id]);
         cg.close();
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
