@@ -40,8 +40,65 @@ function scopeFor(node: TreeNode, functionScoped = false): TreeNode {
   return node;
 }
 
-export function commonJsRequireRefs(filePath: string, source: string, language: Language): UnresolvedReference[] {
+/**
+ * Index past the whitespace and comments the grammar skips between tokens, or -1
+ * where the text could be something this reader does not follow (non-ASCII
+ * whitespace, an HTML-like comment, an unclosed block comment).
+ */
+function skipExtras(source: string, i: number): number {
+  for (;;) {
+    const c = source.charCodeAt(i);
+    if (c === 0x20 || (c >= 0x09 && c <= 0x0d)) { i++; continue; }
+    if (c === 0x2f && source.charCodeAt(i + 1) === 0x2f) {
+      for (i += 2; i < source.length && !'\n\r\u2028\u2029'.includes(source[i]!); i++);
+      continue;
+    }
+    if (c === 0x2f && source.charCodeAt(i + 1) === 0x2a) {
+      const close = source.indexOf('*/', i + 2);
+      if (close < 0) return -1;
+      i = close + 2;
+      continue;
+    }
+    if (c > 0x7e || c < 0x20 || source.startsWith('<!--', i) || source.startsWith('-->', i)) return -1;
+    return i;
+  }
+}
+
+/**
+ * Whether an error-free parse of the text could hold a call the tree walk
+ * reads: `require`, an optional `?.`, `(`, then a quoted module path. It only
+ * rules files out: anything it cannot read (type arguments, escapes, odd
+ * spacing) counts as a call and the walk decides. Most files that say
+ * "require" have no such call (`typeof require`, prose, `required`), and their
+ * re-parse was the cost. A tagged template (require`…`) is no call here: the
+ * walk never reads one. A tree with errors is out of its reach: recovery can
+ * make a call of `require@('./x')`.
+ */
+export function mayRequireModulePath(source: string, language: Language): boolean {
+  const typed = language === 'typescript' || language === 'tsx';
+  for (let at = source.indexOf('require'); at !== -1; at = source.indexOf('require', at + 7)) {
+    let i = skipExtras(source, at + 7);
+    if (i >= 0 && source.startsWith('?.', i)) i = skipExtras(source, i + 2);
+    if (i < 0 || (typed && source[i] === '<')) return true;
+    if (source[i] !== '(') continue;
+    // The grammar allows empty argument slots: `require(, './x')` is clean.
+    do i = skipExtras(source, i + 1); while (i >= 0 && source[i] === ',');
+    if (i < 0) return true;
+    const quote = source[i];
+    if (quote !== "'" && quote !== '"' && quote !== '`') continue;
+    let end = i + 1;
+    for (; end < source.length && source[end] !== quote; end++) {
+      if (source[end] === '\\' || (quote === '`' ? source[end] === '$' : '\n\r\u2028\u2029'.includes(source[end]!))) return true;
+    }
+    if (end >= source.length || MODULE_SPECIFIER.test(source.slice(i + 1, end))) return true;
+  }
+  return false;
+}
+
+/** `parsedClean`: the caller's parser read `source` without a syntax error (the kernel's flag), so the text check may skip the re-parse. */
+export function commonJsRequireRefs(filePath: string, source: string, language: Language, parsedClean = false): UnresolvedReference[] {
   if (!COMMONJS_LANGUAGES.has(language) || !source.includes('require')) return [];
+  if (parsedClean && !mayRequireModulePath(source, language)) return [];
   const tree = parseSourceTreeSync(source, language);
   if (!tree) return [];
   const scopes: TreeNode[] = [];

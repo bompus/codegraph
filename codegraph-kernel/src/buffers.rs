@@ -12,7 +12,10 @@
 //!
 //! meta (40 bytes):
 //!   0   u8   KERNEL_ABI_VERSION
-//!   1   [3]  pad
+//!   1   u8   flags: bit 0 = the walker's tree parsed without errors. An older
+//!            v3 kernel leaves the byte 0, which reads as "unknown", so the
+//!            layout stays v3.
+//!   2   [2]  pad
 //!   4   u32  node count
 //!   8   u32  edge count
 //!   12  u32  ref count
@@ -528,7 +531,7 @@ impl EmitOut {
             reexport_imports: 0,
         };
         EmitOut {
-            meta: build_meta(&tables, self.arena.len() as u32, NONE_STR, duration_ms),
+            meta: build_meta(&tables, self.arena.len() as u32, NONE_STR, duration_ms, 0),
             nodes: Vec::new(),
             edges: Vec::new(),
             refs: Vec::new(),
@@ -577,10 +580,14 @@ pub fn parse_collapse_warning(
     arena.put(&json)
 }
 
-pub fn build_meta(t: &Tables, arena_len: u32, errors_json: StrRef, duration_ms: f64) -> Vec<u8> {
+/// Meta byte 1, bit 0: the tree the walker read has no ERROR or MISSING node.
+pub const META_PARSED_CLEAN: u8 = 1;
+
+pub fn build_meta(t: &Tables, arena_len: u32, errors_json: StrRef, duration_ms: f64, flags: u8) -> Vec<u8> {
     let mut m = Vec::with_capacity(META_SIZE);
     m.push(KERNEL_ABI_VERSION);
-    m.extend_from_slice(&[0u8; 3]);
+    m.push(flags);
+    m.extend_from_slice(&[0u8; 2]);
     m.extend_from_slice(&t.node_count.to_le_bytes());
     m.extend_from_slice(&t.edge_count.to_le_bytes());
     m.extend_from_slice(&t.ref_count.to_le_bytes());
@@ -643,7 +650,7 @@ mod tests {
             from_id_str: NONE_STR,
         });
         assert_eq!(t.refs.len(), REF_ROW_SIZE);
-        let meta = build_meta(&t, a.len(), NONE_STR, 0.0);
+        let meta = build_meta(&t, a.len(), NONE_STR, 0.0, 0);
         assert_eq!(meta.len(), META_SIZE);
     }
 }
@@ -698,7 +705,8 @@ pub fn push_file_node_with_docstring<'p>(
 pub fn finish(mut arena: Arena, tables: Tables, has_error: bool, file_path: &str, t0: std::time::Instant) -> EmitOut {
     let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
     let errors_json = parse_collapse_warning(&mut arena, &tables, has_error, file_path);
-    let meta = build_meta(&tables, arena.len(), errors_json, duration_ms);
+    let flags = if has_error { 0 } else { META_PARSED_CLEAN };
+    let meta = build_meta(&tables, arena.len(), errors_json, duration_ms, flags);
     EmitOut {
         meta,
         nodes: tables.nodes,
