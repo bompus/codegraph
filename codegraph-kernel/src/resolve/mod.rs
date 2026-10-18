@@ -682,6 +682,8 @@ pub struct KernelResolver {
     /// Whether a Python file binds a name at any line, by (file, name).
     python_file_binds_memo: HashMap<(String, String), bool>,
     kotlin_frames_memo: HashMap<String, Rc<Vec<kotlin_calls::KotlinFrame>>>,
+    kotlin_head_frames_memo: HashMap<String, Rc<Vec<kotlin_calls::KotlinFrame>>>,
+    kotlin_companion_receiver_memo: Option<bool>,
     kotlin_receiver_types_memo: Option<Rc<HashSet<String>>>,
     kotlin_scope_memo: HashMap<String, Rc<lang_scope::KotlinFileScope>>,
     /// Python methods named `member` on classes deriving from a class, by
@@ -896,6 +898,8 @@ impl KernelResolver {
             python_bound_memo: HashMap::new(),
             python_file_binds_memo: HashMap::new(),
             kotlin_frames_memo: HashMap::new(),
+            kotlin_head_frames_memo: HashMap::new(),
+            kotlin_companion_receiver_memo: None,
             kotlin_receiver_types_memo: None,
             kotlin_scope_memo: HashMap::new(),
             kotlin_supers_memo: HashMap::new(),
