@@ -119,10 +119,10 @@ export function inc() { count.set(1); userCache.set(2); }
 `,
     });
     try {
-      // Neither the store constant nor an unrelated class's `set`.
-      expect(callsFrom(cg, 'src/App.svelte')).toEqual([]);
-      expect(callsFrom(cg, 'src/page.astro')).toEqual(['src/page.astro:bump@0.9']);
-      expect(callsFrom(cg, 'src/app.ts')).toEqual([]);
+      // The imported store constant, not an unrelated class's `set`.
+      expect(callsFrom(cg, 'src/App.svelte')).toEqual(['src/stores.ts:count@0.9']);
+      expect(callsFrom(cg, 'src/page.astro')).toEqual(['src/page.astro:bump@0.9', 'src/stores.ts:count@0.9']);
+      expect(callsFrom(cg, 'src/app.ts')).toEqual(['src/stores.ts:count@0.9']);
       expect(callsFrom(cg, 'src/Counter.svelte')).toEqual(['src/Counter.svelte:Counter::double@0.9', 'src/Counter.svelte:Counter::getCount@0.9']);
       expect(callsFrom(cg, 'src/Logic.svelte')).toEqual(['src/Logic.svelte:SomeLogic::trigger@0.8']);
     } finally {
@@ -162,7 +162,7 @@ export const count = writable(0);
 `,
       // A function-local `count` elsewhere doesn't hide the script's
       // import from markup: `count.set` is still a call on the imported
-      // store constant, not a guess at some class's `set`.
+      // store constant, which it links to, not a guess at some class's `set`.
       'src/Shadow.svelte': `<script>
   import { count } from './stores';
   function other() {
@@ -181,7 +181,7 @@ export const count = writable(0);
       }).toEqual({
         markup: ['src/fmt.js:Fmt::money@0.9', 'src/spread.js:spread@0.9'],
         module: ['src/fmt.js:Fmt::money@0.9'],
-        shadow: [],
+        shadow: ['src/stores.ts:count@0.9'],
       });
     } finally {
       cg.close();

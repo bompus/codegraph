@@ -1464,12 +1464,15 @@ if inferred.is_none() && r.language == "dart" {
             }
             return Ok(match self.resolve_via_import_member(r)? {
                 Some(c) => {
+                    // A call on an imported constant or variable (`LIST.includes(x)`,
+                    // `store.get(k)`) lands on that constant, as the callee is a
+                    // member of it that the graph has no node for. A shadowed name
+                    // never gets here: `receiver_binding` returns the parameter or
+                    // local, not the import.
                     if matches!(
                         c.node.kind.as_str(),
-                        "function" | "method" | "class" | "component"
-                    ) || ((c.node.kind == "constant" || c.node.kind == "variable")
-                        && method == "getState")
-                    {
+                        "function" | "method" | "class" | "component" | "constant" | "variable"
+                    ) {
                         Some(c)
                     } else {
                         None
