@@ -245,6 +245,21 @@ describe('changelog-reconcile', () => {
     expect(result.added).toEqual(['- New upstream fix.', '- New upstream feature.']);
   });
 
+  it("does not re-add an upstream entry the fork removed since the merge base, and still adds a new one", () => {
+    const base = log('\n### Fixes\n\n- Upstream fix the fork dropped.\n\n- Shared fix.\n', OLD);
+    const fork = log('\n### Fixes\n\n- Shared fix.\n\n- Fork fix.\n', OLD);
+    const upstream = log(
+      '\n### Fixes\n\n- Upstream fix the fork dropped.\n\n- Shared fix.\n\n- New upstream fix.\n',
+      OLD,
+    );
+    const result = reconcileChangelog({ fork, upstream, base });
+    expect(unreleasedOf(result.text)).toBe('\n### Fixes\n\n- Shared fix.\n\n- Fork fix.\n\n- New upstream fix.\n');
+    expect(result.added).toEqual(['- New upstream fix.']);
+    expect(result.omitted).toEqual(['- Upstream fix the fork dropped.']);
+    // Without the merge base nothing says the fork removed it, so it comes back.
+    expect(reconcileChangelog({ fork, upstream }).added).toContain('- Upstream fix the fork dropped.');
+  });
+
   it('leaves the file alone when upstream released nothing, and notes a released section the fork edited', () => {
     const fork = log('\n### Fixes\n\n- Fork fix.\n\n\n- Spaced fork fix.\n', OLD);
     expect(reconcileChangelog({ fork, upstream: log('', OLD), base: log('', OLD) })).toMatchObject({

@@ -17,7 +17,8 @@
  *     carried unchanged from upstream's `[Unreleased]` at the merge base that
  *     upstream no longer lists there (released under new wording, or removed);
  *   - upstream's own `[Unreleased]` entries the fork lacks, under their `###`
- *     heading;
+ *     heading, except those the merge base's `[Unreleased]` already had: the
+ *     fork removed or reworded them, so they are listed as left out;
  *   - upstream's file, verbatim, from its newest release heading to the end.
  *
  * A remaining fork entry that reads like an entry upstream released since the
@@ -346,11 +347,19 @@ export function reconcileChangelog({ fork, upstream, base = null }) {
   const emptyBefore = new Set(f.body.map((_, i) => i).filter((i) => emptyHeadingAt(f.body, forkLevel, i)));
   dropEmptiedHeadings(body, origin, emptyBefore);
 
-  // Upstream's own Unreleased entries the fork lacks.
+  // Upstream's own Unreleased entries the fork lacks. One already in the base's
+  // Unreleased was there when the fork last merged, so the fork's absence is its
+  // own doing (removed, reworded or filed elsewhere): it stays out and is reported.
   const added = [];
+  const omitted = [];
   const have = new Set(entries(body).map((e) => e.key));
+  const inBase = new Set(base === null ? [] : entries(splitChangelog(base).body).map((e) => e.key));
   for (const e of entries(u.body)) {
     if (have.has(e.key)) continue;
+    if (inBase.has(e.key)) {
+      omitted.push(e.key);
+      continue;
+    }
     insertEntry(body, e.path, u.body.slice(e.start, e.end));
     have.add(e.key);
     added.push(e.key);
@@ -370,7 +379,7 @@ export function reconcileChangelog({ fork, upstream, base = null }) {
   const tailDiffers = start >= 0 && f.tail.join('\n') !== u.tail.slice(start).join('\n');
 
   const text = [...f.header, ...body, '', ...u.tail].join('\n');
-  return { text, dropped, added, review, tailDiffers, newReleases: [...newReleases].map(version) };
+  return { text, dropped, added, omitted, review, tailDiffers, newReleases: [...newReleases].map(version) };
 }
 
 function git(args) {
@@ -424,6 +433,10 @@ function main() {
   console.log(`dropped ${result.dropped.length}, added from upstream's [Unreleased] ${result.added.length}`);
   for (const d of result.dropped) console.log(`  dropped (${d.reason}): ${first(d.entry)}`);
   for (const a of result.added) console.log(`  added: ${first(a)}`);
+  if (result.omitted.length > 0) {
+    console.log(`left out ${result.omitted.length}: in upstream's [Unreleased] and the merge base's, but not the fork's`);
+    for (const o of result.omitted) console.log(`  left out: ${first(o)}`);
+  }
   if (result.tailDiffers) {
     console.log("note: the fork parent's release sections differ from upstream's; the rebuild keeps upstream's");
   }
