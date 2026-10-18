@@ -2,7 +2,7 @@ import { Binding, Node, Edge, ExtractionResult, ExtractionError, UnresolvedRefer
 import { generateNodeId } from './tree-sitter-helpers';
 import { extractEmbeddedBlock } from './block-extract';
 import { isLanguageSupported } from './grammars';
-import { arrowParamNames, foldScriptResult, sfcFileNode } from './sfc-script';
+import { arrowScopes, declaredByArrow, foldScriptResult, sfcFileNode } from './sfc-script';
 
 /** Svelte 5 rune names — compiler builtins, not real functions */
 const SVELTE_RUNES = new Set([
@@ -280,7 +280,7 @@ export class SvelteExtractor {
         if (!exprMatch) continue;
         at = at + exprMatch[0].length - 1;
         const expr = exprMatch[1]!;
-        const arrowParams = arrowParamNames(expr);
+        const arrows = arrowScopes(expr);
         // Extract function calls: identifiers followed by (
         // Matches: cn(...), buttonVariants(...), obj.method(...)
         const callRegex = /\b([a-zA-Z_$][\w$.]*)\s*\(/g;
@@ -291,7 +291,7 @@ export class SvelteExtractor {
           if (SVELTE_RUNES.has(calleeName)) continue;
           if (calleeName === 'if' || calleeName === 'else' || calleeName === 'each' || calleeName === 'await') continue;
           const root = calleeName.split('.')[0]!;
-          if (arrowParams.has(root) || blocks.some((names) => names.has(root))) continue;
+          if (declaredByArrow(arrows, root, callMatch.index) || blocks.some((names) => names.has(root))) continue;
 
           this.unresolvedReferences.push({
             fromNodeId: componentNodeId,

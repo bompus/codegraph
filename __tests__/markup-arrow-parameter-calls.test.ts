@@ -45,7 +45,8 @@ function callsFrom(graph: CodeGraph, file: string): string[] {
 }
 
 const STORES = {
-  'src/stores.ts': 'export const count = writable(0);\nexport function bump(n) { return n + 1; }\n',
+  'src/stores.ts':
+    'export const count = writable(0);\nexport function bump(n) { return n + 1; }\nexport function format(v) { return v; }\n',
 };
 
 // One markup line per arrow shape; each declares `count` (or `bump`) itself.
@@ -55,30 +56,44 @@ const SHADOWING = [
   '{rows.map((row, count) => count.set(row))}',
   '{rows.map(({ count }) => count.set(1))}',
   '{rows.map((bump) => bump(1))}',
+  '{rows.map((count = makeStore()) => count.set(1))}',
+  '{rows.map(async (count) => { await count.set(1); })}',
+];
+
+// Text that looks like an arrow declaration but is not one, or a call outside the arrow's body.
+const STILL_LINKS = [
+  "{format(rows.map(format => format.trim()))}",
+  "{format('format =>')}",
+  '{format(`${rows.length} format =>`)}',
+  '{rows.map((row) => row)}{format(1)}',
 ];
 
 describe('a markup call on a name an arrow function declares', () => {
   it('does not link to a same-named import in Svelte', async () => {
-    const script = "<script>\n  import { count, bump } from './stores';\n  let rows = [];\n</script>\n";
+    const script = "<script>\n  import { count, bump, format } from './stores';\n  let rows = [];\n</script>\n";
     const files: Record<string, string> = { ...STORES };
     SHADOWING.forEach((line, i) => { files[`src/Shadow${i}.svelte`] = `${script}${line}\n`; });
+    STILL_LINKS.forEach((line, i) => { files[`src/Links${i}.svelte`] = `${script}${line}\n`; });
     files['src/Plain.svelte'] = `${script}{rows.map((row) => count.set(row))}\n{bump(1)}\n`;
     const graph = await index(files);
 
     const shadowed = SHADOWING.map((_, i) => callsFrom(graph, `src/Shadow${i}.svelte`));
     expect(shadowed).toEqual(SHADOWING.map(() => []));
+    expect(STILL_LINKS.map((_, i) => callsFrom(graph, `src/Links${i}.svelte`))).toEqual(STILL_LINKS.map(() => ['function format']));
     expect(callsFrom(graph, 'src/Plain.svelte')).toEqual(['constant count', 'function bump']);
   }, 120_000);
 
   it('does not link to a same-named import in Astro', async () => {
-    const front = "---\nimport { count, bump } from '../stores';\nconst rows = [];\n---\n";
+    const front = "---\nimport { count, bump, format } from '../stores';\nconst rows = [];\n---\n";
     const files: Record<string, string> = { ...STORES };
     SHADOWING.forEach((line, i) => { files[`src/pages/shadow${i}.astro`] = `${front}<ul>${line}</ul>\n`; });
+    STILL_LINKS.forEach((line, i) => { files[`src/pages/links${i}.astro`] = `${front}<ul>${line}</ul>\n`; });
     files['src/pages/plain.astro'] = `${front}<ul>{rows.map((row) => count.set(row))}</ul>\n{bump(1)}\n`;
     const graph = await index(files);
 
     const shadowed = SHADOWING.map((_, i) => callsFrom(graph, `src/pages/shadow${i}.astro`));
     expect(shadowed).toEqual(SHADOWING.map(() => []));
+    expect(STILL_LINKS.map((_, i) => callsFrom(graph, `src/pages/links${i}.astro`))).toEqual(STILL_LINKS.map(() => ['function format']));
     expect(callsFrom(graph, 'src/pages/plain.astro')).toEqual(['constant count', 'function bump']);
   }, 120_000);
 });
