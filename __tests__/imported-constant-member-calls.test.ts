@@ -60,20 +60,72 @@ function memberCalls(graph: CodeGraph): string[] {
   return links.sort();
 }
 
+async function index(files: Record<string, string>): Promise<CodeGraph> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-const-member-'));
+  roots.push(root);
+  for (const [file, text] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    fs.writeFileSync(path.join(root, file), text);
+  }
+  const graph = await CodeGraph.init(root, { index: true });
+  graphs.push(graph);
+  return graph;
+}
+
+/** `<target kind> <target>` for each call made from `file`. */
+function callsFrom(graph: CodeGraph, file: string): string[] {
+  const ids = graph.getNodesInFile(file).map((n) => n.id);
+  return graph
+    .getOutgoingEdgesFrom(ids, ['calls'])
+    .map((e) => {
+      const t = graph.getNode(e.target)!;
+      return `${t.kind} ${t.name}`;
+    })
+    .sort();
+}
+
 describe('a member call on an imported constant', () => {
   it('links to the constant, and not through a shadowed name or a deeper chain', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-const-member-'));
-    roots.push(root);
-    for (const [file, text] of Object.entries(FILES)) {
-      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
-      fs.writeFileSync(path.join(root, file), text);
-    }
-    const graph = await CodeGraph.init(root, { index: true });
-    graphs.push(graph);
+    const graph = await index(FILES);
 
     expect(memberCalls(graph)).toEqual([
       'direct: LIST.includes -> constant LIST',
       'viaVariable: state.inc -> variable state',
     ]);
+  }, 120_000);
+
+  it('does not link a name a Svelte template block declares', async () => {
+    // Template locals have no binding rows, so the script's import is the only
+    // binding the resolver sees for `count`; the block's own name must win.
+    const call = '<button on:click={() => count.set(1)}>x</button>';
+    const script = "<script>\n  import { count } from './stores';\n  let rows = [];\n</script>\n";
+    const graph = await index({
+      'src/stores.ts': 'export const count = writable(0);\n',
+      'src/Plain.svelte': `${script}${call}\n`,
+      'src/Each.svelte': `${script}{#each rows as count}\n  ${call}\n{/each}\n`,
+      'src/EachIndex.svelte': `${script}{#each rows as row, count}\n  ${call}\n{/each}\n`,
+      'src/Snippet.svelte': `${script}{#snippet item(count)}\n  ${call}\n{/snippet}\n`,
+      'src/Const.svelte': `${script}{#each rows as row}\n  {@const count = row}\n  ${call}\n{/each}\n`,
+      'src/Await.svelte': `${script}{#await rows}\n{:then count}\n  ${call}\n{/await}\n`,
+      'src/After.svelte': `${script}{#each rows as count}\n  <i>{count}</i>\n{/each}\n${call}\n`,
+    });
+
+    expect({
+      plain: callsFrom(graph, 'src/Plain.svelte'),
+      each: callsFrom(graph, 'src/Each.svelte'),
+      eachIndex: callsFrom(graph, 'src/EachIndex.svelte'),
+      snippet: callsFrom(graph, 'src/Snippet.svelte'),
+      constTag: callsFrom(graph, 'src/Const.svelte'),
+      awaited: callsFrom(graph, 'src/Await.svelte'),
+      afterBlock: callsFrom(graph, 'src/After.svelte'),
+    }).toEqual({
+      plain: ['constant count'],
+      each: [],
+      eachIndex: [],
+      snippet: [],
+      constTag: [],
+      awaited: [],
+      afterBlock: ['constant count'],
+    });
   }, 120_000);
 });
