@@ -703,19 +703,25 @@ export class CodeGraph {
           // the main writer's exclusive commits. When the pool will actually
           // run (enough pending refs), restore WAL BEFORE resolution so
           // readers never block the writer; otherwise stay in the fast mode
-          // until the finally — sequential resolution has no readers.
-          if (fastInit && unresolvedCount >= minRefsForPool()) {
+          // until the finally — sequential resolution has no readers, and a
+          // pool that boots mid-run switches to WAL itself (ensureWalForPool).
+          if (fastInit) {
             try {
-              this.db.getDb().pragma('synchronous = NORMAL');
-              this.db.getDb().pragma('journal_mode = WAL');
+              if (unresolvedCount >= minRefsForPool()) {
+                this.db.getDb().pragma('synchronous = NORMAL');
+                this.db.getDb().pragma('journal_mode = WAL');
+              }
               // Defer auto-checkpointing for the resolution phase, same
               // rationale as the deferWal path above: at the default 1000-page
               // interval, the persist loop's edge inserts + ref deletes make
               // SQLite re-write hot B-tree pages into the main DB file inline
               // on the writer over and over (#1231's pathology — measured as
-              // ~58% of the resolution phase on a 255k-ref repo). The valve
-              // bounds WAL growth off-thread; runMaintenance does the final
-              // fold and the finally restores the interval.
+              // ~58% of the resolution phase on a 255k-ref repo). Armed even
+              // while still in memory-journal mode, so a mid-run switch to WAL
+              // gets the same deferral (the interval and the valve are inert
+              // until a WAL exists). The valve bounds WAL growth off-thread;
+              // runMaintenance does the final fold and the finally restores
+              // the interval.
               priorAutocheckpoint = this.db.getWalAutocheckpoint();
               this.db.setWalAutocheckpoint(0);
               restoreAutocheckpoint = true;
@@ -1793,7 +1799,9 @@ export class CodeGraph {
       foldWalForSnapshot: () => this.db.foldWalForCopy(async () => { await walValve?.drain(); }),
       // Fast init leaves a small index in rollback-journal mode; a pool that
       // boots mid-resolution (below the fixed ref gate) needs WAL so its
-      // readers never block the writer's commits.
+      // readers never block the writer's commits. indexAll has already turned
+      // auto-checkpointing off and armed the valve for this phase, so the
+      // switch does not bring inline checkpoints into the batch commits.
       ensureWalForPool: () => {
         try {
           if (this.db.getJournalMode() !== 'wal') {
