@@ -21,6 +21,31 @@ export function sfcFileNode(filePath: string, source: string, language: Language
   };
 }
 
+const ARROW = /(?:\(([^()]*)\)|([A-Za-z_$][\w$]*))\s*=>/g;
+const NAME = /[A-Za-z_$][\w$]*/g;
+
+/**
+ * The names the arrow functions in one markup expression declare as parameters
+ * (`rows.map((count) => …)`, `rows.map(count => …)`, `({ count }) => …`).
+ * Markup has no binding rows, so a call on one of these would otherwise link to
+ * a script import of the same name.
+ */
+export function arrowParamNames(expr: string): Set<string> {
+  const names = new Set<string>();
+  for (const arrow of expr.matchAll(ARROW)) {
+    if (arrow[2]) {
+      names.add(arrow[2]);
+      continue;
+    }
+    for (const param of arrow[1]!.split(',')) {
+      const declared = param.replace(/=.*$/, '').trim();
+      const pattern = declared.startsWith('{') || declared.startsWith('[');
+      for (const name of declared.match(NAME)?.slice(0, pattern ? undefined : 1) ?? []) names.add(name);
+    }
+  }
+  return names;
+}
+
 export interface ScriptFold {
   filePath: string;
   componentNodeId: string;

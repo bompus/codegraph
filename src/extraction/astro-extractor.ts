@@ -2,7 +2,7 @@ import { Binding, Node, Edge, ExtractionResult, ExtractionError, UnresolvedRefer
 import { generateNodeId } from './tree-sitter-helpers';
 import { extractEmbeddedBlock } from './block-extract';
 import { isLanguageSupported } from './grammars';
-import { foldScriptResult, sfcFileNode } from './sfc-script';
+import { arrowParamNames, foldScriptResult, sfcFileNode } from './sfc-script';
 
 /**
  * Astro built-in components — compiler-provided (`<Fragment>`) or shipped by
@@ -271,6 +271,7 @@ export class AstroExtractor {
       }
 
       for (const expr of exprs) {
+        const arrowParams = arrowParamNames(expr.text);
         // Extract function calls: identifiers followed by (
         // Matches: cn(...), formatDate(...), obj.method(...)
         const callRegex = /\b([a-zA-Z_$][\w$.]*)\s*\(/g;
@@ -279,6 +280,7 @@ export class AstroExtractor {
           const calleeName = callMatch[1]!;
           // Skip control-flow keywords valid inside expressions
           if (calleeName === 'if' || calleeName === 'await' || calleeName === 'function') continue;
+          if (arrowParams.has(calleeName.split('.')[0]!)) continue;
 
           this.unresolvedReferences.push({
             fromNodeId: componentNodeId,
