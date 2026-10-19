@@ -23,6 +23,8 @@ const write = (rel: string, body: string) => {
   fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
   fs.writeFileSync(path.join(root, rel), body);
 };
+const cacheDir = () => path.join(root, 'kernel-cache');
+const cached = (stampText: string) => path.join(cacheDir(), `${process.platform}-${process.arch}`, stampText, 'codegraph-kernel.node');
 const prebuild = () => path.join(root, 'codegraph-kernel', 'prebuilds', `${process.platform}-${process.arch}`, 'codegraph-kernel.node');
 
 // Import fresh each time: the module has no state, but the path is outside the source tree.
@@ -33,16 +35,18 @@ function ensure(): { status: number | null; out: string } {
   const bin = path.join(root, 'fake-bin');
   const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` };
   delete env.CODEGRAPH_KERNEL_PATH;
+  env.CODEGRAPH_KERNEL_CACHE = cacheDir();
   const r = spawnSync(process.execPath, [path.join(root, 'scripts', 'ensure-kernel.mjs')], { cwd: root, env, encoding: 'utf8' });
   return { status: r.status, out: `${r.stdout}${r.stderr}` };
 }
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'ensure-kernel-'));
-  for (const f of ['ensure-kernel.mjs', 'kernel-stamp.mjs']) {
+  for (const f of ['ensure-kernel.mjs', 'kernel-stamp.mjs', 'kernel-cache.mjs', 'build-kernel.mjs']) {
     write(`scripts/${f}`, fs.readFileSync(path.join(SCRIPTS, f), 'utf8'));
   }
   write('codegraph-kernel/.gitignore', 'target/\ntarget-*/\nprebuilds/\n*.node\n');
+  write('.gitignore', 'kernel-cache/\nfake-bin/\nbuild-bin/\nout/\nbuilt.node\n');
   write('codegraph-kernel/src/lib.rs', 'pub fn one() -> u32 { 1 }\n');
   write('fake-bin/cargo', '#!/bin/sh\nexit 1\n');
   fs.chmodSync(path.join(root, 'fake-bin', 'cargo'), 0o755);
@@ -95,6 +99,47 @@ describe.runIf(process.platform !== 'win32')('ensure-kernel source stamp', () =>
     const r = ensure();
     expect(r.status).toBe(0);
     expect(r.out).toContain('was not built from this checkout');
+  });
+
+  it('restores a cached release build of the same committed sources without a toolchain', async () => {
+    write(path.relative(root, cached((await stamp())!)), 'cached release');
+    fs.rmSync(prebuild());
+    const r = ensure();
+    expect(r.status).toBe(0);
+    expect(r.out).toContain('restored a release build of the same sources from the kernel cache');
+    expect(fs.readFileSync(prebuild(), 'utf8')).toBe('cached release');
+    expect(fs.readFileSync(`${prebuild()}.stamp`, 'utf8')).toBe(`${await stamp()}\n`);
+  });
+
+  it('never restores a cached build for uncommitted sources, or when the cache is off', async () => {
+    const committed = (await stamp())!;
+    write(path.relative(root, cached(committed)), 'cached release');
+    write('codegraph-kernel/src/lib.rs', 'pub fn one() -> u32 { 2 }\n');
+    let r = ensure();
+    expect(r.out).toContain('was not built from this checkout');
+    expect(fs.readFileSync(prebuild(), 'utf8')).toBe('binary');
+
+    git('checkout', '--', 'codegraph-kernel/src/lib.rs');
+    const bin = path.join(root, 'fake-bin');
+    const off = spawnSync(process.execPath, [path.join(root, 'scripts', 'ensure-kernel.mjs')], {
+      cwd: root, encoding: 'utf8',
+      env: { ...process.env, CODEGRAPH_KERNEL_PATH: '', CODEGRAPH_KERNEL_CACHE: 'off', PATH: `${bin}${path.delimiter}${process.env.PATH}` },
+    });
+    expect(`${off.stdout}${off.stderr}`).toContain('was not built from this checkout');
+    expect(fs.readFileSync(prebuild(), 'utf8')).toBe('binary');
+  });
+
+  it('accepts a quick build of the current sources and says it is not for measuring', async () => {
+    fs.writeFileSync(`${prebuild()}.stamp`, `${await stamp()} quick\n`);
+    const r = ensure();
+    expect(r.status).toBe(0);
+    expect(r.out).toContain('quick (unoptimized) kernel build');
+  });
+
+  it('rebuilds a quick build of other sources', async () => {
+    fs.writeFileSync(`${prebuild()}.stamp`, `${await stamp()} quick\n`);
+    write('codegraph-kernel/src/lib.rs', 'pub fn one() -> u32 { 2 }\n');
+    expect(ensure().out).toContain('was not built from this checkout');
   });
 
   it('fails visibly when Git cannot enumerate untracked inputs', async () => {
@@ -190,5 +235,101 @@ describe('kernel source stamp inputs', () => {
   it('keeps the no-Git stamp absent', async () => {
     fs.rmSync(path.join(root, '.git'), { recursive: true });
     expect(await stamp()).toBeNull();
+  });
+});
+
+describe('kernel cache', () => {
+  it('keeps the four most recently saved or restored builds', async () => {
+    const { saveKernel, restoreKernel } = await import(path.join(SCRIPTS, 'kernel-cache.mjs'));
+    const built = path.join(root, 'built.node');
+    fs.writeFileSync(built, 'x');
+    const saved = process.env.CODEGRAPH_KERNEL_CACHE;
+    process.env.CODEGRAPH_KERNEL_CACHE = cacheDir();
+    try {
+      const dir = path.join(cacheDir(), 'p');
+      for (let i = 0; i < 5; i++) {
+        saveKernel('p', `s${i}`, built);
+        fs.utimesSync(path.join(dir, `s${i}`), i + 1, i + 1);
+      }
+      expect(restoreKernel('p', 's1', path.join(root, 'out', 'k.node'))).toBe(true);
+      saveKernel('p', 's5', built);
+      expect(fs.readdirSync(dir).sort()).toEqual(['s1', 's3', 's4', 's5']);
+      saveKernel('p', 'abc+dirty', built);
+      expect(fs.existsSync(path.join(dir, 'abc+dirty'))).toBe(false);
+      fs.mkdirSync(path.join(dir, 'abc+dirty'));
+      fs.writeFileSync(path.join(dir, 'abc+dirty', 'codegraph-kernel.node'), 'x');
+      expect(restoreKernel('p', 'abc+dirty', path.join(root, 'out', 'k.node'))).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.CODEGRAPH_KERNEL_CACHE;
+      else process.env.CODEGRAPH_KERNEL_CACHE = saved;
+    }
+  });
+});
+
+describe.runIf(process.platform !== 'win32')('build-kernel with the kernel cache', () => {
+  const lib = process.platform === 'darwin' ? 'libcodegraph_kernel.dylib' : 'libcodegraph_kernel.so';
+  // A fake cargo: `build` writes a library naming its profile and logs the call;
+  // FAKE_EDIT makes it change a kernel source while "compiling".
+  const fakeCargo = () => {
+    write('build-bin/cargo', `#!/bin/sh
+case "$1" in
+  build)
+    echo build >> "$CALLS"
+    profile=release; [ "$2" = "--profile" ] && profile=$3
+    dir=\${CARGO_TARGET_DIR:-target}/$profile
+    mkdir -p "$dir" && echo "$profile" > "$dir/${lib}"
+    [ -n "$FAKE_EDIT" ] && echo 'pub fn edited() {}' >> src/lib.rs
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+`);
+    write('build-bin/rustup', '#!/bin/sh\nexit 0\n');
+    fs.chmodSync(path.join(root, 'build-bin', 'cargo'), 0o755);
+    fs.chmodSync(path.join(root, 'build-bin', 'rustup'), 0o755);
+  };
+  const calls = () => path.join(root, 'out', 'calls');
+  const build = (args: string[] = [], extra: Record<string, string> = {}) => {
+    fs.mkdirSync(path.join(root, 'out'), { recursive: true });
+    const env: Record<string, string | undefined> = { ...process.env, PATH: `${path.join(root, 'build-bin')}${path.delimiter}${process.env.PATH}`, CODEGRAPH_KERNEL_CACHE: cacheDir(), CALLS: calls(), ...extra };
+    for (const k of Object.keys(env)) if (/^(RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS|CARGO_PROFILE_|CARGO_TARGET_DIR)/.test(k) && !(k in extra)) delete env[k];
+    const r = spawnSync(process.execPath, [path.join(root, 'scripts', 'build-kernel.mjs'), ...args], { cwd: root, env, encoding: 'utf8' });
+    return { status: r.status, out: `${r.stdout}${r.stderr}` };
+  };
+  const builds = () => (fs.existsSync(calls()) ? fs.readFileSync(calls(), 'utf8').split('\n').filter(Boolean).length : 0);
+
+  beforeEach(fakeCargo);
+
+  it('saves a release build of committed sources and restores it without compiling', async () => {
+    expect(build().status).toBe(0);
+    expect(fs.readFileSync(cached((await stamp())!), 'utf8')).toBe('release\n');
+    fs.rmSync(prebuild());
+    const r = build();
+    expect(r.out).toContain('restored');
+    expect(builds()).toBe(1);
+    expect(fs.readFileSync(prebuild(), 'utf8')).toBe('release\n');
+    expect(build(['--no-cache']).status).toBe(0);
+    expect(builds()).toBe(2);
+  });
+
+  it('never caches a quick build, and marks its stamp', async () => {
+    expect(build(['--quick']).status).toBe(0);
+    expect(fs.readFileSync(`${prebuild()}.stamp`, 'utf8')).toBe(`${await stamp()} quick\n`);
+    expect(fs.existsSync(cacheDir())).toBe(false);
+    expect(build(['--quick', '--target', 'x86_64-unknown-linux-gnu']).out).toContain('host only');
+  });
+
+  it('leaves a build unstamped and uncached when the sources change while it runs', async () => {
+    const before = (await stamp())!;
+    expect(build([], { FAKE_EDIT: '1' }).out).toContain('changed during the build');
+    expect(fs.existsSync(`${prebuild()}.stamp`)).toBe(false);
+    expect(fs.existsSync(cached(before))).toBe(false);
+  });
+
+  it('bypasses the cache for custom compiler flags and honors CARGO_TARGET_DIR', async () => {
+    expect(build([], { RUSTFLAGS: '-C target-cpu=native' }).status).toBe(0);
+    expect(fs.existsSync(cacheDir())).toBe(false);
+    expect(build([], { CARGO_TARGET_DIR: path.join(root, 'out', 'tgt') }).status).toBe(0);
+    expect(fs.existsSync(path.join(root, 'out', 'tgt', 'release', lib))).toBe(true);
+    expect(fs.readFileSync(cached((await stamp())!), 'utf8')).toBe('release\n');
   });
 });
