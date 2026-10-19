@@ -181,31 +181,59 @@ export function refreshNearDuplicates(deps: NearDuplicateDeps): { signed: number
   return { signed: rows.length, pairs: kept, rescored };
 }
 
+/**
+ * Calls `visit` with each group of rows whose signatures agree on one band,
+ * as `order[start..end)` in row order. Rows are sorted on a hash of the band
+ * with the band's bytes breaking ties, so equal bands sit together without a
+ * string key or an array per row: on a large index those were most of a
+ * one-file sync's garbage.
+ */
+export function forEachBandBucket(
+  sigs: Buffer,
+  count: number,
+  band: number,
+  order: Uint32Array,
+  hash: Uint32Array,
+  visit: (start: number, end: number) => void,
+): void {
+  const rowBytes = HASHES * 4;
+  const bandBytes = ROWS * 4;
+  const at = (i: number) => i * rowBytes + band * bandBytes;
+  for (let i = 0; i < count; i++) {
+    let h = 0x811c9dc5;
+    for (let k = 0; k < bandBytes; k += 4) h = Math.imul(h ^ sigs.readUInt32LE(at(i) + k), 0x01000193);
+    hash[i] = h >>> 0;
+    order[i] = i;
+  }
+  const sameBand = (a: number, b: number) => sigs.compare(sigs, at(a), at(a) + bandBytes, at(b), at(b) + bandBytes);
+  order.sort((a, b) => hash[a]! - hash[b]! || sameBand(a, b) || a - b);
+  let start = 0;
+  for (let r = 1; r <= count; r++) {
+    if (r < count && hash[order[r]!] === hash[order[start]!] && sameBand(order[r]!, order[start]!) === 0) continue;
+    visit(start, r);
+    start = r;
+  }
+}
+
 /** LSH over the stored signatures, one band at a time so memory stays linear in the bodies. */
 function pairNearDuplicates(deps: NearDuplicateDeps): { kept: number; rescored: number } {
   const { queries } = deps;
-  const candidates = new Set<string>();
-  const bandBytes = ROWS * 4;
   // Every signature in one scan (rowid order), then each band's buckets from
   // the bytes in memory: sixteen SQL scans with a per-row substr and base64
-  // key were most of a sync's near-duplicate cost on a large index. Bands are
-  // still bucketed one at a time, so only one band's keys are alive at once.
+  // key were most of a sync's near-duplicate cost on a large index.
   const { rowids, nodeIds, sigs: allSigs } = queries.minhashAll(HASHES * 4);
+  const count = rowids.length;
+  // A candidate is a pair of row indexes i < j, packed as i * count + j.
+  const candidates = new Set<number>();
+  const order = new Uint32Array(count);
+  const hash = new Uint32Array(count);
   for (let band = 0; band < BANDS; band++) {
-    const buckets = new Map<string, number[]>();
-    for (let i = 0; i < rowids.length; i++) {
-      const at = i * HASHES * 4 + band * bandBytes;
-      const key = allSigs.toString('latin1', at, at + bandBytes);
-      const bucket = buckets.get(key);
-      if (bucket) bucket.push(rowids[i]!);
-      else buckets.set(key, [rowids[i]!]);
-    }
-    for (const ids of buckets.values()) {
-      if (ids.length < 2 || ids.length > BUCKET_CAP) continue;
-      for (let i = 0; i < ids.length; i++) {
-        for (let j = i + 1; j < ids.length; j++) candidates.add(`${ids[i]}:${ids[j]}`);
+    forEachBandBucket(allSigs, count, band, order, hash, (start, end) => {
+      if (end - start < 2 || end - start > BUCKET_CAP) return;
+      for (let i = start; i < end; i++) {
+        for (let j = i + 1; j < end; j++) candidates.add(order[i]! * count + order[j]!);
       }
-    }
+    });
   }
 
   // Candidates are decided on their exact shingle overlap, read back from
@@ -237,7 +265,8 @@ function pairNearDuplicates(deps: NearDuplicateDeps): { kept: number; rescored: 
   const pairs: Array<{ a: string; b: string; score: number }> = [];
   const degree = new Map<string, number>();
   for (const key of candidates) {
-    const [x, y] = key.split(':').map(Number) as [number, number];
+    const x = rowids[Math.floor(key / count)]!;
+    const y = rowids[key % count]!;
     const idX = nodeIds.get(x);
     const idY = nodeIds.get(y);
     if (!idX || !idY) continue;
