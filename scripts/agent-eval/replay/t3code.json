@@ -1,0 +1,99 @@
+{
+  "$comment": [
+    "Real codegraph_explore queries agents asked about bompus/t3code, harvested by harvest-queries.mjs and reviewed by hand; a question about the agent's own branch diff was removed because it depends on git state.",
+    "Replay them against bompus/t3code checked out at commit, indexed with either build: node scripts/agent-eval/replay-queries.mjs <checkout> --tasks scripts/agent-eval/replay/t3code.json --base <build> --cand <build> --out <dir>."
+  ],
+  "repository": "bompus/t3code",
+  "commit": "1451e7cb",
+  "tasks": [
+    {
+      "id": "q-a633e2dae5",
+      "prompt": "SQLite persistence driver sqlite client layer node:sqlite NodeSqliteClient"
+    },
+    {
+      "id": "q-9ecebf92c6",
+      "prompt": "desktopTelemetryFd telemetry fd writer shutdown finalizer"
+    },
+    {
+      "id": "q-9095a32ee1",
+      "prompt": "WSL backend launch runBackendProcess bootstrap stdin parent exit shutdown DesktopBackendManager"
+    },
+    {
+      "id": "q-526bca9e05",
+      "prompt": "UsageLimitRecoveryWorker sweep getLimitRecoveryCandidates ThreadSettlementService sweep schedule interval"
+    },
+    {
+      "id": "q-20108e70c2",
+      "prompt": "parseChangeRequestUrl threadPullRequests sourceControl.ts callers sidebar thread pull request resolution",
+      "maxFiles": 4
+    },
+    {
+      "id": "q-7fa4e70eef",
+      "prompt": "ThreadPullRequestServiceV2 synchronize resolveProject branchPullRequest"
+    },
+    {
+      "id": "q-562375f3ce",
+      "prompt": "ClaudeAdapter session idle stop close session lifetime reap ProviderSessionDirectory ProviderService stopSession idle timeout",
+      "maxFiles": 6
+    },
+    {
+      "id": "q-1e611e8ca7",
+      "prompt": "scheduled task scheduler startup runs due tasks on server start; T3 Connect tunnel auto start from settings; provider session resume on startup",
+      "maxFiles": 6
+    },
+    {
+      "id": "q-6d72bfb6b8",
+      "prompt": "scheduled task scheduler startup runs due tasks on server start; T3 Connect tunnel auto start from settings; provider session resume on startup"
+    },
+    {
+      "id": "q-ca7eaf3678",
+      "prompt": "ThreadFeed FlatList renderItem keyExtractor getItemType feed rows"
+    },
+    {
+      "id": "q-a6fc2baf25",
+      "prompt": "resolveRelativePathWithinRoot WorkspacePaths.ts normalizeWorkspaceRoot"
+    },
+    {
+      "id": "q-bd9f44ff21",
+      "prompt": "mobile AppState active resume reconnect shell snapshot refetch after background"
+    },
+    {
+      "id": "q-e96e961ae5",
+      "prompt": "checkpoint capture git spawn turn complete CheckpointStore captureCheckpoint"
+    },
+    {
+      "id": "q-60a0e895d6",
+      "prompt": "provider session idle timeout stop evict ProviderSessionManager detach idle Claude session close after turn"
+    },
+    {
+      "id": "q-7907bc7a05",
+      "prompt": "thread details panel Changes row opens diff panel working tree changes +additions -deletions",
+      "maxFiles": 4
+    },
+    {
+      "id": "q-86f5d89d23",
+      "prompt": "applyOrchestrationV2ProjectionEvent turn-item.updated"
+    },
+    {
+      "id": "q-175d5b67e9",
+      "prompt": "replay stats json_type orchestration events query"
+    },
+    {
+      "id": "q-6ec6171210",
+      "prompt": "getThreadHistoryPage getThreadSnapshotWindow readTimelineIndex decode turn item payload"
+    },
+    {
+      "id": "q-550af2d603",
+      "prompt": "getThreadSnapshotWindow in ProjectionStore"
+    },
+    {
+      "id": "q-7570cfcb69",
+      "prompt": "TimelineIndexItem isVisible TimelineIndexRow readTimelineIndex items map"
+    },
+    {
+      "id": "q-d4292be2f0",
+      "prompt": "vite.config.ts fmt configuration sortPackageJson ignorePatterns",
+      "maxFiles": 1
+    }
+  ]
+}
