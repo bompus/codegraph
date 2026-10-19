@@ -204,4 +204,30 @@ describe('a this.<field> call on a field a wrapper initializes', () => {
     });
     expect(calls.filter((c) => c.includes('.dispose'))).toEqual([]);
   }, 60_000);
+
+  it("looks a base class's supertype up where that class is written, not at the calling line", async () => {
+    // `wrap`'s parameter shares the supertype's name and its function spans
+    // line 5, the line of the call in model.ts.
+    const calls = await callsOf({
+      ...LIFECYCLE,
+      'src/base/store.ts':
+        "import { Emitter } from './event';\n" +
+        'export class Store extends Emitter<void> {}\n' +
+        'export function wrap(Emitter: number) {\n' +
+        '  const unused = 1;\n' +
+        '  return Emitter + unused;\n' +
+        '}\n',
+      'src/app/model.ts':
+        "import { Store } from '../base/store';\n" +
+        'export class Model {\n' +
+        '  private readonly store: Store = new Store();\n' +
+        '  run() {\n' +
+        '    this.store.fire();\n' +
+        '  }\n' +
+        '}\n',
+    });
+    expect(calls.filter((c) => c.includes('.fire'))).toEqual([
+      'src/app/model.ts: this.store.fire -> src/base/event.ts::Emitter::fire',
+    ]);
+  }, 60_000);
 });

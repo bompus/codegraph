@@ -134,7 +134,12 @@ impl KernelResolver {
     /// member), or one the file declares. `Outside` when the file imports it
     /// from a package outside the project that no project file declares.
     pub(super) fn ts_named_type(&mut self, written: &str, from: &KNode, at: &ResolveRefIn) -> Res<TsNamedType> {
-        self.ts_named_type_in(written, &from.file_path, &from.language, &from.id, at)
+        // The name is written in `from`'s head, so a parameter or local that
+        // shadows it is judged at that line, not at the call's.
+        let mut at = at.clone();
+        at.line = from.start_line;
+        at.column = from.start_column;
+        self.ts_named_type_in(written, &from.file_path, &from.language, &from.id, &at)
     }
 
     /// ts_named_type for a name written in `file`, which `from_id` (a node
@@ -355,6 +360,8 @@ impl KernelResolver {
             let mut at = r.clone();
             at.file_path = owner.file_path.clone();
             at.language = owner.language.clone();
+            at.line = owner.start_line;
+            at.column = owner.start_column;
             let file = self.ts_imported_type_file(&decl.ty, &at)?.unwrap_or_else(|| owner.file_path.clone());
             return Ok(Some((decl.ty, decl.array, Some(file))));
         }

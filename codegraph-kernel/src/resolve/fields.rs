@@ -1287,6 +1287,8 @@ impl KernelResolver {
         let mut at = r.clone();
         at.file_path = cls.file_path.clone();
         at.language = cls.language.clone();
+        at.line = cls.start_line;
+        at.column = cls.start_column;
         at
     }
 
