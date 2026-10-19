@@ -227,8 +227,9 @@ function acquireWriterRecord(
 }
 
 /** Publish catch-up readiness without exposing a partially-written pidfile.
- * Contention retains a retry until publication or an ownership change. */
-export function markWriterReady(projectRoot: string): void {
+ * Contention retains a retry until publication or an ownership change. With
+ * `owned`, only that record generation is stamped, never a successor's. */
+export function markWriterReady(projectRoot: string, owned?: WriterLockInfo): void {
   const pidPath = getWriterPidPath(projectRoot);
   const retry = (): void => {
     if (pendingReadiness.has(pidPath)) return;
@@ -260,6 +261,7 @@ export function markWriterReady(projectRoot: string): void {
       cancelPendingReadiness(pidPath);
       const info = readWriterLock(projectRoot);
       if (!info || info.pid !== process.pid) return;
+      if (owned && (info.mode !== owned.mode || info.startedAt !== owned.startedAt)) return;
       const tmp = `${pidPath}.${process.pid}.ready.tmp`;
       try {
         fs.writeFileSync(tmp, encode({ ...info, ready: true }), { mode: 0o600 });
