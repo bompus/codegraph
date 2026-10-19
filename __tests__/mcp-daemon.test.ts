@@ -324,7 +324,8 @@ describe('Shared MCP daemon (issue #411)', () => {
     }
   }, 20000);
 
-  it('a disconnect before client hello leaves no phantom session and the idle reaper exits (#1356)', async () => {
+  // Diagnostic: repeat to catch the occasional Windows CI shutdown stall with step timings.
+  it.each(Array.from({ length: 20 }, (_, i) => i + 1))('a disconnect before client hello leaves no phantom session and the idle reaper exits (#1356) repeat %i', async () => {
     const preload = path.resolve(__dirname, 'fixtures/daemon-disconnect-order.cjs').split(path.sep).join('/');
     const server = spawnServer(tempDir, {
       NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require ${JSON.stringify(preload)}`,
