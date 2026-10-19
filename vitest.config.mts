@@ -42,8 +42,9 @@ export default defineConfig({
       /**
        * Every spawned MCP server, daemons included, would otherwise ask GitHub
        * for the latest release, because the sandboxed home has no cached
-       * answer. That open connection can hold a test daemon past its exit
-       * deadline. The update-check unit tests inject their own `env`.
+       * answer. In one local Windows run that open connection kept a test
+       * daemon alive until its 2 s exit backstop. The update-check unit tests
+       * inject their own `env`.
        */
       CODEGRAPH_NO_UPDATE_CHECK: '1',
     },
