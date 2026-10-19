@@ -1,4 +1,6 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { spawnSync, execFileSync } from 'node:child_process';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error untyped ESM script
@@ -72,6 +74,26 @@ describe('query harvest', () => {
     expect(callDirectory({ query: 'Q', projectPath: 7 }, '/public')).toBeNull();
     expect(callDirectory({ query: 'Q', projectPath: undefined }, '/session')).toBe('/session');
     expect(callDirectory({ query: 'Q', projectPath: '/abs' }, '/session')).toBe('/abs');
+  });
+  it('harvests only calls whose project it can read', () => {
+    const root = mkdtempSync(join(tmpdir(), 'harvest-'));
+    try {
+      const repo = join(root, 'repo');
+      execFileSync('git', ['init', '-q', repo]);
+      execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', 'https://github.com/pub/repo.git']);
+      const explore = (input: string) => JSON.stringify({ cwd: repo, payload: { type: 'custom_tool_call', input } });
+      writeFileSync(join(root, 's.jsonl'), [
+        explore('codegraph_explore({query:"kept"})'),
+        explore('codegraph_explore({query:"unreadable", projectPath: p})'),
+      ].join('\n'));
+      const script = resolve(import.meta.dirname, '../scripts/agent-eval/harvest-queries.mjs');
+      const run = spawnSync(process.execPath, [script, '--public', 'https://github.com/pub/repo', join(root, 's.jsonl')], { encoding: 'utf8' });
+      expect(run.status).toBe(0);
+      expect(JSON.parse(run.stdout).repos['pub/repo'].tasks.map((t: { prompt: string }) => t.prompt)).toEqual(['kept']);
+      expect(run.stderr).toContain('kept 1, duplicates 0, dropped 1');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
   it('maps GitHub remotes to owner/repo', () => {
     expect(repoSlug('git@github.com:Owner/Repo.git\n')).toBe('owner/repo');
