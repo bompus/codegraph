@@ -758,7 +758,7 @@ pub(super) fn is_callable_kind(kind: &str) -> bool {
 pub(super) fn extension_resolution(language: &str) -> &'static [&'static str] {
     match language {
         "typescript" => &[
-            ".ts", ".tsx", ".d.ts", ".js", ".jsx", "/index.ts", "/index.tsx", "/index.js",
+            ".ts", ".tsx", ".d.ts", ".js", ".jsx", "/index.ts", "/index.tsx", "/index.js", "/index.jsx",
         ],
         "arkts" => &[
             ".ets", ".ts", ".d.ts", ".js", "/Index.ets", "/index.ets", "/index.ts", "/index.js",
@@ -767,7 +767,7 @@ pub(super) fn extension_resolution(language: &str) -> &'static [&'static str] {
             ".js", ".jsx", ".mjs", ".cjs", ".xsjs", ".xsjslib", "/index.js", "/index.jsx",
         ],
         "tsx" => &[
-            ".tsx", ".ts", ".d.ts", ".js", ".jsx", "/index.tsx", "/index.ts", "/index.js",
+            ".tsx", ".ts", ".d.ts", ".js", ".jsx", "/index.tsx", "/index.ts", "/index.js", "/index.jsx",
         ],
         "jsx" => &[".jsx", ".js", "/index.jsx", "/index.js"],
         "svelte" => &[

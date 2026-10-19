@@ -148,7 +148,7 @@ impl KernelResolver {
         let head = written.split('.').next().unwrap_or("");
         let mapping = self.import_mappings(file)?.iter().find(|i| i.local_name == head).cloned();
         // A name the file declares is looked up past `from_id` itself.
-        let key = (file.to_string(), if mapping.is_some() { written.to_string() } else { format!("{written}\0{from_id}") });
+        let key = (file.to_string(), if mapping.is_some() { format!("{written}\0@{}", at.line) } else { format!("{written}\0{from_id}") });
         if let Some(hit) = self.ts_named_type_memo.get(&key) {
             return Ok(hit.clone());
         }
