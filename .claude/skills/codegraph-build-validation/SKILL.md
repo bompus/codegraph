@@ -87,9 +87,12 @@ Base effort quotes on these rather than on how heavy a step sounds. Measured on 
 | Worker upstream reconcile with conflict resolution and full verification | 15–28 min |
 | Upstream reconcile to a reviewed PR: worker, review, review fixes | 38–52 min |
 | Stacked landing: stack suite, squash-merge each PR, tree check | ~5 min |
+| One-file sync comparison on n8n, `scripts/benchmarks/runtime/sync-ab.mjs` (two sessions, 22 runs) | 5 min; 3 min 30 s with a stored noise floor; `--proxies` 1 min 30 s |
 | Pre-deploy gate: build, kernel, suite and source probes must all pass before a build is promoted (run by a maintainer-local helper that is not part of this repository) | 2.5 min |
 
 `eval:precision` per corpus is not recorded yet; add it the next time one is timed.
+
+For a claim that a change moves a one-file sync's memory or time, run `scripts/benchmarks/runtime/sync-ab.mjs` rather than writing a driver: it restores a saved index per run, handles the synthesis skip-list fingerprint, stops when the two builds do different work, and writes the PR table. Screen with `--proxies` first; usage is in `scripts/benchmarks/runtime/README.md`.
 
 ### Windows-gated tests
 
