@@ -104,6 +104,10 @@ impl KernelResolver {
                     if guard1_tail_re().is_match(rest) && !nullable_union_tail_re().is_match(rest) {
                         continue;
                     }
+                } else if pat.guard == 5 {
+                    if guard5_tail_re().is_match(&line[m.end..]) {
+                        continue;
+                    }
                 } else if pat.guard == 4 {
                     // An assignment statement, not a trailing keyword argument.
                     if line[m.end..].split('\n').next().is_some_and(|rest| rest.trim_end().ends_with(',')) { continue; }

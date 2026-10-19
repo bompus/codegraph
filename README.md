@@ -52,7 +52,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## About this fork
 
-This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`baf19067`](https://github.com/colbymchenry/codegraph/commit/baf19067) (after v1.6.2) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`b8f81e2c`](https://github.com/colbymchenry/codegraph/commit/b8f81e2c) (after v1.6.2) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
 The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
@@ -159,6 +159,8 @@ Call resolution the fork adds:
 - C++ object creation sees a header under a test directory, such as nlohmann/json's old-release copy in `tests/abi/`, only from inside that directory's tree or through an `#include`; upstream sees every header. A class declared in an included `.cc` file is the includer's too, and of two headers declaring one class the creation takes the one in its include closure.
 - C# namespace `using` directives and `using` aliases apply only inside their enclosing namespace, not to sibling namespaces in the same file (`using static` is still file-wide, as upstream).
 - A Java field declared with a qualified type (`outside.Repository`) keeps its qualifier, so calls through it never resolve to an unrelated project class with the same simple name.
+- A Go call on a variable or constant whose declared type is a project type with no method of that name links to nothing; upstream falls back to a method of that name on some other type. A call whose receiver type the bindings read links at confidence 0.9, where upstream's text guess gives 0.65 to 0.8.
+- A TypeScript or JavaScript field whose type is imported from a package that no `package.json` lists (a project with no manifest at all) links to no project class of that name; upstream matches it to a same-named project class.
 - Python `super().method()` resolves along the class's C3 method resolution order, starting after the class itself. Upstream resolves it like `self.method()` and drops the link only when it lands on the calling method.
 - Python receivers reassigned on later lines use the latest preceding value in their lexical scope. An unknown replacement leaves the member call unresolved. Calls and method values through a captured receiver stay unlinked when a later replacement makes its invocation-time value uncertain. Same-line replacements also stay unlinked when statement order cannot establish a reliable receiver type. Unaliased imports that add submodules to the same package preserve that package receiver.
 - A `require` call creates no file dependency when a local binding shadows `require`.

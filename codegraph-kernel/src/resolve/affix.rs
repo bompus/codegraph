@@ -6,7 +6,7 @@ use super::*;
 /// Each entry is (pattern, guard): guard 1 reproduces the TS annotation
 /// pattern's `(?![\w.$]|\s*(?:<[^>]*>)?\s*[\[|&])` lookahead in
 /// infer_match_line, guard 2 the lua annotation pattern's
-/// `(?![\w.]|\s*[({"'\[])`, guard 3 the objc declarator's `(?!\s*\()`;
+/// `(?![\w.]|\s*[({"'\[])`, guard 3 the objc declarator's `(?!\s*\()`, guard 5 the TS inject/createInstance `(?![^;]*\)\s*(?:\?\.|\.|\[))`;
 /// the go param-type lookahead `(?=\s*[,)]|\s*$)` is folded into its
 /// pattern as a consuming suffix (equivalent — the capture cannot absorb
 /// `[,)]`/EOL, and shrinking it can never satisfy the suffix either). Languages outside the switch (cpp, pascal, cfml — the latter two
@@ -237,8 +237,19 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
                 // `= new T(…)`, or wrapped in a Svelte rune
                 // (`$state(new T())`, `$state.raw(…)`, `$derived(…)`).
                 both(r"\s*=\s*(?:\$(?:state|derived)(?:\.raw)?\s*\(\s*)?new\s+([A-Za-z_$][A-Za-z0-9_.$]*)", b"=", 0),
+                // `= inject(T)` / `= this.instantiationService.createInstance(T, …)`:
+                // a dependency-injection call that hands back an instance of
+                // the class it is given — unless a member of it is taken
+                // (guard 5). A type argument is the type returned:
+                // `inject<Params>(DIALOG_DATA)`.
+                both(r"\s*=\s*(?:inject|(?:this\.)?(?:[A-Za-z0-9_$#]+\.)*createInstance)\s*<\s*([A-Z][A-Za-z0-9_.$]*)[^;=(){}]*>\s*\(", b"=", 5),
+                both(r"\s*=\s*(?:inject|(?:this\.)?(?:[A-Za-z0-9_$#]+\.)*createInstance)\s*\(\s*([A-Z][A-Za-z0-9_.$]*)", b"=", 5),
                 // `g: T` or an optional `g?: T`.
-                both(r"\s*\??\s*:\s*([A-Z][A-Za-z0-9_.$]*)", b"?:", 1),
+                // A type followed by brackets is captured whole, so an array of
+                // it (`items: Item[]`, `items: Item<K>[]`), whose own methods
+                // aren't an element's, is told from one of its properties
+                // (`groupIds: Element["groupIds"]`).
+                both(r"\s*\??\s*:\s*([A-Z][A-Za-z0-9_.$]*(?:(?:\s*<[^;=(){}<>]*(?:<[^;=(){}<>]*>[^;=(){}<>]*)*>)?\s*\[[^\]]*\])?)", b"?:", 1),
             ],
         );
     }
@@ -420,6 +431,11 @@ pub(super) static PHP_PROPERTY_TYPE_PATTERNS: LazyLock<Vec<ReceiverPattern>> = L
     ]
 });
 
+/// Guard 5's lookahead `(?![^;]*\)\s*(?:\?\.|\.|\[))`: a member or index is taken
+/// of the call's result.
+pub(super) fn guard5_tail_re() -> Rc<Regex> {
+    re!(r"^[^;]*\)\s*(?:\?\.|\.|\[)")
+}
 /// The lookahead tails of infer_match_line's guards 1 and 2.
 pub(super) fn guard1_tail_re() -> Rc<Regex> {
     re!(r"^\s*(?:<[^>]*>)?\s*[\[|&]")

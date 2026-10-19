@@ -293,6 +293,7 @@ if super::lang_scope::is_dart_member_read(r) {
         };
         let pre_pass = probe!(r, "pre-pass", is_nix_path_import_ref(r)
             || is_js_path_import_ref(r)
+            || self.is_js_bare_module_ref(r)?
             || self.has_any_possible_match_in(existence, &r.language)
             || self.matches_any_import(r)?
             || self.framework_claims(&r.reference_name));
@@ -807,6 +808,15 @@ if super::lang_scope::is_dart_member_read(r) {
             }
         }
 
+        // A Go name called or passed bare that the function around it binds
+        // itself — a parameter, a `:=`, a `var` — is that binding, never a
+        // declaration of the package: client-go's `init := func(…)` then
+        // `init(t)` calls no `func init()` (isGoLocallyBound, name-matcher.ts).
+        if r.language == "go" && matches!(r.reference_kind.as_str(), "calls" | "function_ref")
+            && self.is_go_bare_name(r)? && self.is_go_locally_bound(r)?
+        {
+            return Ok(ResolveOutcome::unresolved());
+        }
         if self.python_receiver_uncertain(r)? { return Ok(ResolveOutcome::unresolved()); }
         if let Some(outcome) = self.resolve_dart_written(r)? { return Ok(outcome); }
         if let Some(outcome) = self.resolve_vb_explicit(r)? { return Ok(outcome); }
@@ -1221,4 +1231,57 @@ fn is_deferred_chain_call(r: &ResolveRefIn) -> bool {
     r.reference_kind == "calls"
         && ((CHAIN_LANGUAGES.contains(&r.language.as_str()) && chain_shape_re().is_match(&r.reference_name))
             || (r.language == "php" && php_prop_shape_re().is_match(&r.reference_name)))
+}
+
+impl KernelResolver {
+    /// isGoBareName (go-type-visibility.ts): the reference names a Go
+    /// identifier written without a qualifier at its position — a call, a
+    /// conversion's parenthesized type, a function value or a route handler.
+    pub(super) fn is_go_bare_name(&mut self, r: &ResolveRefIn) -> Res<bool> {
+        let name = r.reference_name.as_str();
+        let mut chars = name.chars();
+        let identifier = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if r.language != "go" || !identifier {
+            return Ok(false);
+        }
+        let Some(lines) = self.read_file(&r.file_path) else { return Ok(false) };
+        let Some(line) = lines.get((r.line - 1).max(0) as usize) else { return Ok(false) };
+        let column = r.column.max(0) as usize;
+        let from_column = super::names::js_slice(line, column);
+        if r.reference_kind == "calls" {
+            if from_column.starts_with(name) {
+                return Ok(true);
+            }
+            // A call's column is its expression's: only a conversion's
+            // parenthesized type is still bare there.
+            let conversion = Self::cached_regex(&format!(r"^\(\s*\*?\s*{}\s*\)\s*\(", regex::escape(name)))?;
+            return Ok(from_column.starts_with('(') && conversion.is_match(from_column));
+        }
+        if from_column.starts_with(name) {
+            let before = super::names::js_prefix(line, column).trim_end();
+            return Ok(!before.ends_with('.') || before.ends_with("..."));
+        }
+        // A route's handler is recorded at the start of its line: its spelling
+        // there, outside the path string.
+        let quoted = Self::cached_regex(r#""(?:[^"\\]|\\.)*"|`[^`]*`"#)?;
+        let code = quoted.replace_all(line, |m: &regex::Captures| " ".repeat(m[0].chars().count()));
+        Ok(code.match_indices(name).any(|(at, _)| {
+            let word = |c: char| c.is_alphanumeric() || c == '_';
+            let before = code[..at].chars().next_back();
+            let after = code[at + name.len()..].chars().next();
+            !before.is_some_and(|c| word(c) || c == '.') && !after.is_some_and(word)
+        }))
+    }
+
+    /// isGoLocallyBound (name-matcher.ts): a parameter, a `:=` or a `var` of
+    /// the function around the reference binds the name there. A package-level
+    /// declaration is no such binding, and neither is the right side of the
+    /// `:=` that declares the name (`log := log.G(ctx)`).
+    pub(super) fn is_go_locally_bound(&mut self, r: &ResolveRefIn) -> Res<bool> {
+        let rows = self.bindings(&r.file_path)?;
+        let before = self.go_declares_on_line(&r.reference_name, r, &rows);
+        Ok(innermost_binding_unless(&rows, &r.reference_name, Some(r.line), before)
+            .is_some_and(|b| matches!(b.kind.as_str(), "local" | "param")))
+    }
 }

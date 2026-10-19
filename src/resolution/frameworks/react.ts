@@ -13,7 +13,7 @@ import { parseSourceTreeSync } from '../../extraction/parse-tree';
 import { resolveImportPath } from '../import-resolver';
 import { innermostBinding } from '../gates';
 import { stripCommentsForRegex } from '../strip-comments';
-import { makeLineAt } from '../synth-utils';
+import { FN_KINDS, makeLineAt } from '../synth-utils';
 import { isTestPath } from '../../search/query-utils';
 import { matchBracket, skipString } from './object-literal';
 
@@ -256,6 +256,8 @@ export const reactResolver: FrameworkResolver = {
 const LAZY_ROUTE_PREFIX = 'lazy-import:';
 const ROUTE_PARTS_PREFIX = 'route-parts:';
 const LAYOUT_PREFIX = 'layout:';
+/** React Router's `<Outlet />`: what a route with no element of its own renders, the routes inside it. */
+const OUTLET = 'Outlet';
 
 /**
  * The export a lazy route's loader picks, named the way Vue Router and
@@ -940,6 +942,14 @@ interface RouteScope {
   /** A `<Route>` element: a route even with nothing to render (a `<Route path>` that only groups others). */
   jsx?: boolean;
   /**
+   * A route object that renders React Router's `<Outlet />` — `element:
+   * <Outlet />`, `Component: Outlet`, a loader handing back `{ Component:
+   * Outlet }` — as a route with no element does: a route at its address with
+   * nothing of its own, like a `<Route path>` that only groups others, and no
+   * layout around the routes inside it.
+   */
+  outlet?: boolean;
+  /**
    * A layout at no address of its own: `{ element: <Shell/>, children }`, with
    * neither `path` nor `index`, or a `<Route element={<RequireAuth/>}>` (no
    * `path`, or `path=""`) around other `<Route>`s.
@@ -1051,8 +1061,10 @@ function scanRoutes(
     // then the innermost wrapper: `<RequireAuth><Outlet /></RequireAuth>` renders the guard.
     return own.find(content) ?? props.find(content) ?? [...own].reverse().find((t) => t !== 'Outlet') ?? own[0];
   };
+  // The component an `element` shows, `Outlet` included.
+  const elementTag = (value: string | undefined): string | undefined => componentName(value, true);
   // The page an `element` shows: `element={<Outlet />}` renders the route inside it and nothing of its own.
-  const elementPage = (value: string | undefined): string | undefined => componentName(value, true)?.replace(/^Outlet$/, '') || undefined;
+  const elementPage = (value: string | undefined): string | undefined => elementTag(value)?.replace(/^Outlet$/, '') || undefined;
   // The few characters before `at`, trailing whitespace skipped: enough for the
   // end-anchored checks below without copying the whole prefix per `/` or `<`.
   const tokenBefore = (at: number): string => {
@@ -1192,12 +1204,18 @@ function scanRoutes(
       const pathField = fields.get('path');
       const path = pathField && literal(pathField.value);
       const expr = pathField && path === undefined && /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(pathField.value) ? pathField.value : undefined;
-      const component = componentName(fields.get('element')?.value, true)
-        ?? componentName(fields.get('Component')?.value, false);
-      const lazy = lazyRouteReference(fields.get('lazy')?.value, elementPage);
+      const shown = elementTag(fields.get('element')?.value) ?? componentName(fields.get('Component')?.value, false);
+      const loaded = lazyRouteReference(fields.get('lazy')?.value, elementTag);
+      // A route with no element renders an `<Outlet />`, so one written with
+      // it renders nothing of its own either: a route at its address, and no
+      // layout around the routes inside it. At its parent's address (`path:
+      // ''`) it only groups them, the parent's page staying the one there.
+      const outlet = (shown ?? loaded) === OUTLET && path !== '';
+      const component = shown === OUTLET ? undefined : shown;
+      const lazy = loaded === OUTLET ? undefined : loaded;
       const index = fields.get('index');
       if (pathField && (path !== undefined || expr)) {
-        scopes.push({ part: path !== undefined ? { lit: path } : { expr }, at: pathField.at, start: at, end: i, component, lazy });
+        scopes.push({ part: path !== undefined ? { lit: path } : { expr }, at: pathField.at, start: at, end: i, component, lazy, outlet });
       } else if (!pathField && index?.value === 'true') {
         // `{ index: true, element: <Home /> }` is the page at its parent's address.
         scopes.push({ part: { lit: '' }, at: index.at, start: at, end: i, component, lazy });
@@ -1248,7 +1266,9 @@ function scanRoutes(
       routeTags.push({ at, spreads, path: expression('path')?.trim() });
       const element = elementPage(expression('element'));
       const component = componentName(expression('component'), false) ?? element;
-      const lazy = lazyRouteReference(expression('lazy'), elementPage);
+      const loaded = lazyRouteReference(expression('lazy'), elementTag);
+      // A `<Route>` is a route with nothing of its own to render already.
+      const lazy = loaded === OUTLET ? undefined : loaded;
       const route: RouteScope = { part: { lit: path ?? '' }, at, start: at, end: source.length, component, lazy, jsx: true };
       if (path) scope = route;
       else if (pathText === undefined || path === '') {
@@ -1326,7 +1346,7 @@ function scanRoutes(
     const outer = around(s.start, s.end);
     return !outer.some((c) => c.opaque) && (outer.some((c) => Boolean(c.part.lit || c.part.expr)) || inRouter(s));
   };
-  const pages = new Set(scopes.filter((s) => !s.pathless && !s.opaque && (s.jsx || renders(s)) && addressed(s)));
+  const pages = new Set(scopes.filter((s) => !s.pathless && !s.opaque && (s.jsx || s.outlet || renders(s)) && addressed(s)));
   const layout = (c: RouteScope): boolean => renders(c) && !c.opaque;
   const routes: RouteDeclaration[] = [];
   for (const scope of pages) {
@@ -1506,14 +1526,17 @@ const FIRST_IMPORT = /\bimport\s*\(\s*["']([^"']+)["']\s*\)/;
  * - A component of the route's own file it returns is named as written:
  *   `return { loader, Component: SettingsPage }`.
  *
- * Undefined when it renders nothing, handing over only a `loader`. A loader
- * this does not read, such as a helper's (`lazyPage(() => import('./x'))`)
- * or `.then(convert)`, loads the module its first import names, as before.
+ * `Outlet` when it hands back React Router's (`return { Component: Outlet,
+ * loader }`, which Medusa's `:id` routes write to load a breadcrumb): the
+ * routes inside it render in its place. Undefined when it renders nothing,
+ * handing over only a `loader`. A loader this does not read, such as a
+ * helper's (`lazyPage(() => import('./x'))`) or `.then(convert)`, loads the
+ * module its first import names, as before.
  */
-function lazyRouteReference(loader: string | undefined, elementPage: (jsx: string) => string | undefined): string | undefined {
+function lazyRouteReference(loader: string | undefined, elementTag: (jsx: string) => string | undefined): string | undefined {
   if (!loader) return undefined;
   const code = stripCommentsForRegex(loader, 'typescript').trim();
-  const rendered = code.startsWith('{') ? lazyPropertiesRender(code) : routeRender(loaderValue(code, new Map()), elementPage);
+  const rendered = code.startsWith('{') ? lazyPropertiesRender(code) : routeRender(loaderValue(code, new Map()), elementTag);
   if (rendered === null) return undefined;
   if (rendered !== undefined) return rendered;
   const spec = FIRST_IMPORT.exec(code)?.[1];
@@ -1522,9 +1545,10 @@ function lazyRouteReference(loader: string | undefined, elementPage: (jsx: strin
 
 /**
  * What route properties a loader resolves to render: the reference for its
- * page, null for none, undefined for properties this does not read.
+ * page, `Outlet` for React Router's, null for none, undefined for properties
+ * this does not read.
  */
-function routeRender(value: Loaded | null, elementPage: (jsx: string) => string | undefined): string | null | undefined {
+function routeRender(value: Loaded | null, elementTag: (jsx: string) => string | undefined): string | null | undefined {
   if (value?.kind === 'module') return LAZY_ROUTE_PREFIX + value.spec;
   if (value?.kind !== 'object') return undefined;
   const { props, spreads } = objectEntries(value.text);
@@ -1532,14 +1556,17 @@ function routeRender(value: Loaded | null, elementPage: (jsx: string) => string 
   const element = props.get('element');
   const shown = component ?? element;
   if (shown !== undefined) {
-    const named = component !== undefined ? pageReference(valueOf(component, value.scope)) : undefined;
+    const held = component !== undefined ? valueOf(component, value.scope) : null;
+    const named = pageReference(held);
     if (named) return named;
     // The one export the loader imported that it shows, past a guard of the
     // route file's own: `<AgeGate><FireworksPage /></AgeGate>`, `() =>
     // <PrivateRoute component={<Favorites />} />`, `withAuth(Page)`.
     const loaded = loadedExports(shown, value.scope);
     if (loaded.length === 1) return pageReference(loaded[0]!);
-    const tag = component === undefined && loaded.length === 0 ? elementPage(element!) : undefined;
+    const tag = component === undefined && loaded.length === 0 ? elementTag(element!) : undefined;
+    // `Component: Outlet`, `element: <Outlet />`: the routes inside render in its place.
+    if ((held?.kind === 'name' && held.name === OUTLET) || tag === OUTLET) return OUTLET;
     return tag ? pageReference(nameValue(tag, value.scope)) : undefined;
   }
   // `{ ...module }`: the module's exports are the route's properties.
@@ -2014,13 +2041,18 @@ function scriptLanguage(filePath: string): Language {
   return /\.tsx$/.test(filePath) ? 'tsx' : /\.[cm]?ts$/.test(filePath) ? 'typescript' : /\.jsx$/.test(filePath) ? 'jsx' : 'javascript';
 }
 
-/** The literal a table name stands for in `file`: declared there, or imported. */
+/**
+ * The literal a table name stands for in `file`: declared there, or
+ * imported. A value that holds a call's result — Medusa's `const routes =
+ * getRouteMap({ … })` — stands for the table the function returns.
+ */
 function tableNamed(named: TableName, file: string, context: ResolutionContext, depth = 0): { file: string; at: number } | null {
   const source = context.readFile(file);
   if (!source) return null;
   const safe = stripCommentsForRegex(source, 'typescript');
-  const local = declaredTable(safe, named.name, named.call);
-  if (local !== null) return { file, at: local };
+  const local = declaredTable(safe, named.name, named.call, visibleAt(named.at, safe, file, context));
+  if (typeof local === 'number') return { file, at: local };
+  if (local) return depth > 3 ? null : tableNamed(local, file, context, depth + 1);
   const language = scriptLanguage(file);
   const mapping = context.getImportMappings(file, language).find((m) => m.localName === named.name);
   if (!mapping || mapping.isNamespace || depth > 3) return null;
@@ -2039,8 +2071,10 @@ function exportedTable(file: string, exported: string, call: boolean, context: R
     const m = /\bexport\s+default\s+/.exec(safe);
     if (m) {
       const after = m.index + m[0].length;
-      const inline = call ? returnedTable(safe, after) : safe[after] === '[' || safe[after] === '{' ? after : null;
-      if (inline !== null) return { file, at: inline };
+      const inline = call ? returnedTable(safe, after) : heldTable(safe, after);
+      if (typeof inline === 'number') return { file, at: inline };
+      // `export default buildRoutes()`
+      if (inline) return depth > 3 ? null : tableNamed(inline, file, context, depth + 1);
       local = /^([A-Za-z_$][\w$]*)\s*(?:;|\n|$)/.exec(safe.slice(after))?.[1] ?? '';
     } else local = /\bexport\s*\{[^}]*?\b([A-Za-z_$][\w$]*)\s+as\s+default\b/.exec(safe)?.[1] ?? '';
   } else {
@@ -2048,8 +2082,10 @@ function exportedTable(file: string, exported: string, call: boolean, context: R
     const alias = new RegExp(`\\bexport\\s*\\{[^}]*?\\b([A-Za-z_$][\\w$]*)\\s+as\\s+${exported.replace(/\$/g, '\\$')}\\b`).exec(safe);
     if (alias) local = alias[1]!;
   }
-  const at = local ? declaredTable(safe, local, call, scriptLanguage(file)) : null;
-  if (at !== null) return { file, at };
+  // What a module exports is declared at its top level.
+  const at = local ? topLevelTable(safe, local, call, scriptLanguage(file)) : null;
+  if (typeof at === 'number') return { file, at };
+  if (at) return depth > 3 ? null : tableNamed(at, file, context, depth + 1);
   if (depth > 3) return null;
   // `export { routes } from './routes'`, `export { default as routes } from './routes'`, `export * from './routes'`.
   const language = scriptLanguage(file);
@@ -2065,43 +2101,113 @@ function exportedTable(file: string, exported: string, call: boolean, context: R
   return null;
 }
 
-/** Where `name`'s table literal opens, for `const name = [ … ]` (or a function returning one when `call`). */
-function declaredTable(safe: string, name: string, call: boolean, moduleLanguage?: Language): number | null {
-  // An exported binding belongs to the module, never to an earlier nested
-  // declaration with the same name. Native syntax supplies that boundary.
-  if (moduleLanguage) {
-    const tree = parseSourceTreeSync(safe, moduleLanguage);
-    if (!tree) return null;
-    try {
-      for (const statement of tree.rootNode.namedChildren) {
-        const declaration = statement.type === 'export_statement'
-          ? statement.childForFieldName('declaration') : statement;
-        if (!declaration) continue;
-        if (['lexical_declaration', 'variable_declaration'].includes(declaration.type)) {
-          for (const binding of declaration.namedChildren) {
-            if (binding.type !== 'variable_declarator' || binding.childForFieldName('name')?.text !== name) continue;
-            const value = binding.childForFieldName('value');
-            if (!value) return null;
-            return call ? returnedTable(safe, value.startIndex)
-              : ['array', 'object'].includes(value.type) ? value.startIndex : null;
-          }
-        } else if (call && declaration.type === 'function_declaration' && declaration.childForFieldName('name')?.text === name) {
-          return returnedTable(safe, declaration.startIndex);
+/**
+ * {@link declaredTable} for a name the module declares at its top level, which
+ * is what it exports: an exported binding belongs to the module, never to an
+ * earlier nested declaration with the same name. Native syntax supplies that
+ * boundary.
+ */
+function topLevelTable(safe: string, name: string, call: boolean, moduleLanguage: Language): number | TableName | null {
+  const tree = parseSourceTreeSync(safe, moduleLanguage);
+  if (!tree) return null;
+  try {
+    for (const statement of tree.rootNode.namedChildren) {
+      const declaration = statement.type === 'export_statement'
+        ? statement.childForFieldName('declaration') : statement;
+      if (!declaration) continue;
+      if (['lexical_declaration', 'variable_declaration'].includes(declaration.type)) {
+        for (const binding of declaration.namedChildren) {
+          if (binding.type !== 'variable_declarator' || binding.childForFieldName('name')?.text !== name) continue;
+          const value = binding.childForFieldName('value');
+          if (!value) return null;
+          if (call) return returnedTable(safe, value.startIndex);
+          if (['array', 'object'].includes(value.type)) return value.startIndex;
+          // `const routes = getRouteMap({ … })`, `await loadRoutes()`: the table the function returns.
+          const held = value.type === 'await_expression' ? value.namedChildren[0] : value;
+          const callee = held?.type === 'call_expression' ? held.childForFieldName('function') : null;
+          return callee?.type === 'identifier' ? { name: callee.text, call: true, at: callee.startIndex } : null;
         }
+      } else if (call && declaration.type === 'function_declaration' && declaration.childForFieldName('name')?.text === name) {
+        return returnedTable(safe, declaration.startIndex);
       }
-      return null;
-    } finally { tree.delete(); }
-  }
+    }
+    return null;
+  } finally { tree.delete(); }
+}
+
+/**
+ * Where `name`'s table literal opens, for `const name = [ … ]` (or a function
+ * returning one when `call`) — or, for `const name = getRouteMap({ … })`, the
+ * function whose returned table the value holds. Of several declarations of
+ * the name, the one `visible` picks.
+ */
+function declaredTable(
+  safe: string,
+  name: string,
+  call: boolean,
+  visible: (keywords: number[]) => number | undefined
+): number | TableName | null {
   const id = name.replace(/\$/g, '\\$');
-  const decl = new RegExp(`(?:^|[^\\w$.])(?:const|let|var)\\s+${id}\\s*(?::[^=;]*)?=\\s*`).exec(safe);
+  const decls = [...safe.matchAll(new RegExp(`(?:^|[^\\w$.])((?:const|let|var)\\s+${id}\\s*(?::[^=;]*)?=\\s*)`, 'g'))];
+  const chosen = decls.length > 0 ? visible(decls.map((d) => d.index + d[0].length - d[1]!.length)) : undefined;
+  const decl = chosen === undefined ? undefined : decls[chosen];
   if (decl) {
     const after = decl.index + decl[0].length;
     if (call) return returnedTable(safe, after);
-    return safe[after] === '[' || safe[after] === '{' ? after : null;
+    return heldTable(safe, after);
   }
   if (!call) return null;
   const fn = new RegExp(`(?:^|[^\\w$.])function\\s+${id}\\s*\\(`).exec(safe);
   return fn ? returnedTable(safe, fn.index + fn[0].indexOf('function')) : null;
+}
+
+/**
+ * The table a value written at `at` gives: the literal there, or the
+ * function a call there names — `getRouteMap({ … })`, `await loadRoutes()` —
+ * whose returned table it is.
+ */
+function heldTable(safe: string, at: number): number | TableName | null {
+  if (safe[at] === '[' || safe[at] === '{') return at;
+  const call = /(await\s+)?([A-Za-z_$][\w$]*)\s*\(/y;
+  call.lastIndex = at;
+  const m = call.exec(safe);
+  return m ? { name: m[2]!, call: true, at: at + (m[1]?.length ?? 0) } : null;
+}
+
+/**
+ * Picks, of a name's declarations in `file` (where each keyword sits), the
+ * one in scope at `use`: in the innermost function around the use that
+ * declares the name, the last declaration before the use, else the first
+ * after it; else one at the module's top level. A declaration inside another
+ * function is that function's own. With no use, it picks one at the top
+ * level, which is what a module exports. The functions are the graph's — a
+ * component, a method, an arrow function held in a `const` — so the blocks
+ * inside one function are not told apart.
+ */
+function visibleAt(use: number | undefined, safe: string, file: string, context: ResolutionContext): (keywords: number[]) => number | undefined {
+  return (keywords) => {
+    const lineStarts = [0];
+    for (let i = safe.indexOf('\n'); i !== -1; i = safe.indexOf('\n', i + 1)) lineStarts.push(i + 1);
+    const offset = (line: number, column: number): number => (lineStarts[line - 1] ?? safe.length) + column;
+    const fns = context.getNodesInFile(file)
+      .filter((n) => FN_KINDS.has(n.kind))
+      .map((n) => ({ start: offset(n.startLine, n.startColumn), end: offset(n.endLine, n.endColumn) }));
+    // The function a declaration's own value is (`const routes = (user) =>
+    // [ … ]`) starts after the keyword, so it is not around it.
+    const around = (at: number) => fns.filter((f) => f.start < at && f.end > at);
+    const scopes = new Set(use === undefined ? [] : around(use));
+    let best: number | undefined;
+    let depth = -1;
+    keywords.forEach((at, i) => {
+      const encl = around(at);
+      if (!encl.every((f) => scopes.has(f))) return;
+      if (encl.length > depth || (encl.length === depth && use !== undefined && at < use)) {
+        best = i;
+        depth = encl.length;
+      }
+    });
+    return best;
+  };
 }
 
 /** The table a function at `at` returns: `(user) => [ … ]`, `(user) => ([ … ])`, `function routes(user) { return [ … ]; }`. */

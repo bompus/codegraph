@@ -373,26 +373,22 @@ impl KernelResolver {
     /// the field, and is skipped; in the constructor only a parameter
     /// property (`private readonly field: T`) declares the field.
     pub(super) fn ts_field_decl(&mut self, owner: &KNode, field: &str) -> Res<Option<TsFieldDecl>> {
+        // Unread while it is being read: a wrapper's holder field can lead back here.
+        let key = (owner.id.clone(), field.to_string());
+        if !self.ts_field_reading.insert(key.clone()) {
+            return Ok(None);
+        }
+        let found = self.ts_field_decl_uncached(owner, field);
+        self.ts_field_reading.remove(&key);
+        found
+    }
+
+    fn ts_field_decl_uncached(&mut self, owner: &KNode, field: &str) -> Res<Option<TsFieldDecl>> {
         let Some(source) = self.read_file(&owner.file_path) else { return Ok(None) };
         let start = (owner.start_line - 1).max(0) as usize;
         let end = (owner.end_line as usize).min(source.len());
         let mut methods: Option<Vec<Arc<KNode>>> = None;
-        // The class heading up to its body, type parameters removed: `class A<T extends X>`
-        // does not extend anything, `class A extends B` does.
-        let mut head = String::new();
-        let mut depth = 0usize;
-        'heading: for raw in source.get(start..end).unwrap_or_default() {
-            for c in strip_line_comments(raw).chars() {
-                match c {
-                    '{' if depth == 0 => break 'heading,
-                    '<' => depth += 1,
-                    '>' if depth > 0 => depth -= 1,
-                    _ if depth == 0 => head.push(c),
-                    _ => {}
-                }
-            }
-            head.push(' ');
-        }
+        let head = ts_class_head(&source, owner);
         let inherits = re!(r"\bextends\b").is_match(&head);
         let mut forwarded: Option<bool> = None;
         for (i, raw) in source.get(start..end).unwrap_or_default().iter().enumerate() {
@@ -425,6 +421,7 @@ impl KernelResolver {
                     ty: caps[1].to_string(),
                     value_type: false,
                     typed_collection: guard1_tail_re().is_match(rest),
+                        array: ts_array_suffix_re().is_match(rest),
                     nullable: nullable_union_tail_re().is_match(rest),
                 }));
             }
@@ -451,6 +448,29 @@ impl KernelResolver {
                         ty: line[gs..ge].to_string(),
                         value_type: *value_type,
                         typed_collection: guard1_tail_re().is_match(rest),
+                        array: ts_array_suffix_re().is_match(rest),
+                        nullable: nullable_union_tail_re().is_match(rest),
+                    }));
+                }
+            }
+            // `_onDidChange = this._register(new Emitter())`, `x = inject(Http)`:
+            // an X when the wrapper returns its argument, or the injector
+            // hands back an instance of the class it is given.
+            if let Some(init) = ts_init_on_line(&line, field) {
+                let methods = match &methods {
+                    Some(v) => v,
+                    None => methods.insert(self.class_methods(owner)?),
+                };
+                let hands_to_super = inherits && *forwarded.get_or_insert_with(|| ctor_forwards_to_super(&source, methods, field));
+                let site = FieldSite { line: &line, line_no, at: init.field_at };
+                let declares = ts_declares_field(methods, &TS_FIELD_TYPE_PATTERNS[2].0, field, site, &init.ty, hands_to_super);
+                if declares && self.ts_init_is_read(owner, &source, start + i, &init)? {
+                    let rest = &line[init.end..];
+                    return Ok(Some(TsFieldDecl {
+                        ty: init.ty,
+                        value_type: false,
+                        typed_collection: guard1_tail_re().is_match(rest),
+                        array: ts_array_suffix_re().is_match(rest),
                         nullable: nullable_union_tail_re().is_match(rest),
                     }));
                 }
@@ -458,6 +478,138 @@ impl KernelResolver {
         }
         Ok(None)
     }
+
+    /// tsFieldRead (name-matcher.ts): a wrapped `new X(…)` is an X only when
+    /// the wrapper's call ends the statement and the wrapper's declaration
+    /// returns its argument; an injected one when the injector hands back an
+    /// instance of the class it is given.
+    fn ts_init_is_read(&mut self, cls: &KNode, source: &SourceFile, row: usize, init: &TsInit) -> Res<bool> {
+        if !ts_call_ends_statement(source, row, init.open) {
+            return Ok(false);
+        }
+        if let Some((holder, method)) = &init.via {
+            if !self.ts_wrapper_returns_argument(cls, holder.as_deref(), method)? {
+                return Ok(false);
+            }
+        }
+        if let Some(injector) = init.injector {
+            return self.ts_injects_instance(cls, injector);
+        }
+        Ok(true)
+    }
+
+    /// tsInjectsInstance (name-matcher.ts): Angular's `inject(X)` when the
+    /// file imports `inject` from `@angular/core` (Vue's `inject(key)` returns
+    /// whatever was provided under the key); `createInstance(X, …)` when the
+    /// project declares one that returns an `InstanceType` of its constructor
+    /// argument, as vscode's `IInstantiationService` does.
+    fn ts_injects_instance(&mut self, cls: &KNode, injector: TsInjector) -> Res<bool> {
+        if injector == TsInjector::Inject {
+            return Ok(self.import_mappings(&cls.file_path)?.iter().any(|i| i.local_name == "inject" && i.source == "@angular/core"));
+        }
+        if let Some(declared) = self.ts_create_instance_declared {
+            return Ok(declared);
+        }
+        let mut declared = false;
+        for n in self.nodes_by_name("createInstance")?.clone().iter() {
+            if !matches!(n.kind.as_str(), "method" | "function") || !is_esm_family(&n.language) {
+                continue;
+            }
+            let Some(src) = self.read_file(&n.file_path) else { continue };
+            let from = (n.start_line - 1).max(0) as usize;
+            let head = src.get(from..(from + 3).min(src.len())).unwrap_or_default().join(" ");
+            if re!(r"\bInstanceType\s*<").is_match(&head) {
+                declared = true;
+                break;
+            }
+        }
+        self.ts_create_instance_declared = Some(declared);
+        Ok(declared)
+    }
+
+    /// tsWrapperReturnsArgument (name-matcher.ts): does the wrapper a field
+    /// initializer of class `cls` calls return its argument? `this.<method>`
+    /// is the method `cls` declares or inherits, and `this.<holder>.<method>`
+    /// that method of the class the holder field is declared as.
+    fn ts_wrapper_returns_argument(&mut self, cls: &KNode, holder: Option<&str>, method: &str) -> Res<bool> {
+        let at = ResolveRefIn {
+            row_id: None,
+            from_node_id: cls.id.clone(),
+            reference_name: method.to_string(),
+            reference_kind: "calls".to_string(),
+            line: cls.start_line,
+            column: cls.start_column,
+            candidates: None,
+            file_path: cls.file_path.clone(),
+            language: cls.language.clone(),
+            failure_reason: None,
+        };
+        let mut owner: Option<Arc<KNode>> = Some(Arc::new(cls.clone()));
+        if let Some(holder) = holder {
+            let held = self.ts_field_through_bases(&Arc::new(cls.clone()), holder, &at, 0)?;
+            owner = match held {
+                Some((decl, declaring)) if !decl.value_type && !decl.typed_collection => self.ts_named_class(&decl.ty, &declaring, &at)?,
+                _ => None,
+            };
+        }
+        let Some(owner) = owner else { return Ok(false) };
+        let methods = self.ts_class_methods(&owner, method, &at, 0)?;
+        Ok(!methods.is_empty() && methods.iter().all(|m| self.ts_returns_its_argument(m)))
+    }
+
+    /// tsClassMethods (name-matcher.ts): the TS methods named `name` that
+    /// `cls` declares, or else the nearest class it extends that declares one.
+    fn ts_class_methods(&mut self, cls: &Arc<KNode>, name: &str, at: &ResolveRefIn, depth: usize) -> Res<Vec<Arc<KNode>>> {
+        let own: Vec<Arc<KNode>> = self
+            .nodes_in_file(&cls.file_path)?
+            .iter()
+            .filter(|n| {
+                n.kind == "method"
+                    && n.name == name
+                    && n.start_line >= cls.start_line
+                    && n.end_line <= cls.end_line
+                    && n.qualified_name[..n.qualified_name.rfind("::").unwrap_or(0)].rsplit(['.', ':']).next() == Some(cls.name.as_str())
+            })
+            .cloned()
+            .collect();
+        if !own.is_empty() || depth >= TS_BASE_WALK_DEPTH {
+            return Ok(own);
+        }
+        let Some(source) = self.read_file(&cls.file_path) else { return Ok(own) };
+        let head = ts_class_head(&source, cls);
+        let Some(base_name) = re!(r"\bextends\s+([A-Za-z0-9_$.]+)").captures(&head).map(|m| m[1].to_string()) else {
+            return Ok(own);
+        };
+        let Some(base) = self.ts_named_class(&base_name, cls, at)? else { return Ok(own) };
+        if base.id == cls.id {
+            return Ok(own);
+        }
+        self.ts_class_methods(&base, name, at, depth + 1)
+    }
+
+    /// tsReturnsItsArgument (name-matcher.ts): one parameter, typed by a type
+    /// parameter of the method's own, which it returns — vscode's
+    /// `_register<T extends IDisposable>(o: T): T` and `DisposableStore.add`.
+    fn ts_returns_its_argument(&mut self, f: &KNode) -> bool {
+        let Some(caps) = re!(r"^\(\s*[A-Za-z0-9_$]+\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)$")
+            .captures(f.signature.as_deref().unwrap_or("").trim())
+        else {
+            return false;
+        };
+        if caps[1] != caps[2] {
+            return false;
+        }
+        let Some(source) = self.read_file(&f.file_path) else { return false };
+        let from = (f.start_line - 1).max(0) as usize;
+        let head = source.get(from..(from + 3).min(source.len())).unwrap_or_default().join(" ");
+        let Ok(rest) = Self::cached_regex(&format!(r"^\s*<\s*(?:const\s+)?{}\b", regex::escape(&caps[1]))) else { return false };
+        let declared = occurrences(&head, &f.name, 0).any(|at| {
+            !head[..at].bytes().next_back().is_some_and(|b| is_word_byte(b) || b == b'$' || b == b'#') && rest.is_match(&head[at + f.name.len()..])
+        });
+        declared
+    }
+
+
 
     /// The method nodes declared in `owner`'s body.
     fn class_methods(&mut self, owner: &KNode) -> Res<Vec<Arc<KNode>>> {
@@ -984,8 +1136,31 @@ impl KernelResolver {
                 .collect(),
             &r.file_path,
         );
-        for cls in &owners {
-            let Some(decl) = self.ts_field_decl(cls, field)? else { continue };
+        // The calling class declares the field, or a class it extends does;
+        // else a same-named class elsewhere, but only with a type the call's
+        // file imports or declares: another app's class of that name says
+        // nothing about this one's field.
+        let mut found: Vec<(TsFieldDecl, Arc<KNode>)> = Vec::new();
+        for cls in owners.iter().filter(|c| c.file_path == r.file_path) {
+            if let Some(hit) = self.ts_field_through_bases(cls, field, r, 0)? {
+                found.push(hit);
+                break;
+            }
+        }
+        if found.is_empty() {
+            for cls in owners.iter().filter(|c| c.file_path != r.file_path) {
+                let Some(decl) = self.ts_field_decl(cls, field)? else { continue };
+                if self.ts_type_visible_in(&decl.ty, r)? {
+                    // The type is the class the call's file names.
+                    let mut at = (**cls).clone();
+                    at.file_path = r.file_path.clone();
+                    at.language = r.language.clone();
+                    found.push((decl, Arc::new(at)));
+                    break;
+                }
+            }
+        }
+        if let Some((decl, cls)) = found.first() {
             // `items: Mailer[]` names no single owner (`push` is the
             // array's); `conn: Conn | null` still dereferences to `Conn`.
             if decl.typed_collection && !decl.nullable {
@@ -1031,6 +1206,30 @@ impl KernelResolver {
             {
                 return Ok(None);
             }
+            // The file the field is written in names its type: it imports
+            // the one the field holds, or declares it, so that one's method
+            // is the call's. One it imports from a package outside the
+            // project, which no project file declares, has no project method.
+            let at = if cls.file_path == r.file_path { r.clone() } else { Self::ref_from_class(r, cls) };
+            let mut imported = self.ts_imported_type_file(m1, &at)?;
+            if imported.is_none() {
+                match self.ts_outside_type_declaration(m1, type_name, &at)? {
+                    Some(None) => return Ok(None),
+                    Some(Some(file)) => imported = Some(file),
+                    None if cls.file_path != r.file_path => imported = Some(cls.file_path.clone()),
+                    // A package import no manifest lists: still outside the
+                    // project, with no project method (fork: kept from before
+                    // the merge; upstream falls through to same-named classes).
+                    None if self.ts_imports_package(m1, &at)? => return Ok(None),
+                    None => {}
+                }
+            }
+            // That class decides, through its own supertypes: a same-named
+            // class elsewhere answered when it didn't declare the method
+            // itself.
+            if let Some(known) = self.ts_known_type_call(type_name, imported.as_deref().unwrap_or(&at.file_path), method, &at, 0.85)? {
+                return Ok(known);
+            }
             // Two apps in one repo may each declare the type. Among
             // its declarations of the method prefer the one closest
             // to the call site's directory — never index order.
@@ -1047,20 +1246,8 @@ impl KernelResolver {
                 .cloned()
                 .collect();
             if declared.len() > 1 {
-                // The field's own file says which type it means: a local
-                // declaration or an import pins the method's file.
-                if let Some(pin) = self.ts_field_type_file(cls, m1, type_name, r)? {
-                    let Some(type_file) = pin else { return Ok(None) };
-                    // Overload signatures repeat the method in that file;
-                    // the first stands for them, as the tie-break below does.
-                    let Some(pinned) = declared.iter().find(|n| n.file_path == type_file) else {
-                        return Ok(None);
-                    };
-                    return Ok(Some(KCand {
-                        node: pinned.clone(),
-                        confidence: 0.85,
-                        resolved_by: "instance-method",
-                    }));
+                if let Some(own) = imported.as_ref().and_then(|file| declared.iter().find(|n| &n.file_path == file)) {
+                    return Ok(Some(KCand { node: own.clone(), confidence: 0.85, resolved_by: "instance-method" }));
                 }
                 let call_dirs: Vec<&str> = {
                     let mut v: Vec<&str> = r.file_path.split('/').collect();
@@ -1089,54 +1276,220 @@ impl KernelResolver {
                 r,
                 0.85,
                 "instance-method",
-                None,
+                imported.as_deref(),
             );
         }
         Ok(None)
     }
 
-    /// The file declaring the type a TS field names, read from the owner
-    /// class's file: `Some(Some(file))` when it declares the type itself or
-    /// imports it from a project file, `Some(None)` when the import comes
-    /// from outside the repository (no project method is meant), `None`
-    /// when that file says nothing about the name.
-    fn ts_field_type_file(
-        &mut self,
-        owner: &KNode,
-        declared_type: &str,
-        type_name: &str,
-        r: &ResolveRefIn,
-    ) -> Res<Option<Option<String>>> {
-        let head = declared_type.split('.').next().unwrap_or("");
-        if head == type_name
-            && self.nodes_in_file(&owner.file_path)?.iter().any(|n| {
-                n.name == type_name && matches!(n.kind.as_str(), "class" | "interface")
-            })
-        {
-            return Ok(Some(Some(owner.file_path.clone())));
+    /// `r` made from the file of `cls`.
+    fn ref_from_class(r: &ResolveRefIn, cls: &KNode) -> ResolveRefIn {
+        let mut at = r.clone();
+        at.file_path = cls.file_path.clone();
+        at.language = cls.language.clone();
+        at
+    }
+
+    /// tsFieldThroughBases (name-matcher.ts): `field`'s declaration on `cls`
+    /// or on the classes it extends, nearest first, with the class it is
+    /// written in. Each base is the class its subclass's file names.
+    fn ts_field_through_bases(&mut self, cls: &Arc<KNode>, field: &str, r: &ResolveRefIn, depth: usize) -> Res<Option<(TsFieldDecl, Arc<KNode>)>> {
+        if let Some(decl) = self.ts_field_decl(cls, field)? {
+            return Ok(Some((decl, cls.clone())));
         }
-        let Some(imp) = self
-            .import_mappings(&owner.file_path)?
-            .iter()
-            .find(|m| m.local_name == head)
-            .cloned()
-        else {
+        if depth >= TS_BASE_WALK_DEPTH {
+            return Ok(None);
+        }
+        let Some(source) = self.read_file(&cls.file_path) else { return Ok(None) };
+        let head = ts_class_head(&source, cls);
+        let Some(base_name) = re!(r"\bextends\s+([A-Za-z0-9_$.]+)").captures(&head).map(|m| m[1].to_string()) else {
             return Ok(None);
         };
-        if self.is_external_import(&imp.source, &owner.language, &owner.file_path) {
-            return Ok(Some(None));
+        let Some(base) = self.ts_named_class(&base_name, cls, r)? else { return Ok(None) };
+        if base.id == cls.id {
+            return Ok(None);
         }
-        let mut type_ref = r.clone().naming(declared_type, "references");
-        type_ref.from_node_id = owner.id.clone();
-        type_ref.file_path = owner.file_path.clone();
-        type_ref.language = owner.language.clone();
-        type_ref.line = owner.start_line;
-        type_ref.column = owner.start_column;
-        Ok(self
-            .resolve_via_import(&type_ref)?
-            .filter(|c| matches!(c.node.kind.as_str(), "class" | "interface"))
-            .map(|c| Some(c.node.file_path.clone())))
+        self.ts_field_through_bases(&base, field, r, depth + 1)
     }
+
+    /// tsNamedClass (name-matcher.ts): the class `name` names in `from`'s
+    /// file: the one that file imports under it, followed through re-exports
+    /// and aliases, or else a class the file declares.
+    fn ts_named_class(&mut self, name: &str, from: &KNode, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        let imported = self.import_mappings(&from.file_path)?.iter().any(|m| m.local_name == name);
+        if imported {
+            let mut at = r.clone().naming(name, "references");
+            at.from_node_id = from.id.clone();
+            at.file_path = from.file_path.clone();
+            at.language = from.language.clone();
+            at.line = from.start_line;
+            at.column = from.start_column;
+            return Ok(self
+                .resolve_via_import(&at)?
+                .map(|c| c.node)
+                .filter(|n| matches!(n.kind.as_str(), "class" | "component")));
+        }
+        Ok(self
+            .nodes_in_file(&from.file_path)?
+            .iter()
+            .find(|n| n.kind == "class" && n.name == name)
+            .cloned())
+    }
+
+    /// tsTypeVisibleIn (name-matcher.ts): does the call's file import a type
+    /// named `ty` from the project, or declare one?
+    fn ts_type_visible_in(&mut self, ty: &str, r: &ResolveRefIn) -> Res<bool> {
+        let head = ty.split('.').next().unwrap_or("");
+        if self.import_mappings(&r.file_path)?.iter().any(|m| m.local_name == head) {
+            return Ok(true);
+        }
+        Ok(self.nodes_in_file(&r.file_path)?.iter().any(|n| {
+            n.name == head && matches!(n.kind.as_str(), "class" | "interface" | "type_alias" | "constant" | "variable")
+        }))
+    }
+}
+
+/// The class heading up to its body, type parameters removed: `class A<T extends X>`
+/// does not extend anything, `class A extends B` does.
+pub(super) fn ts_class_head(source: &SourceFile, owner: &KNode) -> String {
+    // The head may run over several lines and sit below decorators, whose own
+    // braces are not the body.
+    let start = (owner.start_line - 1).max(0) as usize;
+    let text = source
+        .get(start..(start + 8).min(source.len()))
+        .unwrap_or_default()
+        .iter()
+        .map(|l| strip_line_comments(l).to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let named = re!(r"(?-u:\b)(?:class|interface)\s+([A-Za-z0-9_$]+)")
+        .captures_iter(&text)
+        .find(|c| c[1] == owner.name)
+        .and_then(|c| c.get(0).map(|m| m.start()))
+        .or_else(|| re!(r"(?-u:\b)class(?-u:\b)").find(&text).map(|m| m.start()))
+        .unwrap_or(0);
+    let mut head = String::new();
+    let mut depth = 0usize;
+    let mut prev = ' ';
+    for c in text[named..].chars() {
+        match c {
+            '<' => depth += 1,
+            '>' if depth > 0 && prev != '=' => depth -= 1,
+            '{' if depth == 0 => break,
+            _ if depth == 0 => head.push(c),
+            _ => {}
+        }
+        prev = c;
+    }
+    head
+}
+
+/// How many classes up its `extends` chain a TS class's fields and wrapper
+/// methods are looked for: vscode's editors declare emitters through
+/// `_register`, which `Disposable` declares up to eight classes above them.
+pub(super) const TS_BASE_WALK_DEPTH: usize = 10;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TsInjector {
+    Inject,
+    CreateInstance,
+}
+
+/// A field initializer that wraps or injects a class: `this._register(new X())`,
+/// `inject(X)`.
+struct TsInit {
+    ty: String,
+    /// The wrapper's holder (`this.<holder>.<method>(`) and method.
+    via: Option<(Option<String>, String)>,
+    injector: Option<TsInjector>,
+    /// Byte offsets in the line: the field, the call's `(` and the end of the match.
+    field_at: usize,
+    open: usize,
+    end: usize,
+}
+
+/// The first wrapped or injected declaration of `field` on one line.
+fn ts_init_on_line(line: &str, field: &str) -> Option<TsInit> {
+    let token = |b: u8| is_word_byte(b) || b == b'$' || b == b'#';
+    for at in occurrences(line, field, 0) {
+        let after = at + field.len();
+        if line[..at].bytes().next_back().is_some_and(token) || line[after..].bytes().next().is_some_and(token) {
+            continue;
+        }
+        let rest = &line[after..];
+        if let Some(m) = re!(r"^\s*=\s*this\.(?:([A-Za-z0-9_$#]+)\.)?([A-Za-z0-9_$#]+)\(\s*(?:new\s+|((?:this\.)?(?:[A-Za-z0-9_$#]+\.)*createInstance)\s*\(\s*)([A-Za-z_$][A-Za-z0-9_.$]*)").captures(rest) {
+            let whole = m.get(0)?;
+            return Some(TsInit {
+                ty: m[4].to_string(),
+                via: Some((m.get(1).map(|h| h.as_str().to_string()), m[2].to_string())),
+                injector: m.get(3).map(|_| TsInjector::CreateInstance),
+                field_at: at,
+                open: after + whole.as_str().find('(')?,
+                end: after + whole.end(),
+            });
+        }
+        if let Some(m) = re!(r"^\s*=\s*(inject|(?:this\.)?(?:[A-Za-z0-9_$#]+\.)*createInstance)\s*(?:<\s*([A-Z][A-Za-z0-9_.$]*)[^;=(){}]*>)?\s*\(\s*([A-Z][A-Za-z0-9_.$]*)").captures(rest) {
+            let whole = m.get(0)?;
+            // An injector's type argument is the type it returns: `inject<Params>(DIALOG_DATA)`.
+            let ty = m.get(2).or_else(|| m.get(3))?.as_str().to_string();
+            // The first `(` after the field is the injector's: a type argument list holds none.
+            return Some(TsInit {
+                ty,
+                via: None,
+                injector: Some(if &m[1] == "inject" { TsInjector::Inject } else { TsInjector::CreateInstance }),
+                field_at: at,
+                open: after + whole.as_str().find('(')?,
+                end: after + whole.end(),
+            });
+        }
+    }
+    None
+}
+
+/// tsCallEndsStatement (name-matcher.ts): does the call whose `(` is at
+/// `open` on line `row` end its statement, so that what it returns is what
+/// the statement assigns? Nothing but `;` may come after its `)`, nor start
+/// the next line — `.event`, `?.x` or `[0]` would take a member of what it
+/// returns. Strings are skipped; an unclosed one, or a call still open after
+/// 12 lines, isn't read.
+fn ts_call_ends_statement(source: &SourceFile, row: usize, open: usize) -> bool {
+    let mut depth = 0i32;
+    let mut r = row;
+    let mut from = open;
+    while r < source.len() && r < row + 12 {
+        let line = strip_line_comments(&source[r]);
+        let bytes = line.as_bytes();
+        let mut i = from;
+        while i < bytes.len() {
+            let c = bytes[i];
+            if matches!(c, b'"' | b'\'' | b'`') {
+                let mut close = i + 1;
+                while close < bytes.len() && bytes[close] != c {
+                    close += if bytes[close] == b'\\' { 2 } else { 1 };
+                }
+                if close >= bytes.len() {
+                    return false;
+                }
+                i = close;
+            } else if c == b'(' {
+                depth += 1;
+            } else if c == b')' {
+                depth -= 1;
+                if depth == 0 {
+                    let rest = line[i + 1..].trim();
+                    if !rest.is_empty() {
+                        return rest.starts_with(';');
+                    }
+                    let next = (r + 1..(r + 4).min(source.len())).map(|k| strip_line_comments(&source[k])).find(|l| !l.trim().is_empty());
+                    return next.is_none_or(|n| !re!(r"^\s*(?:[.?\[(!,:|&+*/%<>=-]|as\b|satisfies\b)").is_match(&n));
+                }
+            }
+            i += 1;
+        }
+        r += 1;
+        from = 0;
+    }
+    false
 }
 
 /// Where a candidate field declaration sits: its line text, line number and byte offset.
@@ -1147,6 +1500,11 @@ struct FieldSite<'a> {
     at: usize,
 }
 
+/// What follows a field's type when the field holds an array of it: `[]`, after any type arguments.
+fn ts_array_suffix_re() -> Rc<Regex> {
+    re!(r"^\s*(?:<[^;=(){}<>]*(?:<[^;=(){}<>]*>[^;=(){}<>]*)*>)?\s*\[\s*\]")
+}
+
 /// A TypeScript class-field declaration found by `ts_field_decl`.
 pub(super) struct TsFieldDecl {
     /// The declared type text (`Mailer`, `ns.Mailer`, the `typeof` operand).
@@ -1155,6 +1513,8 @@ pub(super) struct TsFieldDecl {
     pub(super) value_type: bool,
     /// The type continues into `[]`, `|` or `&` (GUARD1_TAIL_RE).
     pub(super) typed_collection: bool,
+    /// The field holds an array of the type: `[]` follows it, after any type arguments.
+    pub(super) array: bool,
     /// The only union members after the type are `undefined`/`null`.
     pub(super) nullable: bool,
 }

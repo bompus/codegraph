@@ -287,6 +287,11 @@ impl KernelResolver {
         if self.workspaces.is_some() && self.resolve_workspace_import(&source).is_some() {
             return local;
         }
+        if !self.is_declared_outside_package(&source, &r.file_path)
+            && self.resolve_import_path(&source, &r.file_path, &r.language)?.is_some_and(|f| self.known_file(&f))
+        {
+            return local;
+        }
         match self.repository_package(package_name_of(&source), &r.file_path) {
             RepositoryPackage::Mapped => return local,
             RepositoryPackage::Manifest => return Ok(BareImport::UnmappedLocal),
@@ -338,7 +343,7 @@ impl KernelResolver {
     /// only resolving it there would be binding evidence; matching the
     /// imported name across the project instead guessed wrong on vite's
     /// playground fixtures.
-    fn repository_package(&mut self, package: &str, from_file: &str) -> RepositoryPackage {
+    pub(super) fn repository_package(&mut self, package: &str, from_file: &str) -> RepositoryPackage {
         if let Some(ws) = &self.workspaces {
             if ws.local_link_names.contains(package) || self.resolve_workspace_import(package).is_some() {
                 return RepositoryPackage::Mapped;
@@ -857,7 +862,7 @@ enum BareImport {
 }
 
 /// What places a package in this repository.
-enum RepositoryPackage {
+pub(super) enum RepositoryPackage {
     /// The workspace loader maps it, or links it by name.
     Mapped,
     /// A manifest's own `name` or `workspace:` dependency, nothing more.

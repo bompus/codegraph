@@ -23,7 +23,7 @@ import {
   CPP_DEFINE_SIGNATURE,
 } from './types';
 import { isBindingReceiverCall,  crossesKnownFamily, crossesCodeBoundary, resolveAmbiguousNameCeiling} from './gates';
-import { isExternalImport, resolveImportPath, importMappingsFromBindings, loadCppIncludeDirs, isBoundToOutOfRepoImport, importBindingTail, clearImportResolverMemos } from './import-resolver';
+import { isExternalImport, resolveImportPath, importMappingsFromBindings, loadCppIncludeDirs, isBoundToOutOfRepoImport, importBindingTail, clearImportResolverMemos, ESM_IMPORT_LANGUAGES, jsModuleFile } from './import-resolver';
 import { gateSwiftTypeTarget, clearSwiftTypeVisibility } from './swift-type-visibility';
 import { gateTypeParameter, clearTypeParameterMemos } from './type-parameters';
 import { gateRustScope, clearRustScopeMemos } from './rust-scope';
@@ -618,6 +618,8 @@ export class ReferenceResolver {
         if (resolved !== null && this.isIndexedFile(resolved)) return false;
         return this.isDeclaredOutsidePackage(source, fromFile);
       },
+      isDeclaredPackage: (source, fromFile) => this.isDeclaredOutsidePackage(source, fromFile),
+      isIndexedFile: (filePath) => this.isIndexedFile(filePath),
       getNodesInFile: (filePath: string) => {
         if (!this.nodeCache.has(filePath)) {
           this.nodeCache.set(filePath, this.queries.getNodesByFile(filePath));
@@ -779,6 +781,9 @@ export class ReferenceResolver {
       },
 
       getScopedAliasesFor: (filePath: string) => scopedAliasesForFile(filePath, this.context.getAliasScopes!()),
+
+      getNearestAliases: (filePath: string) =>
+        scopedAliasesForFile(filePath, this.context.getAliasScopes!()) ?? this.context.getProjectAliases!() ?? null,
 
       getGoPackageDir: (importPath: string, fromFile?: string) => {
         const own = fromFile === undefined ? null : this.nearestGoModule(goDirOf(fromFile));
@@ -1028,11 +1033,11 @@ export class ReferenceResolver {
       dbPath,
       projectRoot: this.projectRoot,
       aliases: aliases
-        ? { baseUrl: aliases.baseUrl, patterns: aliases.patterns }
+        ? { baseUrl: aliases.baseUrl, declaresBaseUrl: aliases.declaresBaseUrl, patterns: aliases.patterns }
         : undefined,
       scopedAliases: this.context.getAliasScopes!().map(({ dir, map }) => ({
         dir,
-        map: { baseUrl: map.baseUrl, patterns: map.patterns },
+        map: { baseUrl: map.baseUrl, declaresBaseUrl: map.declaresBaseUrl, patterns: map.patterns },
       })),
       workspaces: workspaces
         ? {
@@ -1615,7 +1620,7 @@ export class ReferenceResolver {
     const settled = gateSwiftTypeTarget(this.settleKernelOutcome(ref, outcome), ref, this.context);
     const scoped = gateRustScope(gateTypeParameter(settled, ref, this.context), ref, this.context);
     const result = gateSuperSelfCall(scoped, ref, this.context);
-    if (!result) ref.nameTail = importBindingTail(ref, this.context);
+    if (!result) ref.nameTail = importBindingTail(ref, this.context, outcome.typeHead);
     return { ref, result };
   }
 
@@ -2505,6 +2510,57 @@ export class ReferenceResolver {
     return resolveImportPath(specifier, fromFile, language, this.context);
   }
 
+  /**
+   * Whether a failed import could name one of `files`, the files a sync just
+   * added: the test the import retry puts a crowded key's imports to
+   * (`QueryBuilder.getRetryableFailedImports`). `utils` is the path stem of a
+   * project's own `./utils` and of every `jotai/utils` and `@scope/pkg/utils`
+   * import alike, and `assert` the name of every binding of `import * as
+   * assert from 'assert'`, so past the retry's ceiling a key holds the few
+   * imports an added `utils.ts` or `assert.ts` is for among hundreds that no
+   * file of the project is.
+   *
+   * A JavaScript or TypeScript import reaches a file by the module it is
+   * written as (a path, a tsconfig alias or a workspace package, an `index`
+   * file and the emitted `.js` of a `.ts` included), by a framework's alias
+   * (SvelteKit's `$lib/…`) or by the file's own name (`…/utils.js`). One that
+   * none of those lead to an added file — a package, an import binding, a
+   * workspace package's subpath only its `exports` map resolves — names none
+   * of them. Of an import written in another language this knows nothing, so
+   * a crowded key skips it, as it always has.
+   */
+  couldNameAnyOf(files: readonly string[]): (reference: UnresolvedReference) => boolean {
+    const added = new Set(files);
+    const names = new Set(files.map((file) => file.slice(file.lastIndexOf('/') + 1)));
+    return (reference) => {
+      const language = reference.language || this.getLanguageFromNodeId(reference.fromNodeId);
+      if (!ESM_IMPORT_LANGUAGES.has(language)) return false;
+      const ref: UnresolvedRef = {
+        fromNodeId: reference.fromNodeId,
+        referenceName: reference.referenceName,
+        referenceKind: reference.referenceKind,
+        line: reference.line,
+        column: reference.column,
+        filePath: reference.filePath || this.getFilePathFromNodeId(reference.fromNodeId),
+        language,
+        rowId: reference.rowId,
+      };
+      const name = ref.referenceName;
+      if (names.has(name.slice(name.lastIndexOf('/') + 1))) return true;
+      // Where the specifier leads first: a package's leads nowhere, and only
+      // then is it worth asking whether the resolver reads the reference as a
+      // module, which for a bare name means reading the file's imports.
+      const target = resolveImportPath(name, ref.filePath, language, this.context);
+      if (target !== null && added.has(target) && jsModuleFile(ref, this.context) === target) return true;
+      // A framework's alias is a path (`$lib/x`, `~/x`); a bare name, which
+      // every binding is, is no alias, and asking reads the file.
+      return name.includes('/') && this.frameworksFor(language).some((framework) => {
+        const result = framework.resolve(ref, this.context);
+        return result !== null && added.has(this.nodeById(result.targetNodeId)?.filePath ?? '');
+      });
+    };
+  }
+
   /** True when a detected router binds navigation calls to its routes (see {@link reopenNavigationsFor}). */
   hasNavigationRouters(): boolean {
     return this.frameworks.some((f) => f.navigation !== undefined);
@@ -2693,11 +2749,13 @@ export class ReferenceResolver {
       return target && !isImportableKind(target.kind) ? null : result;
     }
 
-    // A Go alias names its type as an embedding does (below): written through
-    // a package that is none of the file's imports as indexed, the type found
-    // by its bare name is another package's namesake, or the alias itself.
+    // A Go type declaration — an alias, a defined type, a struct's fields —
+    // names its types as an embedding does (below): written through a package
+    // that is none of the file's imports as indexed, the type found by its
+    // bare name is another package's namesake, or the declaration itself
+    // (`op clientv3.Op` beside the file's own `Op`).
     if (ref.language === 'go' && ref.referenceKind === 'references' &&
-        this.nodeById(ref.fromNodeId)?.kind === 'type_alias' && isGoUnknownQualified(ref, this.context)) return null;
+        GO_TYPE_KINDS.has(this.nodeById(ref.fromNodeId)?.kind ?? '') && isGoUnknownQualified(ref, this.context)) return null;
 
     // A Go type position — a parameter or result type, a composite literal's
     // type — names a type of the package Go reads it from (route handlers are

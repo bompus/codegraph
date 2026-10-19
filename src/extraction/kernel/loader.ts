@@ -174,6 +174,7 @@ export interface KernelAliasPatternIn {
 
 export interface KernelAliasMapIn {
   baseUrl?: string;
+  declaresBaseUrl?: boolean;
   patterns: KernelAliasPatternIn[];
 }
 
@@ -262,6 +263,8 @@ export interface ResolveOutcome {
   /** From an arm resolveOneInner runs before the framework loop: the verdict
    *  stands without the framework merge. */
   preFramework?: boolean;
+  /** On an unresolved TS/JS member call, the head of the type its receiver is declared with. */
+  typeHead?: string;
 }
 
 export interface KernelResolverLike {

@@ -925,6 +925,21 @@ pub(super) static CPP_NON_TYPE_TOKENS: LazyLock<HashSet<&'static str>> =
 // Built-in tables (index.ts isBuiltInOrExternal) — verbatim ports.
 // ---------------------------------------------------------------------------
 
+/// JS_ARRAY_METHODS (js-builtins.ts): the methods an array has, `Array.prototype`'s
+/// and those every object inherits. On a local annotated as an array
+/// (`items: Item[]`) a call of one is the array's, never a method of the element's class.
+pub(super) static JS_ARRAY_METHODS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    [
+        "at", "concat", "copyWithin", "entries", "every", "fill", "filter", "find", "findIndex", "findLast",
+        "findLastIndex", "flat", "flatMap", "forEach", "includes", "indexOf", "join", "keys", "lastIndexOf", "map",
+        "pop", "push", "reduce", "reduceRight", "reverse", "shift", "slice", "some", "sort", "splice", "toReversed",
+        "toSorted", "toSpliced", "unshift", "values", "with", "toString", "toLocaleString", "valueOf",
+        "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable",
+    ]
+    .into_iter()
+    .collect()
+});
+
 pub(super) static JS_BUILT_INS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [
         "console", "window", "document", "global", "process", "Promise", "Array", "Object",

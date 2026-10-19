@@ -26,7 +26,7 @@ impl KernelResolver {
         self.scoped_aliases_for(from_file)
             .into_iter()
             .chain(self.aliases.as_ref())
-            .any(|m| m.patterns.iter().any(|p| import_path.starts_with(&p.prefix)))
+            .any(|m| m.patterns.iter().any(|p| !p.prefix.is_empty() && import_path.starts_with(&p.prefix)))
     }
 
     /// isExternalImport (import-resolver.ts), context-aware.
@@ -267,6 +267,90 @@ impl KernelResolver {
         Ok(self.probe_extensions(import_path, language))
     }
 
+    /// aliasAndBaseUrlCandidates (path-aliases.ts): where a bare specifier can
+    /// live under `aliases`, in the order tsc tries them: the targets of the
+    /// most specific pattern it matches, then the specifier read from
+    /// `baseUrl` when the config declares one.
+    fn alias_and_base_url_candidates(&self, import_path: &str, aliases: &KernelAliasMapIn) -> Vec<String> {
+        let mut out = self.apply_aliases(import_path, aliases);
+        if aliases.declares_base_url == Some(true) {
+            let base = aliases.base_url.as_deref().unwrap_or(&self.project_root);
+            let absolute = pos_resolve(base, import_path);
+            let relative = pos_relative(&self.root_abs, &absolute).replace('\\', "/");
+            if !relative.is_empty() && !relative.starts_with("..") && !relative.starts_with('/') {
+                out.push(relative);
+            }
+        }
+        out
+    }
+
+    /// isDeclaredOutsidePackage (index.ts): a Node built-in, or a package the
+    /// importing file's package.json or an enclosing one lists as a
+    /// dependency; a framework's virtual module unless this repository is
+    /// that framework.
+    pub(super) fn is_declared_outside_package(&mut self, source: &str, from_file: &str) -> bool {
+        if ["node:", "bun:", "jsr:", "npm:", "http:", "https:"].iter().any(|p| source.starts_with(p))
+            || source.starts_with("@std/")
+            || self.node_builtins.contains(source)
+        {
+            return true;
+        }
+        let provider = if source.starts_with("astro:") {
+            Some("astro")
+        } else if re!(r"^\$(?:app|env|service-worker)(?:/|$)").is_match(source) {
+            Some("@sveltejs/kit")
+        } else {
+            None
+        };
+        let package = package_name_of(source).to_string();
+        match self.repository_package(&package, from_file) {
+            RepositoryPackage::External => true,
+            RepositoryPackage::Manifest | RepositoryPackage::Mapped => false,
+            RepositoryPackage::No => provider.is_some_and(|p| matches!(self.repository_package(p, from_file), RepositoryPackage::No)),
+        }
+    }
+
+    /// resolveFromOwnConfig (import-resolver.ts): a bare specifier the
+    /// importing app's own `paths` or `baseUrl` map to a file the index holds.
+    /// A package the app declares (or a Node built-in) never binds to a
+    /// project module, only to a declaration file the project keeps for it.
+    fn resolve_from_own_config(&mut self, import_path: &str, from_file: &str, language: &str) -> Res<Option<String>> {
+        if !is_esm_import_language(language)
+            || import_path.is_empty()
+            || import_path.starts_with('/')
+            || re!(r"^[A-Za-z][\w+.-]*:").is_match(import_path)
+        {
+            return Ok(None);
+        }
+        let candidates = match self.scoped_aliases_for(from_file).or(self.aliases.as_ref()) {
+            Some(map) => self.alias_and_base_url_candidates(import_path, map),
+            None => return Ok(None),
+        };
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        if self.is_declared_outside_package(import_path, from_file) {
+            if !extension_resolution(language).contains(&".d.ts") {
+                return Ok(None);
+            }
+            for c in candidates {
+                let declarations = format!("{c}.d.ts");
+                if self.file_exists(&declarations) && self.known_file(&declarations) {
+                    return Ok(Some(declarations));
+                }
+            }
+            return Ok(None);
+        }
+        for c in candidates {
+            if let Some(hit) = self.probe_extensions(&c, language) {
+                if self.known_file(&hit) {
+                    return Ok(Some(hit));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// resolveCppIncludePath (import-resolver.ts): -I dir scan with the
     /// language's extension list, then the path as-is.
     pub(super) fn resolve_cpp_include_path(&mut self, import_path: &str, language: &str) -> Option<String> {
@@ -316,7 +400,9 @@ impl KernelResolver {
             return self.resolve_cobol_copybook(import_path, from_file);
         }
         if self.is_external_import(import_path, language, from_file) {
-            return Ok(None);
+            // What still looks like a package may name a file through the
+            // importing app's own config.
+            return self.resolve_from_own_config(import_path, from_file, language);
         }
         let from_dir = pos_dirname(&pos_resolve(&self.root_abs, from_file)).to_string();
         if import_path.starts_with('.') {
@@ -557,9 +643,22 @@ impl KernelResolver {
             if imp.local_name != r.reference_name {
                 continue;
             }
-            return Ok(self.is_external_import(&imp.source, &r.language, &r.file_path));
+            let (source, language, file) = (imp.source.clone(), r.language.clone(), r.file_path.clone());
+            return Ok(self.is_external_import(&source, &language, &file)
+                && self.resolve_import_path(&source, &file, &language)?.is_none());
         }
         Ok(false)
+    }
+
+    /// isJsBareModuleRef (import-resolver.ts): the `imports` reference to the
+    /// module of an import named by one bare segment. A name some import binds
+    /// locally is that binding, not the module.
+    pub(super) fn is_js_bare_module_ref(&mut self, r: &ResolveRefIn) -> Res<bool> {
+        if r.reference_kind != "imports" || !is_esm_import_language(&r.language) || is_js_path_import_ref(r) {
+            return Ok(false);
+        }
+        let imports = self.import_mappings(&r.file_path)?;
+        Ok(imports.iter().any(|m| m.source == r.reference_name) && !imports.iter().any(|m| m.local_name == r.reference_name))
     }
 
     /// resolveViaImport (import-resolver.ts): the C/C++ include arm, the ESM
@@ -645,6 +744,23 @@ impl KernelResolver {
             let Some(resolved) =
                 self.resolve_import_path(&r.reference_name, &r.file_path, &r.language)?
             else {
+                return Ok(None);
+            };
+            if resolved == r.file_path {
+                return Ok(None);
+            }
+            return Ok(self
+                .nodes_in_file(&resolved)?
+                .iter()
+                .find(|n| n.kind == "file")
+                .cloned()
+                .map(|node| KCand { node, confidence: 0.9, resolved_by: "import" }));
+        }
+        // A module imported by one bare segment (`'config'` under
+        // `"baseUrl": "src"`) is a file only when the importing app's config
+        // finds one; a real package stays unresolved.
+        if self.is_js_bare_module_ref(r)? {
+            let Some(resolved) = self.resolve_import_path(&r.reference_name, &r.file_path, &r.language)? else {
                 return Ok(None);
             };
             if resolved == r.file_path {
@@ -980,7 +1096,11 @@ impl KernelResolver {
         };
         let mut site = r.clone();
         site.file_path = class.file_path.clone();
-        let Some(c) = self.resolve_method_on_type(&class.name, member, &site, 0.85, "instance-method", None)? else {
+        // A single-file component's script names a TS class like a TS file does.
+        if is_esm_import_language(&site.language) {
+            site.language = class.language.clone();
+        }
+        let Some(c) = self.resolve_method_on_type(&class.name, member, &site, 0.85, "instance-method", is_esm_import_language(&class.language).then_some(class.file_path.as_str()))? else {
             return Ok(None);
         };
         let own = format!("{}::{member}", class.name);
