@@ -18,7 +18,8 @@
  *
  * A host release build of committed kernel sources is restored from, and
  * saved to, the per-user kernel cache (scripts/kernel-cache.mjs); `--no-cache`
- * compiles anyway. `--quick` builds the `quick` Cargo profile (no LTO,
+ * compiles without it, and so do builds with RUSTFLAGS or CARGO_PROFILE_*
+ * overrides, whose output is not what a plain release build produces. `--quick` builds the `quick` Cargo profile (no LTO,
  * parallel codegen, incremental) for edit-and-test loops; its stamp is marked
  * `quick` and it is never cached. Measure performance with a release build.
  * `CARGO_TARGET_DIR` moves the build output as it does for cargo.
@@ -68,7 +69,9 @@ const targetDir = process.env.CARGO_TARGET_DIR ? path.resolve(crate, process.env
 const destDir = path.join(crate, 'prebuilds', platform);
 const dest = path.join(destDir, 'codegraph-kernel.node');
 const stamp = kernelSourceStamp(root);
-if (!target && !quick && useCache && restoreKernel(platform, stamp, dest)) {
+const customFlags = Object.keys(process.env).some((k) => /^(RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS|CARGO_PROFILE_)/.test(k));
+const cacheable = !target && !quick && useCache && !customFlags;
+if (cacheable && restoreKernel(platform, stamp, dest)) {
   console.log(`[kernel] restored ${dest} from the kernel cache (sources ${stamp})`);
   process.exit(0);
 }
@@ -111,9 +114,14 @@ mkdirSync(destDir, { recursive: true });
 rmSync(dest, { force: true });
 copyFileSync(lib, dest);
 // The sources this build came from, so ensure-kernel.mjs can tell a stale prebuild.
-if (stamp) writeFileSync(stampPath(dest), `${stamp}${quick ? ' quick' : ''}\n`);
+// Stamp only when the sources did not change while cargo ran: a file edited
+// mid-build may or may not be in the binary. Without a stamp the next
+// ensure-kernel run rebuilds.
+const unchanged = stamp !== null && kernelSourceStamp(root) === stamp;
+if (unchanged) writeFileSync(stampPath(dest), `${stamp}${quick ? ' quick' : ''}\n`);
 else rmSync(stampPath(dest), { force: true });
-if (!target && !quick) saveKernel(platform, stamp, dest);
+if (stamp !== null && !unchanged) console.error('[kernel] warning: kernel sources changed during the build; the prebuild is left unstamped and will be rebuilt');
+if (unchanged && cacheable) saveKernel(platform, stamp, dest);
 console.log(`[kernel] staged ${dest} (${Math.round(statSync(dest).size / (1024 * 1024))}M)`);
 
 /** Run a command in the crate; true on success. Exits on failure unless allowed. */

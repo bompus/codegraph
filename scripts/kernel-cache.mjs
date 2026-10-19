@@ -42,33 +42,45 @@ function entry(platform, stamp) {
 export function restoreKernel(platform, stamp, dest) {
   const cached = entry(platform, stamp);
   if (!cached || !existsSync(cached)) return false;
-  mkdirSync(path.dirname(dest), { recursive: true });
-  // A fresh inode, as build-kernel.mjs does: macOS caches code signatures per inode.
-  rmSync(dest, { force: true });
-  copyFileSync(cached, dest);
-  writeFileSync(stampPath(dest), `${stamp}\n`);
-  const now = new Date();
-  utimesSync(path.dirname(cached), now, now); // most recently used survives pruning
-  return true;
+  const partial = `${dest}.${process.pid}.partial`;
+  try {
+    mkdirSync(path.dirname(dest), { recursive: true });
+    // Copy beside the prebuild first: if another worktree prunes the entry
+    // meanwhile, the current prebuild is still there and the caller compiles.
+    copyFileSync(cached, partial);
+    // A fresh inode, as build-kernel.mjs does: macOS caches code signatures per inode.
+    rmSync(dest, { force: true });
+    renameSync(partial, dest);
+    writeFileSync(stampPath(dest), `${stamp}\n`);
+    const now = new Date();
+    utimesSync(path.dirname(cached), now, now); // most recently used survives pruning
+    return true;
+  } catch (err) {
+    rmSync(partial, { force: true });
+    console.error(`[kernel] warning: could not restore from the kernel cache: ${err.message}`);
+    return false;
+  }
 }
 
 /** Save a release build of committed sources, then keep only the newest entries. */
 export function saveKernel(platform, stamp, built) {
   const cached = entry(platform, stamp);
   if (!cached) return;
+  const partial = `${cached}.${process.pid}.partial`;
   try {
     const dir = path.dirname(cached);
     mkdirSync(dir, { recursive: true });
     // Copy then rename, so a concurrent restore never reads a half-written file.
-    const partial = `${cached}.${process.pid}.partial`;
     copyFileSync(built, partial);
     renameSync(partial, cached);
     const platformDir = path.dirname(dir);
-    const entries = readdirSync(platformDir)
-      .map((name) => ({ name, mtime: statSync(path.join(platformDir, name)).mtimeMs }))
+    const entries = readdirSync(platformDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map(({ name }) => ({ name, mtime: statSync(path.join(platformDir, name)).mtimeMs }))
       .sort((a, b) => b.mtime - a.mtime);
     for (const old of entries.slice(KEEP)) rmSync(path.join(platformDir, old.name), { recursive: true, force: true });
   } catch (err) {
+    rmSync(partial, { force: true });
     console.error(`[kernel] warning: could not save the build to the kernel cache: ${err.message}`);
   }
 }

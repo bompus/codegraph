@@ -42,11 +42,11 @@ function ensure(): { status: number | null; out: string } {
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'ensure-kernel-'));
-  for (const f of ['ensure-kernel.mjs', 'kernel-stamp.mjs', 'kernel-cache.mjs']) {
+  for (const f of ['ensure-kernel.mjs', 'kernel-stamp.mjs', 'kernel-cache.mjs', 'build-kernel.mjs']) {
     write(`scripts/${f}`, fs.readFileSync(path.join(SCRIPTS, f), 'utf8'));
   }
   write('codegraph-kernel/.gitignore', 'target/\ntarget-*/\nprebuilds/\n*.node\n');
-  write('.gitignore', 'kernel-cache/\nfake-bin/\n');
+  write('.gitignore', 'kernel-cache/\nfake-bin/\nbuild-bin/\nout/\nbuilt.node\n');
   write('codegraph-kernel/src/lib.rs', 'pub fn one() -> u32 { 1 }\n');
   write('fake-bin/cargo', '#!/bin/sh\nexit 1\n');
   fs.chmodSync(path.join(root, 'fake-bin', 'cargo'), 0o755);
@@ -134,6 +134,12 @@ describe.runIf(process.platform !== 'win32')('ensure-kernel source stamp', () =>
     const r = ensure();
     expect(r.status).toBe(0);
     expect(r.out).toContain('quick (unoptimized) kernel build');
+  });
+
+  it('rebuilds a quick build of other sources', async () => {
+    fs.writeFileSync(`${prebuild()}.stamp`, `${await stamp()} quick\n`);
+    write('codegraph-kernel/src/lib.rs', 'pub fn one() -> u32 { 2 }\n');
+    expect(ensure().out).toContain('was not built from this checkout');
   });
 
   it('fails visibly when Git cannot enumerate untracked inputs', async () => {
@@ -250,9 +256,80 @@ describe('kernel cache', () => {
       expect(fs.readdirSync(dir).sort()).toEqual(['s1', 's3', 's4', 's5']);
       saveKernel('p', 'abc+dirty', built);
       expect(fs.existsSync(path.join(dir, 'abc+dirty'))).toBe(false);
+      fs.mkdirSync(path.join(dir, 'abc+dirty'));
+      fs.writeFileSync(path.join(dir, 'abc+dirty', 'codegraph-kernel.node'), 'x');
+      expect(restoreKernel('p', 'abc+dirty', path.join(root, 'out', 'k.node'))).toBe(false);
     } finally {
       if (saved === undefined) delete process.env.CODEGRAPH_KERNEL_CACHE;
       else process.env.CODEGRAPH_KERNEL_CACHE = saved;
     }
+  });
+});
+
+describe.runIf(process.platform !== 'win32')('build-kernel with the kernel cache', () => {
+  const lib = process.platform === 'darwin' ? 'libcodegraph_kernel.dylib' : 'libcodegraph_kernel.so';
+  // A fake cargo: `build` writes a library naming its profile and logs the call;
+  // FAKE_EDIT makes it change a kernel source while "compiling".
+  const fakeCargo = () => {
+    write('build-bin/cargo', `#!/bin/sh
+case "$1" in
+  build)
+    echo build >> "$CALLS"
+    profile=release; [ "$2" = "--profile" ] && profile=$3
+    dir=\${CARGO_TARGET_DIR:-target}/$profile
+    mkdir -p "$dir" && echo "$profile" > "$dir/${lib}"
+    [ -n "$FAKE_EDIT" ] && echo 'pub fn edited() {}' >> src/lib.rs
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+`);
+    write('build-bin/rustup', '#!/bin/sh\nexit 0\n');
+    fs.chmodSync(path.join(root, 'build-bin', 'cargo'), 0o755);
+    fs.chmodSync(path.join(root, 'build-bin', 'rustup'), 0o755);
+  };
+  const calls = () => path.join(root, 'out', 'calls');
+  const build = (args: string[] = [], extra: Record<string, string> = {}) => {
+    fs.mkdirSync(path.join(root, 'out'), { recursive: true });
+    const env: Record<string, string | undefined> = { ...process.env, PATH: `${path.join(root, 'build-bin')}${path.delimiter}${process.env.PATH}`, CODEGRAPH_KERNEL_CACHE: cacheDir(), CALLS: calls(), ...extra };
+    for (const k of Object.keys(env)) if (/^(RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS|CARGO_PROFILE_|CARGO_TARGET_DIR)/.test(k) && !(k in extra)) delete env[k];
+    const r = spawnSync(process.execPath, [path.join(root, 'scripts', 'build-kernel.mjs'), ...args], { cwd: root, env, encoding: 'utf8' });
+    return { status: r.status, out: `${r.stdout}${r.stderr}` };
+  };
+  const builds = () => (fs.existsSync(calls()) ? fs.readFileSync(calls(), 'utf8').split('\n').filter(Boolean).length : 0);
+
+  beforeEach(fakeCargo);
+
+  it('saves a release build of committed sources and restores it without compiling', async () => {
+    expect(build().status).toBe(0);
+    expect(fs.readFileSync(cached((await stamp())!), 'utf8')).toBe('release\n');
+    fs.rmSync(prebuild());
+    const r = build();
+    expect(r.out).toContain('restored');
+    expect(builds()).toBe(1);
+    expect(fs.readFileSync(prebuild(), 'utf8')).toBe('release\n');
+    expect(build(['--no-cache']).status).toBe(0);
+    expect(builds()).toBe(2);
+  });
+
+  it('never caches a quick build, and marks its stamp', async () => {
+    expect(build(['--quick']).status).toBe(0);
+    expect(fs.readFileSync(`${prebuild()}.stamp`, 'utf8')).toBe(`${await stamp()} quick\n`);
+    expect(fs.existsSync(cacheDir())).toBe(false);
+    expect(build(['--quick', '--target', 'x86_64-unknown-linux-gnu']).out).toContain('host only');
+  });
+
+  it('leaves a build unstamped and uncached when the sources change while it runs', async () => {
+    const before = (await stamp())!;
+    expect(build([], { FAKE_EDIT: '1' }).out).toContain('changed during the build');
+    expect(fs.existsSync(`${prebuild()}.stamp`)).toBe(false);
+    expect(fs.existsSync(cached(before))).toBe(false);
+  });
+
+  it('bypasses the cache for custom compiler flags and honors CARGO_TARGET_DIR', async () => {
+    expect(build([], { RUSTFLAGS: '-C target-cpu=native' }).status).toBe(0);
+    expect(fs.existsSync(cacheDir())).toBe(false);
+    expect(build([], { CARGO_TARGET_DIR: path.join(root, 'out', 'tgt') }).status).toBe(0);
+    expect(fs.existsSync(path.join(root, 'out', 'tgt', 'release', lib))).toBe(true);
+    expect(fs.readFileSync(cached((await stamp())!), 'utf8')).toBe('release\n');
   });
 });
