@@ -138,6 +138,28 @@ describe('codegraph_explore answers change questions from the diff', () => {
     expect(collectChanges(dir, 'versions 1..10')).toBeNull();
   });
 
+  it('searches a feature description that names working tree changes when nothing changed', async () => {
+    const text = await explore('checkout panel shows the pricing working tree changes with additions and deletions');
+    expect(text).toContain('**Changes (uncommitted edits) — none');
+    expect(text).toMatch(/export function pricing/);
+
+    const bare = await explore('review my changes');
+    expect(bare).toContain('**Changes (uncommitted edits) — none');
+    expect(bare).not.toMatch(/export function pricing/);
+
+    // Two words beside the phrase still read as a change question.
+    const short = await explore('pricing my changes');
+    expect(short).not.toMatch(/export function pricing/);
+  });
+
+  it('keeps answering from the diff when something changed, however long the question', async () => {
+    const checkout = path.join(dir, 'src/checkout.ts');
+    fs.writeFileSync(checkout, fs.readFileSync(checkout, 'utf-8').replace('pricing(total)', 'pricing(total) + 1'));
+    const text = await explore('list what calls unrelated after my changes');
+    expect(text).toContain('**Changes (uncommitted edits) — 1 file, 1 symbol');
+    expect(text).not.toMatch(/export function unrelated/);
+  });
+
   it('leaves ordinary queries alone', async () => {
     const text = await explore('how does checkout reach pricing...');
     expect(text).not.toContain('**Changes');
