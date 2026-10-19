@@ -24,6 +24,11 @@ import * as updateCheck from '../src/upgrade/update-check';
 import { getWriterPidPath } from '../src/mcp/writer-lock';
 import { builtinPatchingReachesImporters } from './helpers/runtime-capabilities';
 
+// Windows CI runners take several times longer than Linux and macOS for the same
+// real daemon start, index and refresh (4-10 s on Windows runners against 0.5-0.75 s),
+// so the deadlines below are looser there and unchanged elsewhere.
+const onWindows = process.platform === 'win32';
+
 let root: string;
 let server: net.Server | null = null;
 let statusProjectPath: unknown;
@@ -455,7 +460,7 @@ describe('ordinary watcher startup', () => {
       }
       const started = outcome === 'previous-successor' ? null : once(child, 'message');
       let settled = false;
-      const pending = checkRuntimeReady(root, identity, 2000, { requireWatcher: true, refresh: true })
+      const pending = checkRuntimeReady(root, identity, onWindows ? 20_000 : 2000, { requireWatcher: true, refresh: true })
         .then(value => ({ value, error: null }), error => ({ value: null, error: error as Error }))
         .finally(() => { settled = true; });
       if (started) {
@@ -479,7 +484,7 @@ describe('ordinary watcher startup', () => {
         ? 'injected daemon refresh failure' : 'ownership changed');
       expect(fs.readFileSync(getDaemonPidPath(root), 'utf8')).toBe(daemonBefore);
       expect(fs.readFileSync(getWriterPidPath(root), 'utf8')).toBe(writerBefore);
-    }, 10000,
+    }, onWindows ? 30_000 : 10000,
   );
 
   it('rejects a different selected CLI build before creating the index or ownership records', async () => {
