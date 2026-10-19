@@ -11,7 +11,7 @@ import * as os from 'os';
 import { CodeGraph } from '../src';
 import { Node, UnresolvedReference } from '../src/types';
 import { ReferenceResolver, createResolver, ResolutionContext } from '../src/resolution';
-import { resolveImportPath, extractImportMappings, importMappingsFromBindings, loadCppIncludeDirs, clearCppIncludeDirCache } from '../src/resolution/import-resolver';
+import { resolveImportPath, importMappingsFromBindings, loadCppIncludeDirs, clearCppIncludeDirCache } from '../src/resolution/import-resolver';
 import { tryKernelBindings, tryKernelExtract } from '../src/extraction/kernel';
 import type { UnresolvedRef } from '../src/resolution/types';
 import { detectFrameworks, getAllFrameworkResolvers } from '../src/resolution/frameworks';
@@ -141,7 +141,6 @@ import { baz, qux } from './baz';
       expect(mappings.some((m) => m.localName === 'foo')).toBe(true);
       expect(mappings.some((m) => m.localName === 'bar')).toBe(true);
       expect(mappings.find((m) => m.localName === 'utils')).toMatchObject({ isNamespace: true, source: './utils' });
-      expect(extractImportMappings('src/index.ts', content, 'typescript')).toEqual([]);
     });
 
     it('should extract Python import mappings', () => {
@@ -161,7 +160,6 @@ from ..services import auth_service
       expect(mappings.find((m) => m.localName === 'User')).toMatchObject({ source: '.models' });
       expect(mappings.find((m) => m.localName === 'os')).toMatchObject({ isNamespace: true, source: 'os' });
       expect(mappings.find((m) => m.localName === 'auth_service')).toMatchObject({ source: '..services' });
-      expect(extractImportMappings('src/main.py', content, 'python')).toEqual([]);
     });
 
     it('should extract parenthesized Python from-imports', () => {
@@ -3261,7 +3259,6 @@ int run() {
       });
       expect(mappings[1]!.localName).toBe('myheader');
       expect(mappings[2]).toMatchObject({ localName: 'helpers', source: 'utils/helpers.hpp' });
-      expect(extractImportMappings('main.cpp', code, 'cpp')).toEqual([]);
     });
 
     it('should discover include directories from compile_commands.json', () => {

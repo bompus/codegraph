@@ -275,6 +275,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - A one-file sync no longer re-resolves the whole project and rebuilds every inferred link when the changed file passes an inherited member as a value, such as `setTimeout(this.tick)`. Such syncs on large TypeScript projects are faster and use less memory.
 
+- A one-file sync uses less memory: looking up a file's imports no longer loads and keeps every name the file declares. On n8n the sync's peak memory drops by about 5% on Node (960 to 915 MiB) and 6% on Bun (1,002 to 945 MiB). The graph is unchanged.
 - A one-file sync on a large project uses less memory: finding near-identical functions no longer creates a text key and a list for every function body. On n8n the sync's peak memory drops by about 12% on Bun (1,137 to 995 MiB); on Node the change is within run-to-run variation. The copies found are unchanged.
 
 - A sync that changes a few files no longer re-scores every near-duplicate pair in the project: pair scores are kept between runs, and only the pairs a changed function is in are compared again.

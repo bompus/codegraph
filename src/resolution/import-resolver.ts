@@ -727,24 +727,6 @@ export function importMappingsFromBindings(rows: Binding[]): ImportMapping[] | n
   return out;
 }
 
-/**
- * Extract import mappings from a file
- */
-export function extractImportMappings(
-  _filePath: string,
-  content: string,
-  language: Language
-): ImportMapping[] {
-  const mappings: ImportMapping[] = [];
-
-  // Every language answers from the `bindings` table
-  // (importMappingsFromBindings); no source regex remains here. Kept for the
-  // context hook and its callers; returns nothing.
-  void content;
-  void language;
-  return mappings;
-}
-
 const rustCrateRootMemos = new WeakMap<ResolutionContext, Map<string, string | null>>();
 const rustRsDirIndexes = new WeakMap<ResolutionContext, Map<string, string[]>>();
 
@@ -936,8 +918,8 @@ function resolveRustModuleFile(
 /**
  * Rust `use` declarations, flattened to `localName → full path`.
  *
- * Rust is the one supported language with NO `ImportMapping` extraction (see
- * `extractImportMappings`), so this is the only channel that can tell whether
+ * Rust is the one supported language whose `use` declarations leave no
+ * `import` binding rows, so this is the only channel that can tell whether
  * a bare type name in a Rust file was brought in by a `use`. Handles nested
  * groups (`use a::{b::C, d as E}`), globs (skipped — they bind no single
  * name), and `as` aliases.

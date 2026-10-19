@@ -283,6 +283,26 @@ export interface NodeScanFilter {
   signatureLike?: readonly string[];
 }
 
+const BINDING_COLUMNS =
+  'file_path, name, kind, node_id, target_spec, target_name, exported_as, export_form, scope_start, scope_end, storage, line';
+
+function rowToBinding(r: Record<string, unknown>): Binding {
+  return {
+    filePath: r.file_path as string,
+    name: r.name as string,
+    kind: r.kind as Binding['kind'],
+    ...(r.node_id != null ? { nodeId: r.node_id as string } : {}),
+    ...(r.target_spec != null ? { targetSpec: r.target_spec as string } : {}),
+    ...(r.target_name != null ? { targetName: r.target_name as string } : {}),
+    ...(r.exported_as != null ? { exportedAs: r.exported_as as string } : {}),
+    ...(r.export_form != null ? { exportForm: r.export_form as Binding['exportForm'] } : {}),
+    scopeStart: r.scope_start as number,
+    scopeEnd: r.scope_end as number,
+    ...(r.storage != null ? { storage: r.storage as string } : {}),
+    line: r.line as number,
+  };
+}
+
 /**
  * Query builder for the knowledge graph database
  */
@@ -321,6 +341,7 @@ export class QueryBuilder {
     deleteLiteralsByFile?: SqliteStatement;
     deleteBindingsByFile?: SqliteStatement;
     getBindingsByFile?: SqliteStatement;
+    getImportBindingsByFile?: SqliteStatement;
     hasBindingNamed?: SqliteStatement;
     getTextScanFiles?: SqliteStatement;
     getNodeById?: SqliteStatement;
@@ -628,24 +649,24 @@ export class QueryBuilder {
   getBindingsByFile(filePath: string): Binding[] {
     if (!this.stmts.getBindingsByFile) {
       this.stmts.getBindingsByFile = this.db.prepare(
-        'SELECT file_path, name, kind, node_id, target_spec, target_name, exported_as, export_form, scope_start, scope_end, storage, line FROM bindings WHERE file_path = ? ORDER BY rowid'
+        `SELECT ${BINDING_COLUMNS} FROM bindings WHERE file_path = ? ORDER BY rowid`
       );
     }
-    const rows = this.stmts.getBindingsByFile.all(filePath) as Array<Record<string, unknown>>;
-    return rows.map((r) => ({
-      filePath: r.file_path as string,
-      name: r.name as string,
-      kind: r.kind as Binding['kind'],
-      ...(r.node_id != null ? { nodeId: r.node_id as string } : {}),
-      ...(r.target_spec != null ? { targetSpec: r.target_spec as string } : {}),
-      ...(r.target_name != null ? { targetName: r.target_name as string } : {}),
-      ...(r.exported_as != null ? { exportedAs: r.exported_as as string } : {}),
-      ...(r.export_form != null ? { exportForm: r.export_form as Binding['exportForm'] } : {}),
-      scopeStart: r.scope_start as number,
-      scopeEnd: r.scope_end as number,
-      ...(r.storage != null ? { storage: r.storage as string } : {}),
-      line: r.line as number,
-    }));
+    return (this.stmts.getBindingsByFile.all(filePath) as Array<Record<string, unknown>>).map(rowToBinding);
+  }
+
+  /**
+   * The file's `import` rows that name a module, in emission order: the rows
+   * an import mapping is built from. Reading only these skips the file's
+   * declarations, locals and parameters, about four rows in five.
+   */
+  getImportBindingsByFile(filePath: string): Binding[] {
+    if (!this.stmts.getImportBindingsByFile) {
+      this.stmts.getImportBindingsByFile = this.db.prepare(
+        `SELECT ${BINDING_COLUMNS} FROM bindings WHERE file_path = ? AND kind = 'import' AND target_spec IS NOT NULL ORDER BY rowid`
+      );
+    }
+    return (this.stmts.getImportBindingsByFile.all(filePath) as Array<Record<string, unknown>>).map(rowToBinding);
   }
 
   /** Rows for the `bindings` side table (see schema.sql). The file's old rows are removed by deleteNodesByFile. */

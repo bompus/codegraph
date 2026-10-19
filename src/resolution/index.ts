@@ -23,7 +23,7 @@ import {
   CPP_DEFINE_SIGNATURE,
 } from './types';
 import { isBindingReceiverCall,  crossesKnownFamily, crossesCodeBoundary, resolveAmbiguousNameCeiling} from './gates';
-import { isExternalImport, resolveImportPath, extractImportMappings, importMappingsFromBindings,  loadCppIncludeDirs, isBoundToOutOfRepoImport, importBindingTail, clearImportResolverMemos } from './import-resolver';
+import { isExternalImport, resolveImportPath, importMappingsFromBindings, loadCppIncludeDirs, isBoundToOutOfRepoImport, importBindingTail, clearImportResolverMemos } from './import-resolver';
 import { gateSwiftTypeTarget, clearSwiftTypeVisibility } from './swift-type-visibility';
 import { gateTypeParameter, clearTypeParameterMemos } from './type-parameters';
 import { gateRustScope, clearRustScopeMemos } from './rust-scope';
@@ -753,26 +753,15 @@ export class ReferenceResolver {
         return rows;
       },
 
-      getImportMappings: (filePath: string, language) => {
+      getImportMappings: (filePath: string) => {
         const cacheKey = filePath;
         const cached = this.importMappingCache.get(cacheKey);
         if (cached) return cached;
 
-        // A file with binding rows answers from them: one `import` row per
-        // local name, ESM and `require` alike, from the AST.
-        const fromRows = importMappingsFromBindings(this.context.getBindings!(filePath));
-        if (fromRows) {
-          this.importMappingCache.set(cacheKey, fromRows);
-          return fromRows;
-        }
-
-        const content = this.context.readFile(filePath);
-        if (!content) {
-          this.importMappingCache.set(cacheKey, []);
-          return [];
-        }
-
-        const mappings = extractImportMappings(filePath, content, language);
+        // One `import` row per local name, ESM and `require` alike, from the
+        // AST. Only those rows are read: the file's other bindings would be
+        // built and cached here only to be dropped.
+        const mappings = importMappingsFromBindings(this.queries.getImportBindingsByFile(filePath)) ?? [];
         this.importMappingCache.set(cacheKey, mappings);
         return mappings;
       },

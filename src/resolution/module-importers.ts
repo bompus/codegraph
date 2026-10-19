@@ -103,7 +103,7 @@ export function createImportReader(rootDir: string, queries: QueryBuilder): Impo
   const exportedMemo = new Map<string, Set<string>>();
   return {
     // The file's `import` binding rows, which the resolver reads its imports
-    // from (`extractImportMappings` reads no source text). A star import has
+    // from. A star import has
     // no local name to bind, so it leaves none.
     mappings: (file) => {
       let mappings = mappingsMemo.get(file);

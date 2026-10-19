@@ -20,8 +20,7 @@ import { tryKernelExtract } from '../src/extraction/kernel';
 import { importMappingsFromBindings } from '../src/resolution/import-resolver';
 
 // The fork reads import mappings from the kernel's binding rows, not a source
-// regex (`extractImportMappings` returns nothing), so the same inputs go
-// through that path.
+// regex, so the same inputs go through that path.
 const bindings = (source: string) =>
   (importMappingsFromBindings(tryKernelExtract('src/a.ts', source, 'typescript')?.bindings ?? []) ?? [])
     .map((m) => `${m.localName}<${m.exportedName}${m.isNamespace ? ' ns' : ''}`);
