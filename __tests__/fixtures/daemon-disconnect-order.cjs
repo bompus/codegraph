@@ -32,8 +32,10 @@ if (process.env.CODEGRAPH_DAEMON_INTERNAL === '1') {
   const mark = (step) => {
     process.stderr.write(`[disconnect-test] +${Date.now() - stopAt}ms ${step} resources=${process.getActiveResourcesInfo().join(',')}\n`);
   };
-  const timed = (label, promise) => {
+  const timed = (label, run) => {
     mark(`${label} begin`);
+    let promise;
+    try { promise = run(); } catch (error) { mark(`${label} threw ${error && error.message}`); throw error; }
     return Promise.resolve(promise).then(
       (value) => { mark(`${label} end`); return value; },
       (error) => { mark(`${label} threw ${error && error.message}`); throw error; },
@@ -48,20 +50,20 @@ if (process.env.CODEGRAPH_DAEMON_INTERNAL === '1') {
   };
   const freshness = require('../../dist/mcp/index-freshness.js');
   const endFreshness = freshness.endFreshnessMeasurements;
-  freshness.endFreshnessMeasurements = (...args) => timed('endFreshnessMeasurements', endFreshness(...args));
+  freshness.endFreshnessMeasurements = (...args) => timed('endFreshnessMeasurements', () => endFreshness(...args));
   const { MCPEngine } = require('../../dist/mcp/engine.js');
   const engineStop = MCPEngine.prototype.stop;
   MCPEngine.prototype.stop = function () {
     const wrap = (owner, method, label) => {
       if (!owner) return;
       const original = owner[method];
-      owner[method] = (...args) => timed(label, original.apply(owner, args));
+      owner[method] = (...args) => timed(label, () => original.apply(owner, args));
     };
     wrap(this.queryPool, 'destroy', 'queryPool.destroy');
     wrap(this.toolHandler, 'closeAll', 'toolHandler.closeAll');
     wrap(this.defaultLease, 'release', 'defaultLease.release');
-    if (this.initPromise) timed('initPromise', this.initPromise).catch(() => {});
-    return timed('engine.stop', engineStop.call(this));
+    if (this.initPromise) timed('initPromise', () => this.initPromise).catch(() => {});
+    return timed('engine.stop', () => engineStop.call(this));
   };
   process.on('exit', (code) => { if (stopAt) mark(`exit ${code}`); });
   const stop = Daemon.prototype.stop;
