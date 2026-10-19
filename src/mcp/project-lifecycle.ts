@@ -160,7 +160,7 @@ async function activate(root: string, project: Project): Promise<void> {
   // Serve first; synthesized edges refresh in the background.
   await project.cg.sync({ deferSynthesis: true });
   project.caughtUp = true;
-  markWriterReady(root);
+  markWriterReady(root, writer.info);
 }
 
 /** A tool request passes through the daemon's own first-query catch-up gate. */
