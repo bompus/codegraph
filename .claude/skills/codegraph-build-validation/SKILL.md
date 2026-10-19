@@ -80,12 +80,14 @@ A worker dispatched to fix reproduced resolution or extraction bugs gets [`worke
 
 ### Measured step times
 
-Base effort quotes on these rather than on how heavy a step sounds. Measured on one development machine (16 vCPUs, one heavy step at a time) in September 2026, so times on other machines will differ; when a run lands more than 2x off a row, replace the row with the new measurement.
+Base effort quotes on these rather than on how heavy a step sounds. Measured on one development machine (16 vCPUs, one heavy step at a time) in September 2026 unless a row says otherwise, so times on other machines will differ; when a run lands more than 2x off a row, replace the row with the new measurement.
 
 | Step | Measured wall-clock |
 |---|---|
-| `npm run build:kernel` (release build after a crate change) | 52–56 s; ~0 s when nothing changed |
-| Full suite (~400 files, `--maxWorkers=8`) | 65–76 s |
+| `npm run build:kernel` in a new worktree | ~139 s cold; 0.8 s when the kernel cache holds the same committed sources (October 2026) |
+| `npm run build:kernel` (release build after a one-line Rust edit) | 89–90 s (October 2026) |
+| `npm run build:kernel:quick` | 83 s cold; 4 s after a one-line resolver edit (October 2026) |
+| Full suite (754 files, `--minWorkers=1 --maxWorkers=8`) | 159–205 s with other sessions running (October 2026) |
 | 1–3 test files | 2–12 s; ~100 s when test setup rebuilds a stale engine first |
 | Worker fix PR: repro, fix, fails-on-base test, goldens, precision on 2–3 corpora, full suite | 15–42 min |
 | Worker upstream reconcile with conflict resolution and full verification | 15–28 min |
