@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error untyped ESM script
-import { callsInLine, repoSlug } from '../scripts/agent-eval/harvest-queries.mjs';
+import { callDirectory, callsInLine, repoSlug } from '../scripts/agent-eval/harvest-queries.mjs';
 // @ts-expect-error untyped ESM script
 import { compareRow } from '../scripts/agent-eval/replay-queries.mjs';
 
@@ -60,6 +60,19 @@ describe('query harvest', () => {
       .toEqual([{ query: 'Q', projectPath: undefined, maxFiles: 3 }]);
   });
 
+  it('never credits a call with an unreadable or relative project to the wrong repository', () => {
+    const call = (input: string) => callsInLine({ payload: { type: 'custom_tool_call', input } })[0];
+    const variable = call('const p = "/private"; codegraph_explore({query:"Q", projectPath: p})');
+    expect(variable).toEqual({ query: 'Q', projectPath: null });
+    expect(callDirectory(variable, '/public')).toBeNull();
+    expect(callDirectory(call('codegraph_explore({query:"Q", projectPath: join(a, "b")})'), '/public')).toBeNull();
+    expect(callDirectory(call('codegraph_explore({query:"Q", projectPath: `${root}/x`})'), '/public')).toBeNull();
+    expect(callDirectory({ query: 'Q', projectPath: 'sub/dir' }, '/session')).toBe(resolve('/session', 'sub/dir'));
+    expect(callDirectory({ query: 'Q', projectPath: 'sub/dir' }, undefined)).toBeNull();
+    expect(callDirectory({ query: 'Q', projectPath: 7 }, '/public')).toBeNull();
+    expect(callDirectory({ query: 'Q', projectPath: undefined }, '/session')).toBe('/session');
+    expect(callDirectory({ query: 'Q', projectPath: '/abs' }, '/session')).toBe('/abs');
+  });
   it('maps GitHub remotes to owner/repo', () => {
     expect(repoSlug('git@github.com:Owner/Repo.git\n')).toBe('owner/repo');
     expect(repoSlug('https://github.com/owner/repo')).toBe('owner/repo');

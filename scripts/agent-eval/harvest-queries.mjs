@@ -16,7 +16,8 @@
 import { execFileSync } from 'node:child_process';
 import { createReadStream, readdirSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
 /** Explore calls in one transcript line: [{ query, projectPath?, maxFiles? }]. */
@@ -51,8 +52,9 @@ const ESCAPES = { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', v: '\v', 0: '\0' 
 /**
  * The top-level string and number fields of the JavaScript object literal that
  * opens at `src[open]` ('{'). Code-mode calls are JavaScript, not JSON: keys may
- * be bare, strings may use any quote and may contain braces. Values that are
- * not plain literals (expressions, template strings with `${`) are skipped.
+ * be bare, strings may use any quote and may contain braces. A field whose
+ * value is not a plain literal (a variable, an expression, a template string
+ * with `${`) is null, so a caller can tell it was present but unreadable.
  */
 export function literalFields(src, open) {
   const fields = {};
@@ -68,9 +70,10 @@ export function literalFields(src, open) {
       }
       i = j;
       if (depth === 1 && expectKey) { key = s; expectKey = false; }
-      else if (depth === 1 && expectValue && key !== undefined && literal) fields[key] = s;
+      else if (depth === 1 && expectValue && key !== undefined) fields[key] = literal ? s : null;
       expectValue = false;
     } else if (ch === '{' || ch === '[' || ch === '(') {
+      if (depth === 1 && expectValue && key !== undefined) fields[key] = null;
       depth++;
       if (depth === 1) expectKey = true;
       expectValue = false;
@@ -84,11 +87,25 @@ export function literalFields(src, open) {
       const word = /^[A-Za-z_$0-9.]+/.exec(src.slice(i))[0];
       i += word.length - 1;
       if (expectKey) { key = word; expectKey = false; }
-      else if (expectValue && key !== undefined && /^\d+$/.test(word)) fields[key] = Number(word);
+      else if (expectValue && key !== undefined) fields[key] = /^\d+$/.test(word) ? Number(word) : null;
       expectValue = false;
     }
   }
   return fields;
+}
+
+/**
+ * The directory a call asked about: its projectPath, resolved against the
+ * session's working directory when relative, or that directory when the call
+ * named none. Null when it cannot be known (a projectPath that is not a plain
+ * string, or a relative one with no session directory): such a call is
+ * dropped, never credited to the directory the session started in.
+ */
+export function callDirectory(call, cwd) {
+  if (call.projectPath === undefined) return cwd ?? null;
+  if (typeof call.projectPath !== 'string' || call.projectPath === '') return null;
+  if (isAbsolute(call.projectPath)) return call.projectPath;
+  return cwd ? resolve(cwd, call.projectPath) : null;
 }
 
 /** `owner/repo` from a remote on github.com itself (HTTPS, SSH URL or scp form), or null. */
@@ -115,7 +132,10 @@ async function main(argv) {
   const inputs = [];
   let since = '';
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--public') pub.add(argv[++i].toLowerCase());
+    if (argv[i] === '--public') {
+      const name = argv[++i];
+      pub.add(repoSlug(name) ?? name.toLowerCase().replace(/\.git$/, ''));
+    }
     else if (argv[i] === '--since') since = argv[++i];
     else inputs.push(argv[i]);
   }
@@ -148,7 +168,7 @@ async function main(argv) {
         cwd = entry.cwd ?? entry.payload?.cwd ?? cwd;
         if (since && (entry.timestamp ?? '') < since) continue;
         for (const call of callsInLine(entry)) {
-          const dir = call.projectPath ?? cwd;
+          const dir = callDirectory(call, cwd);
           const slug = dir ? slugFor(dir) : null;
           if (!slug || !pub.has(slug)) { dropped++; continue; }
           const prompt = call.query.trim().replace(/\s+/g, ' ');
@@ -166,8 +186,10 @@ async function main(argv) {
     }
   }
   console.log(JSON.stringify({ repos }, null, 2));
-  console.error(`kept ${kept}, duplicates ${duplicate}, dropped ${dropped} (not on a --public repository)`);
+  console.error(`kept ${kept}, duplicates ${duplicate}, dropped ${dropped} (project unknown or not on a --public repository)`);
   return 0;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main(process.argv.slice(2)).then((code) => process.exit(code));
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main(process.argv.slice(2)).then((code) => process.exit(code));
+}
