@@ -19,6 +19,11 @@ import { recordSpawns, removeSpawnLog, settleLosingCandidates } from './daemon-c
 // Exercise the shipped lazy CommonJS loader as well as the engine lifecycle.
 const { MCPEngine: BuiltMCPEngine } = require('../dist/mcp/engine') as typeof import('../src/mcp/engine');
 
+// The reader-only setup (init plus a one-file index) takes well under a second on
+// a desktop but has run past Vitest's 10 s hook default on a Windows CI runner, so
+// that group's deadlines are looser on Windows and unchanged elsewhere.
+const onWindows = process.platform === 'win32';
+
 const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 
 function sleep(ms: number): Promise<void> {
@@ -254,7 +259,7 @@ describe('reader-only MCP engine (#1963)', () => {
     fs.writeFileSync(path.join(root, 'app.ts'), 'export function originalSymbol() { return 1; }\n');
     const cg = await CodeGraph.init(root);
     try { await cg.indexAll(); } finally { cg.close(); }
-  });
+  }, onWindows ? 30_000 : undefined);
 
   afterEach(async () => {
     await engine?.stop();
@@ -290,7 +295,7 @@ describe('reader-only MCP engine (#1963)', () => {
       expect(db.pragma('data_version', { simple: true })).toBe(version);
       expect(fs.readFileSync(lockPath, 'utf8')).toBe(owner);
     } finally { db.close(); }
-  });
+  }, onWindows ? 30_000 : undefined);
 
   it('watch:false still performs the normal startup catch-up', async () => {
     fs.writeFileSync(path.join(root, 'app.ts'), 'export function changedSymbol() {}\n');
