@@ -316,7 +316,7 @@ describe('ordinary watcher startup', () => {
     expect(spawnProbe).not.toHaveBeenCalled();
     expect(fs.readFileSync(getDaemonPidPath(root), 'utf8')).toBe(before);
     expect(refreshRequests).toBe(1);
-  });
+  }, onWindows ? 20_000 : undefined);
 
   it.each(['legacy', 'direct', 'fallback', 'promotion', 'invalid', 'wrong-build'])(
     'preserves a %s holder rather than launching a second writer', async (holder) => {
@@ -412,7 +412,9 @@ describe('ordinary watcher startup', () => {
       actors.push(child);
       return child;
     }) as typeof spawn);
-    const results = await Promise.allSettled([startRuntimeWatcher(root, options()), startRuntimeWatcher(root, options())]);
+    // Keep the starter deadline under the test's own limit so a slow start fails with its reason.
+    const starter = { ...options(), timeoutMs: onWindows ? 25_000 : 10000 };
+    const results = await Promise.allSettled([startRuntimeWatcher(root, starter), startRuntimeWatcher(root, starter)]);
     const winners = results.flatMap(r => r.status === 'fulfilled' ? [r.value] : []);
     expect(winners.length).toBeGreaterThan(0);
     expect(new Set(winners.map(w => w.pid)).size).toBe(1);
