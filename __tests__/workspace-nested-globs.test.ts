@@ -167,3 +167,15 @@ describe('a call through an import of a nested workspace member', () => {
     ]);
   }, 60_000);
 });
+
+describe('a workspace glob that leaves the project', () => {
+  it('names no member outside the project root', () => {
+    const root = workspace({
+      'app/package.json': JSON.stringify({ name: 'app', workspaces: ['../**/*', '../sibling', 'packages/*'] }),
+      'app/packages/a/package.json': pkg('a'),
+      'sibling/package.json': pkg('outside'),
+      'sibling/deep/er/package.json': pkg('outside-deep'),
+    });
+    expect(members(path.join(root, 'app'))).toEqual(['a -> packages/a']);
+  });
+});

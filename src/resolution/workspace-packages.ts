@@ -377,6 +377,9 @@ const GLOB_DIR_BUDGET = 10_000;
  */
 function expandWorkspaceGlob(projectRoot: string, pattern: string): string[] {
   const norm = pattern.replace(/\\/g, '/').replace(/\/+$/, '');
+  // A member lives inside the project: a pattern that climbs out of it
+  // (`../**/*`) or names an absolute path would read other folders' manifests.
+  if (path.isAbsolute(norm) || /^[A-Za-z]:/.test(norm) || norm.split('/').includes('..')) return [];
   const glob = compileGlob(norm);
   const first = glob.findIndex((seg) => seg.wildcard);
   if (first === -1) return [norm]; // exact directory
