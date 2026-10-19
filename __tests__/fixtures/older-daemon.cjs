@@ -23,8 +23,8 @@ const server = net.createServer((socket) => {
   socket.end(JSON.stringify({ codegraph: version, pid: process.pid, socketPath, protocol: 1, writerProtocol: 1 }) + '\n');
 });
 server.listen(socketPath, () => {
-  writer.tryAcquireWriterLock(root, 'daemon');
-  writer.markWriterReady(root);
+  const acquired = writer.tryAcquireWriterLock(root, 'daemon');
+  writer.markWriterReady(root, acquired.kind === 'acquired' ? acquired.info : writer.readWriterLock(root));
   writeLock('daemon.pid', { pid: process.pid, version, socketPath, startedAt: Date.now() });
 });
 process.on('SIGTERM', () => {

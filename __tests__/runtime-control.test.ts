@@ -20,6 +20,12 @@ import { MCPServer } from '../src/mcp';
 import * as proxy from '../src/mcp/proxy';
 import * as daemonRegistry from '../src/mcp/daemon-registry';
 import { getTelemetry } from '../src/telemetry';
+
+/** The record a writer-lock acquisition left on disk, for publishing its readiness. */
+function ownRecord(result: ReturnType<typeof tryAcquireWriterLock>) {
+  if (result.kind !== 'acquired') throw new Error('expected to acquire the writer lock');
+  return result.info;
+}
 import * as updateCheck from '../src/upgrade/update-check';
 import { getWriterPidPath } from '../src/mcp/writer-lock';
 import { builtinPatchingReachesImporters } from './helpers/runtime-capabilities';
@@ -103,7 +109,7 @@ describe('runtime writer reservations', () => {
     expect(releaseRuntimeWriter(root, previous)).toBe(true);
     expect(readWriterLock(root)).toMatchObject(next);
     expect(claimRuntimeWriter(root, next)).toBe(true);
-    markWriterReady(root);
+    markWriterReady(root, readWriterLock(root)!);
     expect(readWriterLock(root)).toMatchObject({ pid: process.pid, mode: 'daemon', ready: true });
   });
 
@@ -158,7 +164,7 @@ describe('runtime writer reservations', () => {
         } else if (event === 'claim' && lease) claimRuntimeWriter(root, lease);
         else if (event === 'release' && lease) { releaseRuntimeWriter(root, lease); old = lease; lease = null; }
         else if (event === 'old-release' && old) releaseRuntimeWriter(root, old);
-        else if (event === 'ready') markWriterReady(root);
+        else if (event === 'ready') { const current = readWriterLock(root); if (current) markWriterReady(root, current); }
         else if (event === 'fallback') tryAcquireWriterLock(root, 'fallback');
         const after = readWriterLock(root);
         if (event === 'old-release' && old && before && before.mode !== old.mode) {
@@ -230,8 +236,7 @@ async function fakeDaemon(options: { wrongHello?: boolean; wrongBuild?: boolean;
 describe('runtime identity and readiness', () => {
   it.each(['inactive', 'initializing', 'legacy', 'stopWatchingDuringStatus', 'changeRecord', 'changeWriterGeneration'] as const)(
     'never calls a readable daemon watcher-ready when %s', async (failure) => {
-      tryAcquireWriterLock(root, 'daemon');
-      markWriterReady(root);
+      markWriterReady(root, ownRecord(tryAcquireWriterLock(root, 'daemon')));
       await fakeDaemon({ [failure]: true });
       await expect(checkRuntimeReady(root, { pid: process.pid, version: 'test-build' }, 1000,
         { requireWatcher: true })).rejects.toThrow();
@@ -239,8 +244,7 @@ describe('runtime identity and readiness', () => {
   );
 
   it('rejects a watcher from another checkout and preserves both ownership records', async () => {
-    tryAcquireWriterLock(root, 'daemon');
-    markWriterReady(root);
+    markWriterReady(root, ownRecord(tryAcquireWriterLock(root, 'daemon')));
     await fakeDaemon({ watcherRoot: path.dirname(root) });
     const before = fs.readFileSync(getDaemonPidPath(root), 'utf8');
     const writer = readWriterLock(root);
@@ -306,8 +310,7 @@ describe('ordinary watcher startup', () => {
 
   it('reuses a verified watcher without spawning or changing ownership', async () => {
     await initialize();
-    tryAcquireWriterLock(root, 'daemon');
-    markWriterReady(root);
+    markWriterReady(root, ownRecord(tryAcquireWriterLock(root, 'daemon')));
     await fakeDaemon({ version: CodeGraphPackageVersion });
     const spawnProbe = spySpawn();
     const before = fs.readFileSync(getDaemonPidPath(root), 'utf8');
@@ -356,8 +359,7 @@ describe('ordinary watcher startup', () => {
   it.each(['refreshError', 'noRefresh', 'refreshWrongRoot', 'refreshWrongPid', 'refreshTimeout', 'changeWriterGeneration'] as const)(
     'rejects %s without replacing or terminating the matching watcher', async (failure) => {
       await initialize();
-      tryAcquireWriterLock(root, 'daemon');
-      markWriterReady(root);
+      markWriterReady(root, ownRecord(tryAcquireWriterLock(root, 'daemon')));
       await fakeDaemon({ version: CodeGraphPackageVersion, [failure]: true });
       const daemon = fs.readFileSync(getDaemonPidPath(root), 'utf8');
       const launch = spySpawn();
