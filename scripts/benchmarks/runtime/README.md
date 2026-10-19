@@ -115,6 +115,28 @@ counts vary much less than peak memory or wall time, so they screen a change
 in four runs before the full comparison. The summary reports the after/before
 ratio of each.
 
+What the proxies predicted for four landed changes, against the results their
+pull requests measured (2026-10-18; a repeat of two of them moved each ratio by
+0.003 at most):
+
+| Change | Runtime | Measured result | Instructions | Bytes allocated |
+|---|---|---|---:|---:|
+| #493 (Python import line) | Node | sync 29% faster | 0.676 | 1.000 |
+| #493 | Bun | sync 35% faster | 0.658 | n/a |
+| #494 (bases memo) | Node | sync about 3% faster | 0.957 | 0.999 |
+| #494 | Bun | sync time no clear change | 0.959 | n/a |
+| #528 (near-duplicates) | Node | peak memory no clear change | 0.998 | 0.947 |
+| #528 | Bun | peak memory 12% lower | 1.036 | n/a |
+| #529 (import-only lookup) | Node | peak memory 4.7% lower, wall no clear change | 0.952 | 0.930 |
+| #529 | Bun | peak memory 5.7% lower | 0.971 | n/a |
+
+The instruction count tracked large time changes closely (#493). Changes of
+about 5% in instructions did not reliably show up in wall time, whose
+same-build variation on n8n was up to 7%. Bytes allocated did not predict peak
+memory: #528 allocated 5% less on Node with no change in peak, and its 12% drop
+on Bun had no proxy at all. Use `--proxies` to tell whether a change does less
+work, and run the full comparison for any memory claim.
+
 `summary.md` holds the result table and the per-session ratios for a pull
 request body. `chart.json` holds the qualified rows in the input format of the
 before/after chart script. Every timed run is a line in `runs.jsonl`.

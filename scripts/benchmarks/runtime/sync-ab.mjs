@@ -46,7 +46,15 @@ const out = path.resolve(o.out);
 fs.mkdirSync(path.dirname(out), { recursive: true });
 fs.mkdirSync(out);
 fs.mkdirSync(path.join(out, 'logs'));
+if (!/^[A-Za-z0-9._-]+$/.test(o.cgdir) || o.cgdir === '.' || o.cgdir === '..' || o.cgdir === '.git') {
+  throw new Error('--cgdir must be a plain directory name inside the corpus, such as .cg-ab');
+}
 const cgIndex = path.join(corpus, o.cgdir);
+const inside = (child, parent) => { const rel = path.relative(parent, child); return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel)); };
+if (inside(path.resolve(o.index), cgIndex) || inside(cgIndex, path.resolve(o.index))) {
+  throw new Error('--index must not be the restore directory or overlap it; copy the saved index elsewhere');
+}
+if (inside(path.resolve(o.index), out) || inside(out, corpus)) throw new Error('--out must be outside the corpus and the saved index');
 const wrap = (process.env.BENCH_WRAP ?? '').split(/\s+/).filter(Boolean);
 const extraEnv = Object.fromEntries(o.env.map((kv) => [kv.slice(0, kv.indexOf('=')), kv.slice(kv.indexOf('=') + 1)]));
 
@@ -105,13 +113,32 @@ function admit() {
 
 // Timing lines (CODEGRAPH_SYNTH_TIMINGS) carry work counts in parentheses: refs resolved,
 // files resynthesized, pairs re-scored. Two builds doing the same work print the same counts.
+// Lines without counts are skipped: synthesis passes print one only when they take over 250 ms.
 function workCounters(stderr) {
   const counters = {};
-  for (const m of stderr.matchAll(/^\[(?:phase|synth)-timing\] ([^:]+): \d+ms(?: \((.*)\))?$/gm)) counters[m[1]] = m[2] ?? '';
+  for (const m of stderr.matchAll(/^\[(?:phase|synth)-timing\] ([^:]+): \d+ms \((.*)\)$/gm)) counters[m[1]] = m[2];
   return counters;
 }
 function diffCounters(a, b) {
   return [...new Set([...Object.keys(a), ...Object.keys(b)])].filter((k) => a[k] !== b[k]).map((k) => `${k}: ${a[k] ?? '(absent)'} vs ${b[k] ?? '(absent)'}`);
+}
+
+// The two builds must have done the same work before their numbers are compared.
+function sameWork(a, b) {
+  const graph = ['edgesHash', 'nearDupHash', 'nodes', 'edges'].filter((k) => a[k] !== b[k]).map((k) => `${k}: ${a[k]} vs ${b[k]}`);
+  const work = diffCounters(a.counters, b.counters);
+  if (a.rescanned || b.rescanned) work.push(`skip list rebuilt: ${A.name}=${a.rescanned} ${B.name}=${b.rescanned}`);
+  if (graph.length) console.log(`graph differs:\n  ${graph.join('\n  ')}`);
+  if (work.length) console.log(`work differs:\n  ${work.join('\n  ')}`);
+  return { graph, work, ok: !graph.length && (!work.length || o['allow-work-diff']) };
+}
+function stopUnlessSameWork(a, b, extra) {
+  const check = sameWork(a, b);
+  meta.firstPair = { graph: check.graph, work: check.work };
+  if (check.ok) return;
+  fs.writeFileSync(path.join(out, 'summary.json'), JSON.stringify({ ...meta, ...extra, stopped: 'the two arms did different work' }, null, 1) + '\n');
+  console.error('stopped: the two arms did different work (pass --allow-work-diff when the change is meant to change it)');
+  process.exit(3);
 }
 
 const pristineHash = {};
@@ -188,7 +215,7 @@ const median = (xs) => { const s = [...xs].sort((a, b) => a - b); const m = s.le
 const r3 = (x) => Math.round(x * 1000) / 1000;
 
 const corpusRev = execFileSync('git', ['-C', corpus, 'rev-parse', '--short=8', 'HEAD'], { encoding: 'utf8' }).trim();
-const noiseKey = (arm) => [os.hostname(), os.release(), arm.runtime, arm.version, path.basename(corpus), corpusRev, o.file, sha(appendText), JSON.stringify(extraEnv)].join('|');
+const noiseKey = (arm) => [os.hostname(), os.release(), arm.runtime, arm.version, path.basename(corpus), corpusRev, o.file, sha(appendText), JSON.stringify(extraEnv), wrap.join(' '), pristineHash[path.resolve(o.index)] ?? treeHash(path.resolve(o.index))].join('|');
 const meta = {
   started: new Date().toISOString(), host: os.hostname(), kernel: os.release(), corpus, corpusRev, file: o.file, append: appendText,
   arms: arms.map(({ name, runtime, version, build, commit }) => ({ name, runtime, version, build, commit })),
@@ -204,10 +231,13 @@ if (o.proxies) {
   // One run of each proxy per arm: user-space instructions (perf) and, on Node, bytes
   // allocated (sampling heap profiler). Both vary far less than peak memory or wall time.
   const res = {};
+  const instr = {};
   for (const arm of arms) {
-    res[arm.name] = { instructions: run(arm, `${arm.name}-instr`, 'instructions').instructions };
-    if (arm.isNode) res[arm.name].allocMiB = run(arm, `${arm.name}-alloc`, 'alloc').allocMiB;
+    instr[arm.name] = run(arm, `${arm.name}-instr`, 'instructions');
+    res[arm.name] = { instructions: instr[arm.name].instructions };
   }
+  stopUnlessSameWork(instr[A.name], instr[B.name], { proxies: res });
+  for (const arm of arms) if (arm.isNode) res[arm.name].allocMiB = run(arm, `${arm.name}-alloc`, 'alloc').allocMiB;
   const ratio = (k) => (res[A.name][k] && res[B.name][k] ? r3(res[B.name][k] / res[A.name][k]) : null);
   const summary = { ...meta, proxies: res, instructionsRatio: ratio('instructions'), allocRatio: ratio('allocMiB') };
   fs.writeFileSync(path.join(out, 'summary.json'), JSON.stringify(summary, null, 1) + '\n');
@@ -235,17 +265,7 @@ for (let s = 1; s <= Number(o.sessions); s++) {
     const b = recs[B.name];
     if (!firstPairChecked) {
       firstPairChecked = true;
-      const graph = ['edgesHash', 'nearDupHash', 'nodes', 'edges'].filter((k) => a[k] !== b[k]).map((k) => `${k}: ${a[k]} vs ${b[k]}`);
-      const work = diffCounters(a.counters, b.counters);
-      if (a.rescanned || b.rescanned) work.push(`skip list rebuilt: ${A.name}=${a.rescanned} ${B.name}=${b.rescanned}`);
-      meta.firstPair = { graph, work };
-      if (graph.length) console.log(`graph differs on the first pair:\n  ${graph.join('\n  ')}`);
-      if (work.length) console.log(`work differs on the first pair:\n  ${work.join('\n  ')}`);
-      if (graph.length || (work.length && !o['allow-work-diff'])) {
-        fs.writeFileSync(path.join(out, 'summary.json'), JSON.stringify({ ...meta, stopped: 'first pair differs' }, null, 1) + '\n');
-        console.error('stopped: the two arms did different work (pass --allow-work-diff when the change is meant to change it)');
-        process.exit(3);
-      }
+      stopUnlessSameWork(a, b);
     }
     pairs.push({ a, b });
   }
