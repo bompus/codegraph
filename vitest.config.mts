@@ -39,6 +39,13 @@ export default defineConfig({
        * they inject their own `env` via the Telemetry constructor.
        */
       CODEGRAPH_TELEMETRY: '0',
+      /**
+       * Every spawned MCP server, daemons included, would otherwise ask GitHub
+       * for the latest release, because the sandboxed home has no cached
+       * answer. That open connection can hold a test daemon past its exit
+       * deadline. The update-check unit tests inject their own `env`.
+       */
+      CODEGRAPH_NO_UPDATE_CHECK: '1',
     },
     coverage: {
       provider: 'v8',
