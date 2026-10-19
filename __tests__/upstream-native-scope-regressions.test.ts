@@ -41,7 +41,8 @@ describe('upstream ports preserve declaration scope', () => {
     expect(calls('b')).toEqual([]);
     expect(calls('a')).toEqual(['main.js:App.utils::pad']);
   });
-  // A Windows runner once stalled this two-file index for 5 s; it usually takes 0.3-0.7 s.
+  // A Windows runner once took over 5 s to index one of these one- or two-file projects;
+  // it usually takes 0.3-0.7 s.
   it.each([['window', false], ['window', true], ['{ window }', false], ['{ window }', true]] as const)('does not publish an object assigned through a local host parameter %s (same file %s)', async (parameter, sameFile) => {
     const declaration = `function define(${parameter}) { window.WS = { wsM() {} }; }\n`;
     const consumer = 'function outside() { window.WS.wsM(); WS.wsM(); }\n';

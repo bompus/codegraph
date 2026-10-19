@@ -412,6 +412,7 @@ describe('ordinary watcher startup', () => {
       actors.push(child);
       return child;
     }) as typeof spawn);
+    // Keep the starter deadline under the test's own limit so a slow start fails with its reason.
     const starter = { ...options(), timeoutMs: onWindows ? 25_000 : 10000 };
     const results = await Promise.allSettled([startRuntimeWatcher(root, starter), startRuntimeWatcher(root, starter)]);
     const winners = results.flatMap(r => r.status === 'fulfilled' ? [r.value] : []);
