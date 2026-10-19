@@ -11,7 +11,7 @@ import * as os from 'os';
 import CodeGraph from '../src/index';
 import { execFileSync } from 'child_process';
 import { ToolHandler } from '../src/mcp/tools';
-import { refreshNearDuplicates, signature, similarity } from '../src/graph/near-duplicates';
+import { forEachBandBucket, refreshNearDuplicates, signature, similarity } from '../src/graph/near-duplicates';
 
 const urlOf = (name: string, label: string) => [
   `export function ${name}(input: string | URL): string {`,
@@ -49,6 +49,59 @@ describe('signature', () => {
 
   it('declines bodies too small to compare', () => {
     expect(signature('function f() { return 1; }')).toBeNull();
+  });
+});
+
+describe('band buckets', () => {
+  const HASHES = 64;
+  const BAND_WORDS = 4;
+  // FNV-1a's multiplier is odd, so it has an inverse modulo 2^32.
+  const P = 0x01000193;
+  let P_INV = 1;
+  for (let i = 0; i < 5; i++) P_INV = Math.imul(P_INV, 2 - Math.imul(P, P_INV));
+  const bandHash = (w: Uint32Array) => {
+    let h = 0x811c9dc5;
+    for (const x of w) h = Math.imul(h ^ x, P);
+    return h >>> 0;
+  };
+  /** The last word that gives a band of `first` three words the hash `target`. */
+  const forceHash = (first: number[], target: number) => {
+    let h = 0x811c9dc5;
+    for (const x of first) h = Math.imul(h ^ x, P);
+    return ((Math.imul(target, P_INV) ^ h) >>> 0);
+  };
+
+  it('groups exactly the rows whose band bytes are equal, even when two bands share a hash', () => {
+    let seed = 7;
+    const rand = () => (seed = (Math.imul(seed, 1103515245) + 12345) >>> 0);
+    const count = 400;
+    const sigs = Buffer.alloc(count * HASHES * 4);
+    for (let i = 0; i < count; i++) for (let k = 0; k < HASHES; k++) sigs.writeUInt32LE(rand(), (i * HASHES + k) * 4);
+    const band0 = (i: number) => new Uint32Array(sigs.buffer, sigs.byteOffset + i * HASHES * 4, BAND_WORDS);
+    // Rows 10-14 copy row 3's first band; rows 20 and 21 get different band bytes with row 3's hash.
+    for (const i of [10, 11, 12, 13, 14]) sigs.copy(sigs, i * HASHES * 4, 3 * HASHES * 4, 3 * HASHES * 4 + 16);
+    for (const i of [20, 21]) {
+      const first = [rand(), rand(), rand()];
+      first.forEach((x, k) => sigs.writeUInt32LE(x, (i * HASHES + k) * 4));
+      sigs.writeUInt32LE(forceHash(first, bandHash(band0(3))), (i * HASHES + 3) * 4);
+    }
+    expect(bandHash(band0(20))).toBe(bandHash(band0(3)));
+    expect(Buffer.compare(Buffer.from(band0(20).buffer, band0(20).byteOffset, 16), Buffer.from(band0(3).buffer, band0(3).byteOffset, 16))).not.toBe(0);
+
+    for (const band of [0, 5]) {
+      const expected = new Map<string, number[]>();
+      for (let i = 0; i < count; i++) {
+        const at = i * HASHES * 4 + band * BAND_WORDS * 4;
+        const key = sigs.toString('latin1', at, at + BAND_WORDS * 4);
+        expected.set(key, [...(expected.get(key) ?? []), i]);
+      }
+      const order = new Uint32Array(count);
+      const hash = new Uint32Array(count);
+      const got: number[][] = [];
+      forEachBandBucket(sigs, count, band, order, hash, (start, end) => got.push([...order.subarray(start, end)]));
+      const norm = (groups: number[][]) => groups.map((g) => g.join(',')).sort();
+      expect(norm(got)).toEqual(norm([...expected.values()]));
+    }
   });
 });
 
