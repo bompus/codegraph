@@ -14,7 +14,8 @@
 //     files the answer renders) and mustMatchAt (first offset of each task's
 //     mustMatch pattern, -1 when missing). A final row with id "memory" reports
 //     resident memory idle and after the run. tasks.json is `{ "tasks": [...] }`
-//     or a bare array of `{ id, prompt, mustMatch? }`.
+//     or a bare array of `{ id, prompt, mustMatch?, maxFiles? }`; maxFiles is
+//     passed to codegraph_explore as the caller's file limit.
 //
 // Options:
 //   --build <dir>      codegraph checkout whose dist/ answers (default: this one)
@@ -103,8 +104,8 @@ async function inProcess(build, repo) {
   const handler = new ToolHandler(cg);
   return {
     pid: process.pid,
-    async explore(query) {
-      const res = await handler.execute('codegraph_explore', { query });
+    async explore(query, maxFiles) {
+      const res = await handler.execute('codegraph_explore', maxFiles === undefined ? { query } : { query, maxFiles });
       if (res.isError) throw new Error(`codegraph_explore: ${JSON.stringify(res.content)}`);
       return (res.content ?? []).map((c) => c.text ?? '').join('\n');
     },
@@ -171,8 +172,9 @@ async function overMcp(build, repo, runtime, timeoutMs) {
   proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} }) + '\n');
   return {
     pid: proc.pid,
-    async explore(query) {
-      const res = await rpc('tools/call', { name: 'codegraph_explore', arguments: { query, projectPath: repo } });
+    async explore(query, maxFiles) {
+      const args = maxFiles === undefined ? { query, projectPath: repo } : { query, projectPath: repo, maxFiles };
+      const res = await rpc('tools/call', { name: 'codegraph_explore', arguments: args });
       return (res.result?.content ?? []).map((c) => c.text ?? '').join('\n');
     },
     close,
@@ -206,7 +208,7 @@ async function main() {
     const idle = memMB(session.pid);
     for (const task of tasks) {
       const t0 = Date.now();
-      const text = await session.explore(task.prompt);
+      const text = await session.explore(task.prompt, task.maxFiles);
       const row = probeRow(task.id, text, Date.now() - t0, task.mustMatch);
       missing += row.mustMatchAt.filter((at) => at < 0).length;
       if (opts.out) writeFileSync(join(opts.out, `${task.id}.md`), text);
