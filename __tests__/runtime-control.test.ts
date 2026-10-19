@@ -444,6 +444,13 @@ describe('ordinary watcher startup', () => {
           await daemon.start();
           await daemon.engine.ensureInitialized(root);
           await daemon.engine.getToolHandler().execute('codegraph_status', {});
+          // Readiness publication retries when the record is busy (Windows), so
+          // wait for it: every case snapshots this record as the owner's.
+          const { readWriterLock } = require(process.argv[1] + '/writer-lock');
+          for (const deadline = Date.now() + 5000; readWriterLock(root)?.ready !== true;) {
+            if (Date.now() > deadline) throw new Error('writer readiness unpublished: ' + JSON.stringify(readWriterLock(root)));
+            await new Promise(resolve => setTimeout(resolve, 25));
+          }
           process.send('ready');
         })().catch(error => { console.error(error); process.exit(1); });
       `, path.resolve(__dirname, '../dist/mcp'), root, outcome],
