@@ -4556,10 +4556,15 @@ export class ToolHandler {
     const changedNodes = changes ? this.changedSymbols(cg, changes) : [];
     // Only the code-shaped part of the rest (symbols, paths) still matches: the
     // prose around a change question ("list what calls it so I can re-test")
-    // pulls in unrelated flows ahead of the changes.
-    const rawMatch = changes
+    // pulls in unrelated flows ahead of the changes. With nothing changed there
+    // is nothing for that prose to crowd out, and a longer description that
+    // merely names a feature ("the panel's working tree changes row") is a code
+    // question: the rest of the query then matches in full.
+    const describesCode = changes !== null && changes.files.length === 0
+      && changes.remainingQuery.split(/\s+/).filter(Boolean).length >= 3;
+    const rawMatch = changes && !describesCode
       ? [...extractCodeTokens(changes.remainingQuery), ...changes.remainingQuery.split(/\s+/).filter((w) => w.includes('/'))].join(' ')
-      : rawQuery;
+      : changes ? changes.remainingQuery : rawQuery;
 
     let pinnedFiles: string[] = [];
     let unresolvedPathSpans: string[] = [];
