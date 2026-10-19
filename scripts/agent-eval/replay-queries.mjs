@@ -17,14 +17,14 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 /** How one query's answer moved from base to candidate. */
-export function compareRow(base, cand, prompt = '') {
+export function compareRow(base, cand, prompt = '', sameText = base.chars === cand.chars) {
   const lostFiles = base.files.filter((f) => !cand.files.includes(f));
   const lostNamed = lostFiles.filter((f) => prompt.includes(f));
   const gainedFiles = cand.files.filter((f) => !base.files.includes(f));
   const lostSource = base.sourceAt >= 0 && cand.sourceAt < 0;
   const lostMatch = base.mustMatchAt.filter((at, i) => at >= 0 && (cand.mustMatchAt[i] ?? -1) < 0).length;
   const regressed = lostSource || lostFiles.length > 0 || lostMatch > 0;
-  const changed = regressed || gainedFiles.length > 0 || base.chars !== cand.chars;
+  const changed = regressed || gainedFiles.length > 0 || !sameText;
   return { id: base.id, regressed, changed, lostSource, lostFiles, lostNamed, gainedFiles, lostMatch, baseChars: base.chars, candChars: cand.chars };
 }
 
@@ -65,11 +65,16 @@ function main() {
   }
   const base = probe(resolve(values.base), repo, values.tasks, values.ids, join(out, 'base'));
   const cand = probe(resolve(values.cand), repo, values.tasks, values.ids, join(out, 'cand'));
+  if (base.size === 0) {
+    console.error('no queries selected; check --ids and the corpus');
+    return 2;
+  }
   const prompts = new Map(corpus.tasks.map((t) => [t.id, t.prompt]));
+  const answer = (side, id) => readFileSync(join(out, side, `${id}.md`), 'utf8');
   const rows = [...base.values()].map((b) => {
     const c = cand.get(b.id);
     if (!c) throw new Error(`candidate has no answer for ${b.id}`);
-    return compareRow(b, c, prompts.get(b.id));
+    return compareRow(b, c, prompts.get(b.id), answer('base', b.id) === answer('cand', b.id));
   });
   const changed = rows.filter((r) => r.changed);
   const regressed = rows.filter((r) => r.regressed);

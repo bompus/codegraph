@@ -29,6 +29,11 @@ describe('replay comparison', () => {
     expect(compareRow(row([], { mustMatchAt: [5] }), row([], { mustMatchAt: [-1] })).lostMatch).toBe(1);
   });
 
+  it('counts different text with the same files and length as a change', () => {
+    const r = compareRow(row(['a.ts']), row(['a.ts']), '', false);
+    expect(r).toMatchObject({ regressed: false, changed: true });
+  });
+
   it('counts a gained file as a change without loss', () => {
     const r = compareRow(row(['a.ts']), row(['a.ts', 'c.ts']));
     expect(r).toMatchObject({ regressed: false, changed: true, gainedFiles: ['c.ts'] });
@@ -42,14 +47,26 @@ describe('query harvest', () => {
     expect(callsInLine({ payload: { type: 'function_call', name: 'mcp__codegraph__codegraph_explore', arguments: '{"query":"C"}' } }))
       .toEqual([{ query: 'C', projectPath: undefined }]);
     const input = 'text(await tools.mcp__codegraph__codegraph_explore({projectPath:"/y",query:"D \\"e\\"",maxFiles:8}));';
-    expect(callsInLine({ payload: { type: 'custom_tool_call', input } })).toEqual([{ query: 'D "e"', projectPath: '/y' }]);
+    expect(callsInLine({ payload: { type: 'custom_tool_call', input } })).toEqual([{ query: 'D "e"', projectPath: '/y', maxFiles: 8 }]);
     expect(callsInLine({ message: { content: [{ type: 'tool_use', name: 'Read', input: { query: 'no' } }] } })).toEqual([]);
+  });
+
+  it('reads code-mode calls with braces, single quotes and file limits', () => {
+    const call = (input: string) => callsInLine({ payload: { type: 'custom_tool_call', input } });
+    expect(call('codegraph_explore({query:"make({a: 1}) } brace"})')).toEqual([{ query: 'make({a: 1}) } brace', projectPath: undefined }]);
+    expect(call("codegraph_explore({ query: 'auth flow', maxFiles: 12 })")).toEqual([{ query: 'auth flow', projectPath: undefined, maxFiles: 12 }]);
+    expect(call('codegraph_explore({query:`a ${x}`})')).toEqual([]);
+    expect(callsInLine({ message: { content: [{ type: 'tool_use', name: 'mcp__codegraph__codegraph_explore', input: { query: 'Q', maxFiles: 3 } }] } }))
+      .toEqual([{ query: 'Q', projectPath: undefined, maxFiles: 3 }]);
   });
 
   it('maps GitHub remotes to owner/repo', () => {
     expect(repoSlug('git@github.com:Owner/Repo.git\n')).toBe('owner/repo');
     expect(repoSlug('https://github.com/owner/repo')).toBe('owner/repo');
+    expect(repoSlug('ssh://git@github.com/owner/repo.git')).toBe('owner/repo');
     expect(repoSlug('https://gitlab.com/owner/repo.git')).toBeNull();
+    expect(repoSlug('https://notgithub.com/owner/repo.git')).toBeNull();
+    expect(repoSlug('git@privategithub.com:owner/repo.git')).toBeNull();
   });
 });
 

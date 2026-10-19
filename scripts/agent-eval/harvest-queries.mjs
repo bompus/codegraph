@@ -10,8 +10,8 @@
 // directory, mapped to a repository through `git remote get-url origin`. Only
 // queries on a repository named by --public are kept; everything else is
 // dropped and counted, so a private project never reaches the output. Output
-// on stdout: `{ repos: { "<owner/repo>": { tasks: [{ id, prompt }] } } }`,
-// deduplicated, with no paths. Review every prompt before committing it: a
+// on stdout: `{ repos: { "<owner/repo>": { tasks: [{ id, prompt, maxFiles? }] } } }`,
+// deduplicated on query and file limit, with no paths. Review every prompt before committing it: a
 // query on a public repository can still quote a private name.
 import { execFileSync } from 'node:child_process';
 import { createReadStream, readdirSync, statSync } from 'node:fs';
@@ -19,14 +19,14 @@ import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
-/** Explore calls in one transcript line: [{ query, projectPath? }]. */
+/** Explore calls in one transcript line: [{ query, projectPath?, maxFiles? }]. */
 export function callsInLine(entry) {
   const calls = [];
   const blocks = entry?.message?.content;
   if (Array.isArray(blocks)) {
     for (const b of blocks) {
       if (b?.type === 'tool_use' && /codegraph_explore$/.test(b.name ?? '') && typeof b.input?.query === 'string') {
-        calls.push({ query: b.input.query, projectPath: b.input.projectPath });
+        calls.push({ query: b.input.query, projectPath: b.input.projectPath, maxFiles: b.input.maxFiles });
       }
     }
   }
@@ -34,25 +34,72 @@ export function callsInLine(entry) {
   if (p?.type === 'function_call' && /codegraph_explore$/.test(p.name ?? '')) {
     try {
       const args = JSON.parse(p.arguments);
-      if (typeof args.query === 'string') calls.push({ query: args.query, projectPath: args.projectPath });
+      if (typeof args.query === 'string') calls.push({ query: args.query, projectPath: args.projectPath, maxFiles: args.maxFiles });
     } catch { /* not JSON arguments */ }
   }
   if (p?.type === 'custom_tool_call' && typeof p.input === 'string') {
-    for (const m of p.input.matchAll(/codegraph_explore\(\{([^}]*)\}\)/g)) {
-      const field = (name) => {
-        const f = new RegExp(`\\b${name}\\s*:\\s*("(?:[^"\\\\]|\\\\.)*")`).exec(m[1]);
-        try { return f ? JSON.parse(f[1]) : undefined; } catch { return undefined; }
-      };
-      const query = field('query');
-      if (typeof query === 'string') calls.push({ query, projectPath: field('projectPath') });
+    for (const m of p.input.matchAll(/codegraph_explore\(\s*\{/g)) {
+      const fields = literalFields(p.input, m.index + m[0].length - 1);
+      if (typeof fields.query === 'string') calls.push({ query: fields.query, projectPath: fields.projectPath, maxFiles: fields.maxFiles });
     }
   }
-  return calls;
+  return calls.map((c) => (typeof c.maxFiles === 'number' ? c : { query: c.query, projectPath: c.projectPath }));
 }
 
-/** `owner/repo` from a GitHub remote URL, or null. */
+const ESCAPES = { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', v: '\v', 0: '\0' };
+
+/**
+ * The top-level string and number fields of the JavaScript object literal that
+ * opens at `src[open]` ('{'). Code-mode calls are JavaScript, not JSON: keys may
+ * be bare, strings may use any quote and may contain braces. Values that are
+ * not plain literals (expressions, template strings with `${`) are skipped.
+ */
+export function literalFields(src, open) {
+  const fields = {};
+  let depth = 0, key, expectKey = false, expectValue = false;
+  for (let i = open; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === '"' || ch === "'" || ch === '`') {
+      let s = '', literal = true, j = i + 1;
+      for (; j < src.length && src[j] !== ch; j++) {
+        if (src[j] === '\\') { j++; s += ESCAPES[src[j]] ?? src[j]; }
+        else if (ch === '`' && src[j] === '$' && src[j + 1] === '{') { literal = false; s += src[j]; }
+        else s += src[j];
+      }
+      i = j;
+      if (depth === 1 && expectKey) { key = s; expectKey = false; }
+      else if (depth === 1 && expectValue && key !== undefined && literal) fields[key] = s;
+      expectValue = false;
+    } else if (ch === '{' || ch === '[' || ch === '(') {
+      depth++;
+      if (depth === 1) expectKey = true;
+      expectValue = false;
+    } else if (ch === '}' || ch === ']' || ch === ')') {
+      if (--depth === 0) break;
+    } else if (depth === 1 && ch === ',') {
+      expectKey = true; expectValue = false; key = undefined;
+    } else if (depth === 1 && ch === ':') {
+      expectValue = true;
+    } else if (depth === 1 && /[A-Za-z_$0-9]/.test(ch)) {
+      const word = /^[A-Za-z_$0-9.]+/.exec(src.slice(i))[0];
+      i += word.length - 1;
+      if (expectKey) { key = word; expectKey = false; }
+      else if (expectValue && key !== undefined && /^\d+$/.test(word)) fields[key] = Number(word);
+      expectValue = false;
+    }
+  }
+  return fields;
+}
+
+/** `owner/repo` from a remote on github.com itself (HTTPS, SSH URL or scp form), or null. */
 export function repoSlug(url) {
-  const m = /github\.com[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/.exec(url.trim());
+  const text = url.trim();
+  const scp = /^git@github\.com:([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/.exec(text);
+  if (scp) return `${scp[1]}/${scp[2]}`.toLowerCase();
+  let parsed;
+  try { parsed = new URL(text); } catch { return null; }
+  if (parsed.hostname.toLowerCase() !== 'github.com') return null;
+  const m = /^\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(parsed.pathname);
   return m ? `${m[1]}/${m[2]}`.toLowerCase() : null;
 }
 
@@ -105,11 +152,14 @@ async function main(argv) {
           const slug = dir ? slugFor(dir) : null;
           if (!slug || !pub.has(slug)) { dropped++; continue; }
           const prompt = call.query.trim().replace(/\s+/g, ' ');
-          const key = `${slug}\0${prompt.toLowerCase()}`;
+          const limit = call.maxFiles === undefined ? '' : `\0${call.maxFiles}`;
+          const key = `${slug}\0${prompt.toLowerCase()}${limit}`;
           if (seen.has(key)) { duplicate++; continue; }
           seen.add(key);
-          const id = createHash('sha256').update(prompt).digest('hex').slice(0, 10);
-          (repos[slug] ??= { tasks: [] }).tasks.push({ id: `q-${id}`, prompt });
+          const id = createHash('sha256').update(prompt + limit).digest('hex').slice(0, 10);
+          const task = { id: `q-${id}`, prompt };
+          if (call.maxFiles !== undefined) task.maxFiles = call.maxFiles;
+          (repos[slug] ??= { tasks: [] }).tasks.push(task);
           kept++;
         }
       }
