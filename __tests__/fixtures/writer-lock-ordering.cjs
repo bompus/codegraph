@@ -35,7 +35,7 @@ if (operation === 'hold') {
         };
       }
       if (operation === 'retire') writer.releaseWriterLock(root);
-      else writer.markWriterReady(root);
+      else writer.markWriterReady(root, writer.readWriterLock(root));
       const exited = new Promise(resolve => holder.once('exit', resolve));
       holder.send('release');
       await exited;
@@ -106,7 +106,7 @@ if (operation === 'hold') {
   };
   let result;
   if (operation === 'swap' || operation === 'successor') result = writer.swapWriterLock(root, from, record(operation === 'successor' ? 333 : 222));
-  else if (operation === 'ready') writer.markWriterReady(root);
+  else if (operation === 'ready') writer.markWriterReady(root, writer.readWriterLock(root));
   else if (operation === 'release') writer.releaseWriterLock(root);
   else result = writer.tryAcquireWriterLock(root, 'fallback').kind;
   process.stdout.write(JSON.stringify({ paused, competitor, acquired, result, info: writer.readWriterLock(root), pid: process.pid }));

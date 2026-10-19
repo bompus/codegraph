@@ -14,6 +14,7 @@ import { MCPEngine } from '../src/mcp/engine';
 import {
   decodeWriterLockInfo,
   getWriterPidPath,
+  markWriterReady,
   releaseWriterLock,
   tryAcquireWriterLock,
   writerLockHeldMessage,
@@ -45,6 +46,20 @@ describe('writer lock (#1740)', () => {
     fs.mkdirSync(path.join(dir, '.codegraph'), { recursive: true });
     return dir;
   }
+
+  it('publishes readiness only on the record generation it was given', () => {
+    const root = makeProject();
+    const r = tryAcquireWriterLock(root, 'daemon');
+    if (r.kind !== 'acquired') throw new Error('expected to acquire the writer lock');
+    const read = () => decodeWriterLockInfo(fs.readFileSync(getWriterPidPath(root), 'utf8'));
+    // Same pid, newer generation: a successor record this owner must not stamp.
+    fs.writeFileSync(getWriterPidPath(root), JSON.stringify({ ...r.info, startedAt: r.info.startedAt + 1 }));
+    markWriterReady(root, r.info);
+    expect(read()).toMatchObject({ startedAt: r.info.startedAt + 1, ready: false });
+    fs.writeFileSync(getWriterPidPath(root), JSON.stringify(r.info));
+    markWriterReady(root, r.info);
+    expect(read()).toMatchObject({ startedAt: r.info.startedAt, ready: true });
+  });
 
   it('acquires and releases writer.pid', () => {
     const root = makeProject();
