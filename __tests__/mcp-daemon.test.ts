@@ -355,12 +355,17 @@ describe('Shared MCP daemon (issue #411)', () => {
       raw.destroy();
       server.child.stdin.end();
       const exited = await waitProcessExit(pid, 8000);
-      if (!exited) startupFailure(new Error(`daemon ${pid} did not exit after disconnect`));
+      // Diagnostic: on a miss, see whether the daemon exits later, and keep every run's log.
+      const late = exited ? null : await waitProcessExit(pid, 60_000);
+      if (process.env.STOP_DIAG_DIR) {
+        fs.writeFileSync(path.join(process.env.STOP_DIAG_DIR, `run-${Date.now()}-${exited ? 'ok' : late ? 'late' : 'hung'}.log`), readDaemonLog(realRoot));
+      }
+      if (!exited) startupFailure(new Error(`daemon ${pid} did not exit after disconnect (exited within 60 s more: ${late})`));
       expect(exited).toBe(true);
       expect(readDaemonLog(realRoot)).toContain('Shutting down (idle timeout; clients=0)');
       expect(fs.existsSync(path.join(realRoot, '.codegraph', 'writer.pid'))).toBe(false);
     } finally { raw.destroy(); }
-  }, 45_000);
+  }, 120_000);
 
   it('two invocations share ONE detached daemon; both attach as proxies', async () => {
     const env = { CODEGRAPH_DAEMON_IDLE_TIMEOUT_MS: '15000' };
