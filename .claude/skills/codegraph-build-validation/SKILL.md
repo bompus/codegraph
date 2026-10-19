@@ -8,6 +8,7 @@ description: Use when building or testing CodeGraph, changing extraction, resolu
 ```bash
 npm run build           # tsc + copy schema.sql + build the viewer into dist/; chmods dist/bin/codegraph.js
 npm run build:kernel    # the native Rust kernel (the only parser) → codegraph-kernel/prebuilds/<platform>/; needs cargo
+npm run build:kernel:quick  # same, unoptimized `quick` Cargo profile for edit-and-test loops; never measure with it
 npm run build:lib       # the viewer's components as @colbymchenry/codegraph-ui (ui/dist) — NOT part of `build`
 npm run dev             # tsc --watch
 npm run clean           # rm -rf dist
@@ -20,6 +21,9 @@ npm run eval            # build then run __tests__/evaluation/runner.ts via tsx
 
 npm run cli             # build then run the local dist binary
 
+# Full suite with a worker cap: vitest needs both bounds (`--maxWorkers` alone errors)
+npx vitest run --minWorkers=1 --maxWorkers=8
+
 # Single test file / pattern
 npx vitest run __tests__/installer-targets.test.ts
 npx vitest run __tests__/extraction.test.ts -t "TypeScript"
@@ -29,7 +33,7 @@ Under Bun the suite runs via `__tests__/bun-homedir.setup.ts` (an `os.homedir` s
 
 `copy-assets` (called from `build`) copies `src/db/schema.sql` into `dist/`. **Any new SQL asset must be copied or it won't ship.**
 
-The native kernel (`codegraph-kernel/`, Rust) is the **only parser**: every grammar is compiled into it (crates.io pins plus the vendored C under `codegraph-kernel/grammars/`, provenance in `grammars/PROVENANCE.md`). There is no wasm fallback. A source checkout needs a prebuild at `codegraph-kernel/prebuilds/<platform>-<arch>/codegraph-kernel.node`; `npm test` builds it through `scripts/ensure-kernel.mjs` when it is missing or was built from other kernel sources (needs Rust 1.89 or newer), release bundles ship it, and a platform without a prebuild is unsupported (the CLI says so at startup). Languages with a bespoke walker are extracted in Rust; the rest are parsed by the kernel and walked by the generic TypeScript extractor over the serialized tree (`src/extraction/parse-tree.ts`). The whole-graph golden dumps (`__tests__/kernel-golden-dumps.test.ts`) are the regression gate for any extraction change; see `docs/design/kernel-only-extraction-plan.md`.
+The native kernel (`codegraph-kernel/`, Rust) is the **only parser**: every grammar is compiled into it (crates.io pins plus the vendored C under `codegraph-kernel/grammars/`, provenance in `grammars/PROVENANCE.md`). There is no wasm fallback. A source checkout needs a prebuild at `codegraph-kernel/prebuilds/<platform>-<arch>/codegraph-kernel.node`; `npm test` builds it through `scripts/ensure-kernel.mjs` when it is missing or was built from other kernel sources (needs Rust 1.89 or newer), release bundles ship it, and a platform without a prebuild is unsupported (the CLI says so at startup). A host release build of committed kernel sources is saved to a per-user cache (`scripts/kernel-cache.mjs`; `CODEGRAPH_KERNEL_CACHE` moves it, `=off` disables it), so a new worktree whose kernel sources match a recent build restores it instead of compiling; `build:kernel --no-cache` compiles anyway. `CARGO_TARGET_DIR` moves the build output. Languages with a bespoke walker are extracted in Rust; the rest are parsed by the kernel and walked by the generic TypeScript extractor over the serialized tree (`src/extraction/parse-tree.ts`). The whole-graph golden dumps (`__tests__/kernel-golden-dumps.test.ts`) are the regression gate for any extraction change; see `docs/design/kernel-only-extraction-plan.md`.
 
 One other build step writes into `dist/` and is subject to the same rule: `build:ui` builds the
 browser viewer into `dist/viewer/` (never `dist/ui/` — that's the terminal ui).

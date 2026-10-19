@@ -99,3 +99,12 @@ napi = { version = "3", default-features = false, features = ["napi8", "dyn-symb
 lto = true
 codegen-units = 1
 strip = "symbols"
+
+# `npm run build:kernel:quick`: the same code without cross-crate optimization,
+# for edit-and-test loops (about 16 s after a resolver edit vs 90 s for
+# release on a 16-vCPU machine). Never measure performance with it.
+[profile.quick]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true

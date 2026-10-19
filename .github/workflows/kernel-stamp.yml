@@ -5,6 +5,7 @@ on:
     paths:
       - 'scripts/kernel-stamp.mjs'
       - 'scripts/ensure-kernel.mjs'
+      - 'scripts/kernel-cache.mjs'
       - '__tests__/ensure-kernel-stamp.test.ts'
       - '.github/workflows/kernel-stamp.yml'
 concurrency:

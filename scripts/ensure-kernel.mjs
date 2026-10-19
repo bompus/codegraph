@@ -10,21 +10,28 @@
  * rather than failing silently later in the suite. A prebuild whose source
  * stamp (scripts/kernel-stamp.mjs) differs from the checkout's kernel sources
  * is rebuilt the same way: it would otherwise run older kernel code than the
- * TypeScript beside it expects.
+ * TypeScript beside it expects. Before compiling, a release build of the same
+ * committed sources is restored from the per-user kernel cache
+ * (scripts/kernel-cache.mjs). A `quick` build (`npm run build:kernel:quick`)
+ * of the current sources is accepted, with a reminder that it is not for
+ * measuring.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
 import { kernelSourceStamp, stampPath } from './kernel-stamp.mjs';
+import { restoreKernel } from './kernel-cache.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const prebuild = path.join(root, 'codegraph-kernel', 'prebuilds', `${process.platform}-${process.arch}`, 'codegraph-kernel.node');
 if (process.env.CODEGRAPH_KERNEL_PATH && existsSync(process.env.CODEGRAPH_KERNEL_PATH)) process.exit(0);
 
+const platform = `${process.platform}-${process.arch}`;
 let reason = `no prebuild at ${prebuild}`;
+let want;
 if (existsSync(prebuild)) {
-  const want = kernelSourceStamp(root);
+  want = kernelSourceStamp(root);
   if (want === null) process.exit(0); // not a git checkout: nothing to compare against
   let have = null;
   try {
@@ -32,8 +39,18 @@ if (existsSync(prebuild)) {
   } catch {
     // No stamp: built before stamps, or copied from elsewhere without one.
   }
-  if (have === want) process.exit(0);
+  const [haveStamp, profile] = (have ?? '').split(' ');
+  if (haveStamp === want) {
+    if (profile === 'quick') console.log('[ensure-kernel] using a quick (unoptimized) kernel build; run `npm run build:kernel` before measuring performance');
+    process.exit(0);
+  }
   reason = `the prebuild at ${prebuild} was not built from this checkout's kernel sources`;
+}
+
+want ??= kernelSourceStamp(root);
+if (restoreKernel(platform, want, prebuild)) {
+  console.log(`[ensure-kernel] ${reason}; restored a release build of the same sources from the kernel cache`);
+  process.exit(0);
 }
 
 const cargo = spawnSync('cargo', ['--version'], { encoding: 'utf8' });
