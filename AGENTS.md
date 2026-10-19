@@ -94,6 +94,8 @@ Defined in `src/types.ts`. Both extractors and resolvers must use these exact st
 
 **Required** for every new language/framework: validate on small/medium/large real repos with >=3 flow prompts; deterministic `scripts/agent-eval/probe-explore.mjs` probes, then agent A/B (`scripts/agent-eval/run-all.sh` / `ab-new-vs-baseline.sh`). Pass bar: ~0 Read/Grep within the explore-call budget, faster than without-codegraph, no control-repo regression.
 
+**Every other retrieval change** (explore ranking, budgets, rendering, search) is gated by replaying saved agent queries, not by an agent A/B: `node scripts/agent-eval/replay-queries.mjs <checkout at the corpus commit> --tasks scripts/agent-eval/replay/<corpus>.json --base <build> --cand <build> --out <dir>` (about 20 s). Read every changed or regressed answer and say in the PR why each is acceptable. Run one agent A/B per release batch, before a build is promoted or released, and add its new query shapes to the corpus with `harvest-queries.mjs`. Details: `docs/AGENTS.md` § Query replay.
+
 Full methodology (feedback metrics, CLI contamination guard, Sonnet/`--effort high` model policy, daemon pre-warm), the Excalidraw worked example, and coverage matrix live in:
 - `docs/AGENTS.md` (nested; also loaded when cwd is under `docs/`)
 - `docs/design/dynamic-dispatch-coverage-playbook.md`

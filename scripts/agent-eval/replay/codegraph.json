@@ -1,0 +1,194 @@
+{
+  "$comment": [
+    "Real codegraph_explore queries agents asked about this repository, harvested by harvest-queries.mjs and reviewed by hand.",
+    "Replay them against bompus/codegraph checked out at commit, indexed with either build: node scripts/agent-eval/replay-queries.mjs <checkout> --tasks scripts/agent-eval/replay/codegraph.json --base <build> --cand <build> --out <dir>."
+  ],
+  "repository": "bompus/codegraph",
+  "commit": "2a4af7c3",
+  "tasks": [
+    {
+      "id": "q-89489f4611",
+      "prompt": "is_lexically_reachable is_bare_js_call js_store_binding js_unit_to_byte match_by_exact_name"
+    },
+    {
+      "id": "q-5a5324c072",
+      "prompt": "call_shape_target kotlin_call_receiver_type call_site kotlin_unknown_receiver_allowed kotlin_infix_site retain_lang_scope_tracked"
+    },
+    {
+      "id": "q-58b626100e",
+      "prompt": "KernelResolver read_file source cache sorted_files kotlin_companion_receiver_memo"
+    },
+    {
+      "id": "q-0bf6fd8205",
+      "prompt": "getExploreBudget getExploreOutputBudget src/mcp/tools.ts"
+    },
+    {
+      "id": "q-4ce3a49f75",
+      "prompt": "writer lock CODEGRAPH_NO_DAEMON readonly no watch serve mcp auto sync environment"
+    },
+    {
+      "id": "q-5329a0730f",
+      "prompt": "server-instructions.ts SERVER_INSTRUCTIONS"
+    },
+    {
+      "id": "q-2c1bab2282",
+      "prompt": "instructions-template.ts INSTRUCTIONS_BODY upsertInstructionsEntry CODEGRAPH_START"
+    },
+    {
+      "id": "q-bb5c2f3458",
+      "prompt": "CHANGELOG.md Unreleased New Features Fixes"
+    },
+    {
+      "id": "q-722771cf35",
+      "prompt": "writer.pid fallback mode daemon start writer lock acquire SIGTERM shutdown clients idle timeout refresh launcher fallback proxy existing MCP session"
+    },
+    {
+      "id": "q-83904696a8",
+      "prompt": "handleExplore getExploreOutputBudget pinnedFiles source excerpts exact path literal selection Vue test assertions"
+    },
+    {
+      "id": "q-3e323a81de",
+      "prompt": "src/extraction/index.ts extractFileWithParser retryOnCorruption: trace WASM heap recreation retry guards to parseNativeTree"
+    },
+    {
+      "id": "q-e298f733b6",
+      "prompt": "TreeSitterExtractor extract isTreeSitterTimeoutError parseAst src/extraction/parse-worker.ts: how are native parser errors and memory messages propagated to retries?"
+    },
+    {
+      "id": "q-f194f1d4e3",
+      "prompt": "src/extraction/parse-pool.ts ParseWorkerPool recycle recycleAll handleWorkerError onMessage timeout: which live native worker errors trigger restart and retry?"
+    },
+    {
+      "id": "q-79895a605a",
+      "prompt": "src/mcp explicit project idle writer lock LRU release structuredContent text-only stale explore status; codegraph-kernel/src/resolve/bound.rs lexical siblings closure declaration method_call shadow field"
+    },
+    {
+      "id": "q-4b9d4fe1e9",
+      "prompt": "src/mcp/project-lifecycle.ts src/mcp/tools.ts trimProjects setProjectLifecycle src/mcp/handlers/base.ts structuredContent textResult __tests__ idle explicit project release stale text-only structuredContent"
+    },
+    {
+      "id": "q-82c2bc4abb",
+      "prompt": "__tests__/mcp-projectpath-lifecycle.test.ts __tests__/mcp-idle-release-order.test.ts __tests__/mcp-stale-refusal.test.ts __tests__/mcp-status-freshness.test.ts"
+    },
+    {
+      "id": "q-56ad613635",
+      "prompt": "codegraph-kernel/src/resolve/receivers.rs infer_local_receiver_type codegraph-kernel/src/resolve/names.rs innermost_binding codegraph-kernel/src/resolve/method_call.rs receiver_field_type __tests__/bindings-receiver.test.ts"
+    },
+    {
+      "id": "q-5bee81ff55",
+      "prompt": "codegraph-kernel/src/resolve/prefilter.rs innermost_binding codegraph-kernel/src/resolve/method_call.rs match_method_call java_field_receiver __tests__/bindings-receiver.test.ts __tests__/receiver-owners.test.ts"
+    },
+    {
+      "id": "q-84a7939e6c",
+      "prompt": "__tests__/bindings-receiver.test.ts __tests__/bound-owner-walk.test.ts codegraph-kernel/src/tsjs/bindings.rs local_scope codegraph-kernel/src/go/bindings.rs"
+    },
+    {
+      "id": "q-e3cbe24999",
+      "prompt": "infer_java_field_receiver_type infer_declared_member_receiver_type jvm_field_receiver"
+    },
+    {
+      "id": "q-2195039d4e",
+      "prompt": "SQLite database driver node:sqlite read-only worker pool query-worker database connection"
+    },
+    {
+      "id": "q-1795f3a486",
+      "prompt": "src/mcp/tools.ts trimProjects DEFAULT_PROJECT_IDLE getProject defaultProject src/mcp/project-lifecycle.ts writer lock fallback idle release"
+    },
+    {
+      "id": "q-9c8c79ed8a",
+      "prompt": "__tests__/mcp-project-idle.test.ts idleRelease engine default project CODEGRAPH_PROJECT_IDLE_TIMEOUT_MS"
+    },
+    {
+      "id": "q-d3903019db",
+      "prompt": "__tests__/mcp-projectpath-lifecycle.test.ts __tests__/mcp-idle-release-order.test.ts __tests__/mcp-writer-lock.test.ts"
+    },
+    {
+      "id": "q-4bfc6b3a39",
+      "prompt": "src/mcp/proxy.ts ensureEngine retireEngine scheduleDaemonRetry CODEGRAPH_DAEMON_RETRY_MS src/mcp/engine.ts ensureInitialized stop defaultLease"
+    },
+    {
+      "id": "q-31969f6470",
+      "prompt": "src/mcp/proxy.ts LocalHandshakeDeps runLocalHandshakeProxy stdin onData getDaemonSocket makeEngine __tests__/proxy-shutdown.test.ts __tests__/mcp-daemon.test.ts fallback retries hand writer"
+    },
+    {
+      "id": "q-66cb0e759e",
+      "prompt": "src/codegraph.ts initSync src/kernel/loader.ts require codegraph-kernel src/mcp/engine.ts catchUpSync startWatching"
+    },
+    {
+      "id": "q-ee1a00ea8d",
+      "prompt": "__tests__/proxy-shutdown.test.ts startProxy env src/mcp/liveness-watchdog.ts installMainThreadWatchdog env"
+    },
+    {
+      "id": "q-df62321741",
+      "prompt": "kernel build stamp untracked source invalidation build-kernel scripts build stamp hash git ls-files"
+    },
+    {
+      "id": "q-1f48df9dba",
+      "prompt": "scripts/kernel-stamp.mjs scripts/ensure-kernel.mjs __tests__/ensure-kernel-stamp.test.ts"
+    },
+    {
+      "id": "q-f88ad05305",
+      "prompt": "src/mcp/tools.ts callersTool calleesTool codegraph_callers codegraph_callees"
+    },
+    {
+      "id": "q-875f4f64e3",
+      "prompt": "handleCallers handleCallees collectWiringNotes nodeHeader"
+    },
+    {
+      "id": "q-3ae4233c4b",
+      "prompt": "formatNodeList edgeLabel GraphTraverser getCallers getCallees"
+    },
+    {
+      "id": "q-104036dbc2",
+      "prompt": "scripts/build-kernel.mjs scripts/ensure-kernel.mjs runtime-control.ts checkRuntimeReady protocol version runtime identity build stamp"
+    },
+    {
+      "id": "q-f9910072c8",
+      "prompt": "src/mcp/daemon-registry.ts getRegistryDir src/directory.ts getCodeGraphStateDir registry dir global config"
+    },
+    {
+      "id": "q-60d91393ac",
+      "prompt": "src/mcp/version.ts resolveManagedBuildVersion managed source stamp file"
+    },
+    {
+      "id": "q-9c3899c519",
+      "prompt": "src/codegraph.ts codegraph-kernel/src/lib.rs src/db/sqlite-adapter.ts src/mcp/server.ts runtime architecture Rust kernel Node transport public library API ui browser"
+    },
+    {
+      "id": "q-f795406e75",
+      "prompt": "codegraph-kernel/src/lib.rs codegraph-kernel/src/resolve/name_matcher_upstream.rs native Rust #[cfg(test)] tests: identify a pure helper with direct Rust unit tests usable by cargo test; contrast __tests__/kernel-scaffold.test.ts and scripts/ensure-kernel.mjs NAPI prebuild test wiring"
+    },
+    {
+      "id": "q-da10d1df74",
+      "prompt": "codegraph-kernel/src/ids.rs codegraph-kernel/src/docstring.rs codegraph-kernel/src/lib.rs cfg(test) NAPI test stubs"
+    },
+    {
+      "id": "q-a49ca91c4e",
+      "prompt": "codegraph-kernel/src/util.rs col16 utf16 tests"
+    },
+    {
+      "id": "q-ebde6c9ef9",
+      "prompt": "Cols col utf16_prefix codegraph-kernel/src/textutil.rs callers parse_tree_inner"
+    },
+    {
+      "id": "q-a3cbcd491c",
+      "prompt": "__tests__/kernel-parse-tree.test.ts UTF-16 unicode astral"
+    },
+    {
+      "id": "q-57dc520bed",
+      "prompt": "src/extraction/kernel/tree.ts NativeNode startIndex endIndex startPosition descendantForIndex descendantForPosition"
+    },
+    {
+      "id": "q-872326d0b3",
+      "prompt": "codegraph-kernel/src/tree.rs parse_tree_inner Row start_byte start_idx utf16_prefix src/extraction/parse-tree.ts TreeNode"
+    },
+    {
+      "id": "q-621688899a",
+      "prompt": "src/graph/branch-guards.ts innermostAt __tests__/kernel-parse-tree.test.ts firstViolation"
+    },
+    {
+      "id": "q-c0cacd2a20",
+      "prompt": "createDatabase SqliteDatabase src/db/schema.sql FTS5"
+    }
+  ]
+}
