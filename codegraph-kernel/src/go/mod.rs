@@ -21,7 +21,7 @@ use crate::buffers::{
 use crate::walker::named_kids;
 use crate::walker::{Scope, ValueScope, Cand, scope_qualified_name};
 use crate::textutil::{is_builtin_type, is_literal_receiver};
-use crate::docstring::preceding_docstring_skipping_trailing;
+use crate::docstring::preceding_go_doc_comment;
 use crate::ids;
 use crate::textutil as util;
 use regex::Regex;
@@ -295,8 +295,14 @@ impl<'t> Walker<'t> {
         (specs == 1).then_some(parent)
     }
 
+    /// docstringFor (tree-sitter.ts) — the preceding comment run, looked up
+    /// from the declaration wrapper when there is one, without the comments
+    /// that trail the code above it (docstringSkipsTrailingComments) or that
+    /// don't end on the line right above it, past a blank line
+    /// (docstringSkipsDetachedComments), and without directives like
+    /// `//go:embed` in its text (docstringSkipsDirectives).
     fn docstring_of(&self, node: Node<'t>) -> Option<String> {
-        preceding_docstring_skipping_trailing(self.declaration_wrapper(node).unwrap_or(node), self.src)
+        preceding_go_doc_comment(self.declaration_wrapper(node).unwrap_or(node), self.src)
     }
 
     fn visit_node(&mut self, node: Node<'t>) {
@@ -574,11 +580,15 @@ impl<'t> Walker<'t> {
                         None
                     };
                     let signature = value_node.map(|v| util::init_signature(self.text(v)));
+                    // A member of a `const ( … )` or `var ( … )` group has its
+                    // own doc comment beside it in the parentheses; one without
+                    // keeps the group's.
+                    let doc = self.docstring_of(spec).or_else(|| docstring.clone());
                     var_row = self.create_node(
                         if is_const_decl { "constant" } else { "variable" },
                         &name,
                         spec,
-                        Extra { docstring: docstring.clone(), signature, ..Extra::default() },
+                        Extra { docstring: doc, signature, ..Extra::default() },
                     );
                 }
             }
