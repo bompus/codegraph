@@ -23,8 +23,8 @@ cap() { tmux capture-pane -p -t "$SESSION" -S -40; }
 tmux kill-session -t "$SESSION" 2>/dev/null
 
 # Wide pane so the TUI doesn't hard-wrap tool lines.
-tmux new-session -d -s "$SESSION" -x 230 -y 60
-tmux send-keys -t "$SESSION" "cd $REPO && claude --dangerously-skip-permissions ${CLAUDE_EXTRA_ARGS:-}" Enter
+# exec leaves no interactive shell to receive a prompt if Claude exits.
+tmux new-session -d -s "$SESSION" -x 230 -y 60 -c "$REPO" "exec claude --dangerously-skip-permissions ${CLAUDE_EXTRA_ARGS:-}" || exit 1
 
 # Wait for the ❯ prompt (claude drew its UI), up to 60s. NOTE: ❯ appears on the
 # welcome screen seconds before the input actually accepts keystrokes, so this is
@@ -38,14 +38,25 @@ done
 [ "$ready" = 1 ] || { echo "claude never drew its UI"; cap; tmux kill-session -t "$SESSION" 2>/dev/null; exit 1; }
 
 # Accept the per-folder "Is this a project you trust?" dialog if it shows (first
-# time claude opens a given repo). Option 1 ("Yes, I trust this folder") is
-# pre-selected, so Enter accepts. This dialog also contains ❯, so it must be
-# cleared before the type-and-verify loop or keystrokes land on the menu.
+# time claude opens a given repo). Which option is pre-selected varies by Claude
+# Code version — current builds put "No, exit" first — so move the cursor onto
+# "Yes, I trust this folder" explicitly before pressing Enter; a bare Enter on
+# "No, exit" quits claude. This dialog also contains ❯, so it must be cleared
+# before the type-and-verify loop or keystrokes land on the menu.
 for _ in $(seq 1 20); do
   cap | grep -q "trust this folder" || break
-  tmux send-keys -t "$SESSION" Enter
+  if cap | grep -qE "❯ *([0-9]\. *)?No, exit"; then tmux send-keys -t "$SESSION" Down; sleep 0.5; fi
+  cap | grep -qE "❯ *([0-9]\. *)?Yes, I trust" && tmux send-keys -t "$SESSION" Enter
   sleep 1
 done
+
+# A failed Claude process leaves a dead or removed pane because it replaced
+# the shell. Catch that here instead of retrying input for a missing process.
+sleep 2
+if [ "$(tmux display -p -t "$SESSION" '#{pane_dead}')" != 0 ]; then
+  echo "claude exited before the prompt was sent"
+  cap; tmux kill-session -t "$SESSION" 2>/dev/null; exit 1
+fi
 
 # Type-and-verify: send the prompt, confirm a distinctive chunk of it actually
 # landed in the input box, retry if it didn't (handles the early-❯ race where

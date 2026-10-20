@@ -485,6 +485,11 @@ impl KernelResolver {
             return Ok(false);
         }
         let before = js_prefix(line, r.column as usize);
+        // A JS/TS receiver ends in a dot; a preceding ')' closes a braceless
+        // statement header. Go's parenthesized call forms keep their reading.
+        if is_js_family(&r.language) && before.trim_end().ends_with(')') {
+            return Ok(true);
+        }
         Ok(!js_call_prefix_re().is_match(before) || js_call_keyword_re().is_match(before))
     }
 
