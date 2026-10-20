@@ -195,6 +195,23 @@ pub(super) fn is_bare_rust_name(r: &ResolveRefIn) -> bool {
     r.language == "rust" && re!(r"^[A-Za-z_][A-Za-z0-9_]*$").is_match(&r.reference_name)
 }
 
+/// Whether `r`'s file can name this Rust item (isRustItemVisibleFrom). A private one — no `pub` of
+/// any form — is named only in its own module and the modules inside it: a `type Result` in
+/// `src/build/patch.rs` is `build::patch`'s, seen in that file and under `src/build/patch/`, never
+/// through `use crate::Result` elsewhere, and no glob passes it on. A `mod.rs`, `lib.rs` or
+/// `main.rs` is the module of its whole directory. The same rule `is_visible_across_files` applies
+/// to the pipeline's pick, here ahead of the ranking, so the crate's own `pub(crate) type Result`
+/// can win instead.
+fn rust_item_visible_from(candidate: &KNode, r: &ResolveRefIn) -> bool {
+    if candidate.language != "rust"
+        || candidate.visibility.as_deref() != Some("private")
+        || !super::resolver_upstream::RUST_MODULE_ITEM_KINDS.contains(&candidate.kind.as_str())
+    {
+        return true;
+    }
+    candidate.file_path == r.file_path || r.file_path.starts_with(&format!("{}/", super::names::rust_module_dir(&candidate.file_path)))
+}
+
 impl KernelResolver {
     /// The ref's source line, when the reference name sits at its column.
     fn line_at_name(&mut self, r: &ResolveRefIn) -> Option<(String, String)> {
@@ -252,6 +269,9 @@ impl KernelResolver {
     /// the prelude's unless the file defines it or imports a project item of
     /// that name.
     pub(super) fn is_rust_name_in_scope(&mut self, candidate: &KNode, r: &ResolveRefIn) -> bool {
+        if !rust_item_visible_from(candidate, r) {
+            return false;
+        }
         if r.language == "rust" && r.reference_kind == "references" {
             if let Some(lines) = self.read_file(&r.file_path) {
                 if let Some(line) = lines.get((r.line - 1).max(0) as usize) {

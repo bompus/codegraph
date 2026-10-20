@@ -579,6 +579,7 @@ mod method_call;
 mod pipeline;
 mod file_refs;
 mod rust_modules;
+mod rust_crates;
 mod awaited;
 mod iteration;
 mod kotlin_receiver;
@@ -756,7 +757,8 @@ pub struct KernelResolver {
     upstream_js_bindings: HashMap<String, js_scope_upstream::JsBindingIndex>,
     csharp_namespace_globals_memo: HashMap<Option<String>, Rc<HashSet<String>>>,
     upstream_scope_memo: HashMap<String, bool>,
-    upstream_rust_uses: HashMap<String, (HashSet<String>, HashSet<String>)>,
+    upstream_rust_uses: HashMap<String, resolver_upstream::RustUseFacts>,
+    rust_crate_graph_memo: Option<Rc<rust_crates::RustCrateGraph>>,
     upstream_rust_deps: Option<HashSet<String>>,
     /// isSwiftExtension (swift-type-visibility.ts) memo, by node id.
     swift_extension_memo: HashMap<String, bool>,
@@ -961,6 +963,7 @@ impl KernelResolver {
             csharp_namespace_globals_memo: HashMap::new(),
             upstream_scope_memo: HashMap::new(),
             upstream_rust_uses: HashMap::new(),
+            rust_crate_graph_memo: None,
             upstream_rust_deps: None,
             swift_extension_memo: HashMap::new(),
             swift_conformance_memo: HashMap::new(),

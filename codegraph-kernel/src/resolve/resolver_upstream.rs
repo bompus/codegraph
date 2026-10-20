@@ -140,6 +140,18 @@ fn name_then(line: &str, name: &str, close_paren: bool, next: &[char], at_end: b
     })
 }
 
+/// What a Rust file's `use`s bind: the items of the standard library and of dependency crates,
+/// the items of the project's own crates, and the first segment of every path binding each of those.
+#[derive(Clone, Default)]
+pub(super) struct RustUseFacts {
+    external: HashSet<String>,
+    bound: HashSet<String>,
+    bound_from: HashMap<String, HashSet<String>>,
+}
+
+/// Rust items declared in a module, whose own `pub` (or its absence) says who can name them.
+pub(super) const RUST_MODULE_ITEM_KINDS: [&str; 8] = ["function", "struct", "enum", "union", "type_alias", "trait", "constant", "variable"];
+
 impl KernelResolver {
     pub(super) fn local_declaration_scope(&mut self, n: &KNode) -> Res<Option<(i64, i64)>> {
         if no_nested_functions(&n.language)
@@ -680,29 +692,16 @@ impl KernelResolver {
         } else {
             path_re.captures(line).map(|m| m[1].to_string())
         };
-        let (external, bound) = if let Some(hit) = self.upstream_rust_uses.get(&r.file_path) {
+        let RustUseFacts { external, bound, bound_from } = if let Some(hit) = self.upstream_rust_uses.get(&r.file_path) {
             hit.clone()
         } else {
             let mut external = HashSet::new();
             let mut bound = HashSet::new();
+            let mut bound_from: HashMap<String, HashSet<String>> = HashMap::new();
             let mut deps = self.upstream_rust_deps.clone().unwrap_or_default();
             if self.upstream_rust_deps.is_none() {
-                let mut manifests = HashSet::from(["Cargo.toml".to_string()]);
-                if let Some(files) = self.sorted_files() {
-                    for file in files.iter().filter(|f| f.ends_with(".rs")) {
-                        let mut dir = pos_dirname(file);
-                        while dir != "." && !dir.is_empty() {
-                            manifests.insert(format!("{dir}/Cargo.toml"));
-                            let next = pos_dirname(dir);
-                            if next == dir {
-                                break;
-                            }
-                            dir = next;
-                        }
-                    }
-                }
                 let mut own = HashSet::new();
-                for manifest in manifests {
+                for manifest in self.rust_manifest_files().ok()? {
                     if let Some(source) = self.read_file(&manifest) {
                         let text = source.text();
                         if let Some(m) =
@@ -710,25 +709,8 @@ impl KernelResolver {
                         {
                             own.insert(m[1].replace('-', "_"));
                         }
-                        let mut in_deps = false;
-                        for line in source.iter() {
-                            let line = line.split('#').next().unwrap_or("").trim();
-                            if let Some(header) = re!(r"^\[([^\]]+)\]$").captures(line) {
-                                if let Some(named) =
-                                    re!(r"(?:^|\.)(?:dev-|build-)?dependencies\.([A-Za-z0-9_-]+)$")
-                                        .captures(&header[1])
-                                {
-                                    deps.insert(named[1].replace('-', "_"));
-                                }
-                                in_deps = re!(r"(?:^|\.)(?:dev-|build-)?dependencies$")
-                                    .is_match(&header[1]);
-                                continue;
-                            }
-                            if in_deps {
-                                if let Some(m) = re!(r"^([A-Za-z0-9_-]+)\s*=").captures(line) {
-                                    deps.insert(m[1].replace('-', "_"));
-                                }
-                            }
+                        for dep in super::rust_crates::rust_manifest_dependencies(text) {
+                            deps.insert(dep.key);
                         }
                     }
                 }
@@ -751,29 +733,29 @@ impl KernelResolver {
                     .unwrap_or("")
                     .trim();
                 let outside = matches!(root, "std" | "core" | "alloc") || deps.contains(root);
+                let mut bind = |name: &str| {
+                    if outside {
+                        external.insert(name.to_string());
+                    } else {
+                        bound.insert(name.to_string());
+                        bound_from.entry(name.to_string()).or_default().insert(root.to_string());
+                    }
+                };
                 for leaf in
                     re!(r"([A-Za-z_]\w*)\s*(?:[,}]|$)|\bas\s+([A-Za-z_]\w*)").captures_iter(tree)
                 {
                     let name = leaf.get(2).or_else(|| leaf.get(1)).unwrap().as_str();
                     if name != "self" && name != "as" {
-                        if outside {
-                            external.insert(name.to_string());
-                        } else {
-                            bound.insert(name.to_string());
-                        }
+                        bind(name);
                     }
                 }
                 for owner in re!(r"([A-Za-z_]\w*)\s*::\s*\{[^{}]*\bself\b").captures_iter(tree) {
-                    if outside {
-                        external.insert(owner[1].to_string());
-                    } else {
-                        bound.insert(owner[1].to_string());
-                    }
+                    bind(&owner[1]);
                 }
             }
-            self.upstream_rust_uses
-                .insert(r.file_path.clone(), (external.clone(), bound.clone()));
-            (external, bound)
+            let facts = RustUseFacts { external, bound, bound_from };
+            self.upstream_rust_uses.insert(r.file_path.clone(), facts.clone());
+            facts
         };
         if let Some(path) = path {
             let segments: Vec<_> = path
@@ -840,6 +822,14 @@ impl KernelResolver {
         }
         if n.file_path == r.file_path {
             return Some(true);
+        }
+        // An item a `use` binds is one its path's crate can name.
+        if RUST_MODULE_ITEM_KINDS.contains(&n.kind.as_str()) {
+            if let Some(from) = bound_from.get(name) {
+                if !self.rust_use_can_reach(from, n, r).ok()? {
+                    return Some(false);
+                }
+            }
         }
         if external.contains(name) && !bound.contains(name) && !line[..at].trim_end().ends_with('.')
         {
