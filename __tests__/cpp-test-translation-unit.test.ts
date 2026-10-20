@@ -234,11 +234,12 @@ describe('a C/C++ test links what its translation unit declares', () => {
     expect(calls.some((c) => c.includes('test_util2.h'))).toBe(false);
   });
 
-  it('guesses a receiver among the classes its includes declare', () => {
+  it('does not guess a class for a receiver bound to a smart pointer whose type is not read', () => {
     const calls = callsFrom('monitoring/histogram_test.cc');
-    // Fork difference: a receiver bound to a file-scope smart pointer whose type is not read is
-    // refused by the bound-receiver claim (the fork never name-guesses it), so there is no
-    // `SystemClock` edge to expect; the translation-unit check below still holds.
+    // Fork difference from upstream, which guesses `SystemClock` here: the bound-receiver claim
+    // refuses a name guess, so the call stays unlinked rather than reaching a class the test's
+    // includes do not declare.
+    expect(calls.some((c) => c.includes('SleepForMicroseconds'))).toBe(false);
     expect(calls.some((c) => c.includes('emulated_clock.h'))).toBe(false);
   });
 

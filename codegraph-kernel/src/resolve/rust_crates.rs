@@ -257,7 +257,7 @@ impl KernelResolver {
         let crate_dir_of = |file: &str| -> Option<String> {
             let mut best: Option<&String> = graph.crates.contains_key("").then(|| graph.crates.get_key_value("").unwrap().0);
             for dir in graph.crates.keys() {
-                if !dir.is_empty() && file.starts_with(&format!("{dir}/")) && best.is_none_or(|b| dir.len() > b.len()) {
+                if !dir.is_empty() && file.strip_prefix(dir.as_str()).is_some_and(|rest| rest.starts_with('/')) && best.is_none_or(|b| dir.len() > b.len()) {
                     best = Some(dir);
                 }
             }
