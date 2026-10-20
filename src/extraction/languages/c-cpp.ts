@@ -33,6 +33,17 @@ export function cDeclaratorIdentifier(node: SyntaxNode | null): SyntaxNode | nul
   return null;
 }
 
+/**
+ * Whether a C or Objective-C declaration is a constant: a `const` or
+ * `static const` file-scope declaration carries a `type_qualifier` child
+ * reading "const". Extracted as `constant`, plain globals as `variable`. A
+ * `const` inside a pointer declarator (`char *const p`) qualifies the
+ * pointer, and the declaration stays a variable.
+ */
+export function isConstDeclaration(node: SyntaxNode): boolean {
+  return node.namedChildren.some((c: SyntaxNode) => c.type === 'type_qualifier' && c.text === 'const');
+}
+
 /** C and C++ specifiers that define a class-like type, or an enum, when they carry a body (C has no `class_specifier`). */
 const CLASS_LIKE_SPECIFIERS = new Set(['class_specifier', 'struct_specifier', 'union_specifier', 'enum_specifier']);
 
@@ -432,13 +443,7 @@ export const cExtractor: LanguageExtractor = {
   nameField: 'declarator',
   bodyField: 'body',
   paramsField: 'parameters',
-  // A `const`/`static const` file-scope declaration carries a `type_qualifier`
-  // child reading "const" — extract those as `constant`, plain globals as
-  // `variable`.
-  isConst: (node) =>
-    node.namedChildren.some(
-      (c: SyntaxNode) => c.type === 'type_qualifier' && c.text === 'const'
-    ),
+  isConst: isConstDeclaration,
   getReturnType: extractCppReturnType,
   resolveTypeAliasKind: (node, _source) => {
     // C typedef: `typedef enum { ... } name;` or `typedef struct { ... } name;`
@@ -1648,9 +1653,51 @@ export function flattenMidStatementConditionals(source: string): string {
   return changed ? lines.join('\n') : source;
 }
 
+// Foundation's enum macros and their CoreFoundation forms, with an optional
+// `typedef` before them: `typedef NS_ENUM(NSInteger, SDImageCacheType)`.
+const FOUNDATION_ENUM_MACRO_RE =
+  /\b(?:(typedef)(\s+))?(NS_ENUM|NS_OPTIONS|NS_CLOSED_ENUM|NS_ERROR_ENUM|CF_ENUM|CF_OPTIONS|CF_CLOSED_ENUM)(\s*)\(([^(),]*),(\s*)([A-Za-z_]\w*)(\s*)\)/g;
+
+/**
+ * Rewrite a Foundation enum macro as the enum it declares, in place:
+ * `typedef NS_ENUM(NSInteger, SDImageCacheType) {` becomes
+ * `        enum               SDImageCacheType  {`. The parser reads the
+ * macro as a broken typedef, so the enum and every value in it were missing
+ * (SDWebImage had no enum at all). The `typedef`, the rest of the macro's
+ * name, its parentheses and its first argument (the underlying type, or an
+ * NS_ERROR_ENUM's domain) become spaces, so every offset stays. Matched on
+ * the code with comments, literals and directives masked: the `#define` of
+ * the macro itself is left alone. Shared by Objective-C, C and C++, whose
+ * headers all use the macros.
+ */
+export function rewriteFoundationEnumMacros(source: string): string {
+  if (!/\b(?:NS|CF)_[A-Z_]*(?:ENUM|OPTIONS)\s*\(/.test(source)) return source;
+  let out: string[] | null = null;
+  for (const m of maskCppCode(source).matchAll(FOUNDATION_ENUM_MACRO_RE)) {
+    out ??= source.split('');
+    const blank = (from: number, to: number): void => {
+      for (let k = from; k < to; k++) if (out![k] !== '\n' && out![k] !== '\r') out![k] = ' ';
+    };
+    let at = m.index;
+    if (m[1]) {
+      blank(at, at + m[1].length);
+      at += m[1].length + (m[2] as string).length;
+    }
+    const macro = m[3] as string;
+    out.splice(at, 4, 'e', 'n', 'u', 'm');
+    blank(at + 4, at + macro.length);
+    at += macro.length + (m[4] as string).length;
+    // `(`, the first argument and the `,`.
+    blank(at, at + 1 + (m[5] as string).length + 1);
+    at += 1 + (m[5] as string).length + 1 + (m[6] as string).length + (m[7] as string).length + (m[8] as string).length;
+    blank(at, at + 1); // `)`
+  }
+  return out ? out.join('') : source;
+}
+
 function preParseCppSource(source: string, filePath?: string): string {
   const rawStrings = maskCppRawStrings(source);
-  source = flattenMidStatementConditionals(rewriteCppAccessMacros(rawStrings.source));
+  source = flattenMidStatementConditionals(rewriteCppAccessMacros(rewriteFoundationEnumMacros(rawStrings.source)));
   // blankCLeadingAttrMacros runs AFTER the api-prefix blank so a stacked
   // `FMT_NORETURN FMT_API void f(…)` reduces to the `MACRO Ret name(` shape
   // it matches (the _API token is already spaces by then). The C++ leading
@@ -2435,7 +2482,7 @@ export function blankCDesignatedMacroArgs(source: string): string {
 
 function preParseCSource(source: string): string {
   const rawStrings = maskCppRawStrings(source);
-  source = rawStrings.source;
+  source = rewriteFoundationEnumMacros(rawStrings.source);
   const inner = blankCDesignatedMacroArgs(blankCKernelAnnotations(blankCCplusplusGuardBodies(source)));
   let blanked = blankCLeadingAttrMacros(
     blankLoneMacroLines(

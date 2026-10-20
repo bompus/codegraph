@@ -551,6 +551,7 @@ if super::lang_scope::is_dart_member_read(r) {
         }
         if (r.reference_kind == "references" || r.reference_kind == "function_ref")
             && !same_language_family(tgt, &r.language)
+            && !self.objc_header_global_ref(&cand.node, r)
         {
             return None;
         }

@@ -222,7 +222,14 @@ impl KernelResolver {
             }
         }
         let dir = &file[..file.rfind('/').map_or(0, |i| i + 1)];
-        let beside: Vec<String> = found.iter().filter(|h| &h[..h.rfind('/').map_or(0, |i| i + 1)] == dir).cloned().collect();
+        let mut beside: Vec<String> = found.iter().filter(|h| &h[..h.rfind('/').map_or(0, |i| i + 1)] == dir).cloned().collect();
+        if beside.is_empty() {
+            // The adjacent header can be reached through another header with the same stem.
+            let visible = self.namespace_visible_files(file, "cpp")?;
+            beside = visible.into_iter().filter(|h| h != file && file_stem(h) == stem
+                && &h[..h.rfind('/').map_or(0, |i| i + 1)] == dir).collect();
+            beside.sort();
+        }
         let headers = Rc::new(if beside.is_empty() { found } else { beside });
         self.cpp_units.stem_headers.insert(file.to_string(), headers.clone());
         Ok(headers)

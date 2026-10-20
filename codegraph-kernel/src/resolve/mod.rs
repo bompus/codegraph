@@ -573,6 +573,7 @@ mod vbnet;
 mod receivers;
 mod bound;
 mod fields;
+mod rust_impls;
 mod ts_known;
 mod go_asserted;
 mod method_call;

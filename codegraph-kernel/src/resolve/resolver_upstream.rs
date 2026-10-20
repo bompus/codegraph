@@ -144,8 +144,8 @@ fn name_then(line: &str, name: &str, close_paren: bool, next: &[char], at_end: b
 /// the items of the project's own crates, and the first segment of every path binding each of those.
 #[derive(Clone, Default)]
 pub(super) struct RustUseFacts {
-    external: HashSet<String>,
-    bound: HashSet<String>,
+    pub(super) external: HashSet<String>,
+    pub(super) bound: HashSet<String>,
     bound_from: HashMap<String, HashSet<String>>,
 }
 
@@ -661,38 +661,9 @@ impl KernelResolver {
             .filter(|s| s.starts_with(|c: char| c.is_ascii_uppercase())))
     }
 
-    /// Additional scope evidence for Rust paths and imported leaves; None
-    /// leaves the existing prelude and glob rules in charge.
-    pub(super) fn rust_upstream_name_visible(
-        &mut self,
-        n: &KNode,
-        r: &ResolveRefIn,
-    ) -> Option<bool> {
-        if r.language != "rust" {
-            return None;
-        }
-        let lines = self.read_file(&r.file_path)?;
-        let line = lines.get((r.line - 1).max(0) as usize)?;
-        let name = r
-            .reference_name
-            .rsplit("::")
-            .next()
-            .unwrap_or(&r.reference_name);
-        let at = super::names::js_unit_to_byte(line, r.column.max(0) as usize).min(line.len());
-        let path_re = Self::cached_regex(&format!(
-            r"((?:[A-Za-z_]\w*\s*::\s*)+){name}\b",
-            name = regex::escape(name)
-        ))
-        .ok()?;
-        let via_self = r.reference_kind == "references" && name != "Self" && re!(r"^Self\s*::").is_match(&line[at..]);
-        let path = if via_self { None } else if line[at..].starts_with(name) {
-            re!(r"((?:[A-Za-z_]\w*\s*::\s*)+)$")
-                .captures(&line[..at])
-                .map(|m| m[1].to_string())
-        } else {
-            path_re.captures(line).map(|m| m[1].to_string())
-        };
-        let RustUseFacts { external, bound, bound_from } = if let Some(hit) = self.upstream_rust_uses.get(&r.file_path) {
+    pub(super) fn rust_use_facts(&mut self, file: &str) -> Option<RustUseFacts> {
+        let lines = self.read_file(file)?;
+        Some(if let Some(hit) = self.upstream_rust_uses.get(file) {
             hit.clone()
         } else {
             let mut external = HashSet::new();
@@ -754,9 +725,43 @@ impl KernelResolver {
                 }
             }
             let facts = RustUseFacts { external, bound, bound_from };
-            self.upstream_rust_uses.insert(r.file_path.clone(), facts.clone());
+            self.upstream_rust_uses.insert(file.to_string(), facts.clone());
             facts
+        })
+    }
+
+    /// Additional scope evidence for Rust paths and imported leaves; None
+    /// leaves the existing prelude and glob rules in charge.
+    pub(super) fn rust_upstream_name_visible(
+        &mut self,
+        n: &KNode,
+        r: &ResolveRefIn,
+    ) -> Option<bool> {
+        if r.language != "rust" {
+            return None;
+        }
+        let lines = self.read_file(&r.file_path)?;
+        let line = lines.get((r.line - 1).max(0) as usize)?;
+        let name = r
+            .reference_name
+            .rsplit("::")
+            .next()
+            .unwrap_or(&r.reference_name);
+        let at = super::names::js_unit_to_byte(line, r.column.max(0) as usize).min(line.len());
+        let path_re = Self::cached_regex(&format!(
+            r"((?:[A-Za-z_]\w*\s*::\s*)+){name}\b",
+            name = regex::escape(name)
+        ))
+        .ok()?;
+        let via_self = r.reference_kind == "references" && name != "Self" && re!(r"^Self\s*::").is_match(&line[at..]);
+        let path = if via_self { None } else if line[at..].starts_with(name) {
+            re!(r"((?:[A-Za-z_]\w*\s*::\s*)+)$")
+                .captures(&line[..at])
+                .map(|m| m[1].to_string())
+        } else {
+            path_re.captures(line).map(|m| m[1].to_string())
         };
+        let RustUseFacts { external, bound, bound_from } = self.rust_use_facts(&r.file_path)?;
         if let Some(path) = path {
             let segments: Vec<_> = path
                 .split("::")

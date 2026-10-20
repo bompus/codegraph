@@ -620,6 +620,9 @@ impl KernelResolver {
         // Rust `Self::item` — associated-item path binding `Self` to the
         // caller's impl owner. Before the `!matched` bail so deeper paths
         // (`Self::Assoc::m`) reach it; a miss falls through like TS.
+        if let Some(result) = self.rust_simple_self_call(r)? {
+            return Ok(McShape::Done(result));
+        }
         if let Some(c) = self.match_rust_self_path(r)? {
             return Ok(McShape::Done(Some(c)));
         }

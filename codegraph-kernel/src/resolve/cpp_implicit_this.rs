@@ -464,6 +464,20 @@ impl KernelResolver {
     fn cpp_local_name(&mut self, name: &str, caller: &KNode, r: &ResolveRefIn, callable: bool) -> Res<bool> {
         if caller.file_path != r.file_path || class_kind(&caller.kind) { return Ok(false); }
         let Some(source) = self.read_file(&r.file_path) else { return Ok(false) };
+        if let Some(tree) = self.parsed_tree(&source, r) {
+            let mut at = super::iteration::descendant_for_position(tree.root_node(), source.text(),
+                ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
+            while let Some(parent) = at.parent() {
+                if let Some(ty) = super::cpp_receivers::cpp_binding_type(parent, at, name, &source) {
+                    if (!callable || !ty.contains('*')) && self.normalize_cpp_type_name(&ty, false)?.is_some() {
+                        return Ok(true);
+                    }
+                    break;
+                }
+                if parent.kind() == "function_definition" { break; }
+                at = parent;
+            }
+        }
         let lines = source.cpp_code_lines();
         let escaped = regex::escape(name);
         let word = shared_regex(&format!(r"(?-u:\b){escaped}(?-u:\b)"))?;
