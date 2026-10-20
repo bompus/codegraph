@@ -17,7 +17,7 @@ use super::receivers::cpp_last_segment;
 use super::*;
 
 #[derive(Clone, Copy, PartialEq)]
-enum Receiver {
+pub(super) enum Receiver {
     Bare,
     This,
 }
@@ -163,7 +163,7 @@ impl KernelResolver {
     /// bare, on `this->` / `(*this).`, or neither. The extractor also drops receivers it can't
     /// spell (`arr_[0].Foo()`, `(p_)->Foo()`, `this->p_->Foo()`), whose calls are no member of the
     /// caller's class; and a name its argument list doesn't follow is no call of it.
-    fn cpp_implicit_receiver(&mut self, r: &ResolveRefIn) -> Option<Receiver> {
+    pub(super) fn cpp_implicit_receiver(&mut self, r: &ResolveRefIn) -> Option<Receiver> {
         let source = self.read_file(&r.file_path)?;
         let line = source.get((r.line - 1).max(0) as usize)?.as_str();
         let name = r.reference_name.as_str();

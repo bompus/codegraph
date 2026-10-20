@@ -835,13 +835,8 @@ if inferred.is_none() && r.language == "dart" {
 
         // Strategy 1 — under requireReceiverEvidence the first candidate
         // passing the binding filter returns matchBoundTypeMember(receiver).
-        let class_candidates = prefer_call_site_file(
-            self.nodes_by_name(&object_or_class)?
-                .iter()
-                .cloned()
-                .collect(),
-            &r.file_path,
-        );
+        let owners = self.cpp_translation_unit_owners(self.nodes_by_name(&object_or_class)?.iter().cloned().collect(), r)?;
+        let class_candidates = prefer_call_site_file(owners, &r.file_path);
         for c in &class_candidates {
             if let Some(b) = &binding {
                 if b.node_id.as_deref() != Some(c.id.as_str()) {
@@ -1245,7 +1240,7 @@ if inferred.is_none() && r.language == "dart" {
                 let receiver_words = split_camel_case(super::call_shape::receiver_link(&object_or_class));
                 // Same-file candidates first, so a score tie resolves to the
                 // call site's own file (`score > bestScore` keeps first seen).
-                let ordered = prefer_call_site_file(target.clone(), &r.file_path);
+                let ordered = prefer_call_site_file(self.within_cpp_translation_unit(target.clone(), r, false)?, &r.file_path);
                 let mut best: Option<Arc<KNode>> = None;
                 let mut best_score = 0i64;
                 let mut tied = Vec::new();
@@ -1390,7 +1385,8 @@ if inferred.is_none() && r.language == "dart" {
         confidence: f64,
         resolved_by: &'static str,
     ) -> Res<Option<KCand>> {
-        let candidates = prefer_call_site_file(self.nodes_by_name(class_name)?.iter().cloned().collect(), &r.file_path);
+        let owners = self.cpp_translation_unit_owners(self.nodes_by_name(class_name)?.iter().cloned().collect(), r)?;
+        let candidates = prefer_call_site_file(owners, &r.file_path);
         let candidates = if r.language == "vbnet" { self.vb_prefer(candidates, r) } else { candidates };
         let type_ref=r.clone().naming(class_name,"references");
         let mut visible=Vec::new();for c in candidates {if self.language_type_visible(&c,&type_ref)? {visible.push(c);}}

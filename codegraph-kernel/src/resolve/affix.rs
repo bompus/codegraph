@@ -2,11 +2,25 @@
 
 use super::*;
 
+/// TYPE_ARGS (name-matcher.ts) for Swift: a constructor's optional type
+/// arguments (two levels of nesting) and array brackets.
+const SWIFT_TYPE_ARGS: &str = r"(?:<[^;=(){}<>]*(?:<[^;=(){}<>]*>[^;=(){}<>]*)*>)?\s*(?:\[[\s,]*\]\s*)*";
+
+/// SWIFT_UNCHAINED_CALL's closed arm (name-matcher.ts): an argument list that
+/// closes on the line, two levels of nested parentheses deep.
+pub(super) fn swift_closed_call_re() -> Rc<Regex> {
+    re!(r"^\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)")
+}
+/// A member taken of a call's result: `.write`, `?.write`.
+pub(super) fn swift_member_tail_re() -> Rc<Regex> {
+    re!(r"^\s*\??\.")
+}
+
 /// buildLocalReceiverTypePatterns for the migrated set (name-matcher.ts).
 /// Each entry is (pattern, guard): guard 1 reproduces the TS annotation
 /// pattern's `(?![\w.$]|\s*(?:<[^>]*>)?\s*[\[|&])` lookahead in
 /// infer_match_line, guard 2 the lua annotation pattern's
-/// `(?![\w.]|\s*[({"'\[])`, guard 3 the objc declarator's `(?!\s*\()`, guard 5 the TS inject/createInstance `(?![^;]*\)\s*(?:\?\.|\.|\[))`;
+/// `(?![\w.]|\s*[({"'\[])`, guard 3 the objc declarator's `(?!\s*\()`, guard 5 the TS inject/createInstance `(?![^;]*\)\s*(?:\?\.|\.|\[))`, guard 6 SWIFT_UNCHAINED_CALL (a Swift constructor call no member follows);
 /// the go param-type lookahead `(?=\s*[,)]|\s*$)` is folded into its
 /// pattern as a consuming suffix (equivalent — the capture cannot absorb
 /// `[,)]`/EOL, and shrinking it can never satisfy the suffix either). Languages outside the switch (cpp, pascal, cfml — the latter two
@@ -344,7 +358,23 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
     m.insert(
         "swift",
         vec![
-            both(r"\s*=\s*(_*[A-Z][A-Za-z0-9_.]*)\s*\(", b"=", 0),
+            // `let lg = Logger(…)`, also with type arguments: `let p = Pool<String>(…)`.
+            both(&format!(r"\s*=\s*(_*[A-Z][A-Za-z0-9_.]*)\s*{SWIFT_TYPE_ARGS}\("), b"=", 0),
+            // ...and through `try` / `try!` / `try?` / `await` when it declares
+            // the local: `let storage = try! DiskStorage.Backend<String>(…)`. Not
+            // in a bare assignment — `channel = try ServerBootstrap(…)` goes on
+            // into `.bind(…).wait()` on the lines below, a value of another type,
+            // and must not hide what `var channel: Channel?` declared — nor when
+            // a member follows the call (guard 6): `try! Realm().write { … }` is
+            // a value of what `write` returns.
+            rp(
+                r"(?-u:\b)(?:let|var)\s+",
+                &format!(r"\s*=\s*(?:try[!?]\s*|(?:try|await)\s+)+([A-Z][A-Za-z0-9_.]*)\s*{SWIFT_TYPE_ARGS}"),
+                false,
+                true,
+                false,
+                6,
+            ),
             both(r"\s*:\s*([A-Z][A-Za-z0-9_.]*)", b":", 0),
         ],
     );

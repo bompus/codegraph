@@ -1309,6 +1309,7 @@ Ok(self.dart_member_of(type_name, method, r, false)?
         let matches = self.cpp_specialization_pool(matches, r);
         if matches.is_empty() { return Ok(None); }
         let matches = self.cpp_visible_first(matches, r)?;
+        let matches = self.within_cpp_translation_unit(matches, r, false)?;
         // A C++ call on a typed receiver takes the overload its arguments fit, not the first one
         // declared (a chained call `inner(…).name(…)` keeps the first: the arguments at its
         // position are the inner call's).

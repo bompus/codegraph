@@ -10,6 +10,7 @@
 //! directly or through others (a test that includes the source it tests), and by a header it
 //! includes below the declaration (rocksdb's version_set.cc includes version_set_sync_and_async.h
 //! after its `FilePicker` classes).
+use super::cpp_implicit_this::Receiver;
 use super::tables::c_source_ext_re;
 use super::*;
 
@@ -20,6 +21,18 @@ fn cpp_type_kind(kind: &str) -> bool {
 
 fn cpp_class_kind(kind: &str) -> bool {
     matches!(kind, "class" | "struct" | "union")
+}
+
+/// What `within_cpp_translation_unit` remembers per run: a file's same-stem headers.
+#[derive(Default)]
+pub(super) struct UnitMemo {
+    stem_headers: HashMap<String, Rc<Vec<String>>>,
+}
+
+/// A file's name without its last extension (`dir/conformance_test.cc` → `conformance_test`).
+fn file_stem(path: &str) -> &str {
+    let name = &path[path.rfind('/').map_or(0, |i| i + 1)..];
+    match name.rfind('.') { Some(dot) if dot > 0 => &name[..dot], _ => name }
 }
 
 /// A position in a file: its line (1-based) and its column (UTF-16 units from the line's start, 0-based).
@@ -189,6 +202,142 @@ impl KernelResolver {
             if innermost.as_ref().is_none_or(|i| cls.start_line >= i.start_line) { innermost = Some(cls.clone()); }
         }
         Ok(innermost)
+    }
+
+    /// The headers a C or C++ file includes under its own name (`conformance_test.cc` →
+    /// `conformance_test.h`): the declarations its definitions implement. One beside it, when it
+    /// includes one, is the only such header: protobuf's pyext/message.cc implements
+    /// pyext/message.h, not the google/protobuf/message.h it also includes; fmt's src/format.cc,
+    /// with none beside it, implements include/fmt/format.h. (cppSameStemHeaders)
+    fn cpp_same_stem_headers(&mut self, file: &str) -> Res<Rc<Vec<String>>> {
+        if let Some(hit) = self.cpp_units.stem_headers.get(file) { return Ok(hit.clone()); }
+        let stem = file_stem(file);
+        let includes: Vec<_> = self.nodes_in_file(file)?.iter()
+            .filter(|n| n.kind == "import" && file_stem(&n.name) == stem && matches!(n.language.as_str(), "c" | "cpp")).cloned().collect();
+        let mut found: Vec<String> = Vec::new();
+        for node in includes {
+            let delimiter = if node.signature.as_deref().is_some_and(|s| s.contains('<')) { '<' } else { '"' };
+            if let Some(header) = self.resolve_cpp_include(file, delimiter, &node.name, &node.language)? {
+                if header != file && file_stem(&header) == stem { found.push(header); }
+            }
+        }
+        let dir = &file[..file.rfind('/').map_or(0, |i| i + 1)];
+        let beside: Vec<String> = found.iter().filter(|h| &h[..h.rfind('/').map_or(0, |i| i + 1)] == dir).cloned().collect();
+        let headers = Rc::new(if beside.is_empty() { found } else { beside });
+        self.cpp_units.stem_headers.insert(file.to_string(), headers.clone());
+        Ok(headers)
+    }
+
+    /// Whether a C or C++ definition is in `r`'s translation unit, as its includes show it: in the
+    /// reference's own file, in a file the reference's file includes, directly or through other
+    /// includes, or in the source file that implements such a header — the one named like it that
+    /// includes it (`googletest.cc` for `googletest.h`) — unless the source keeps it to itself (a
+    /// `static`, or what `cpp_translation_unit_local` finds). A test suite's source implements
+    /// only a test suite's header. (isInCppTranslationUnit)
+    fn is_in_cpp_translation_unit(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        if candidate.file_path == r.file_path { return Ok(true); }
+        if !matches!(candidate.language.as_str(), "c" | "cpp") { return Ok(false); }
+        let visible = self.namespace_visible_files(&r.file_path, &r.language)?;
+        if visible.contains(&candidate.file_path) { return Ok(true); }
+        if !c_source_ext_re().is_match(&candidate.file_path) || self.cpp_translation_unit_local(candidate, r)?
+            || (matches!(candidate.kind.as_str(), "function" | "variable" | "constant") && self.is_static_c_function(candidate)?) { return Ok(false); }
+        let suite = super::resolver_upstream::test_suite_path(&candidate.file_path);
+        // (The header may be the reference's own: json.h's inline overloads call the ones json.cc defines.)
+        for header in self.cpp_same_stem_headers(&candidate.file_path)?.iter() {
+            if (!suite || super::resolver_upstream::test_suite_path(header)) && (*header == r.file_path || visible.contains(header)) { return Ok(true); }
+        }
+        Ok(false)
+    }
+
+    /// What a C or C++ name written alone can mean outside a class, by its kind: a call reaches a
+    /// function, or a type and its constructor (`Foo(…)`); a construction makes a type; any other
+    /// reference names anything but a member. Nothing a class declares is in reach — its methods,
+    /// its nested types, their constructors: only an object, a qualified name or the class's own
+    /// code reaches them. (isCppNameAloneTarget)
+    fn is_cpp_name_alone_target(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        let constructor = n.kind == "method" && n.qualified_name.ends_with(&format!("{0}::{0}", n.name));
+        let fits = match r.reference_kind.as_str() {
+            "calls" => n.kind == "function" || constructor || cpp_type_kind(&n.kind),
+            "instantiates" => constructor || cpp_type_kind(&n.kind),
+            _ => constructor || !matches!(n.kind.as_str(), "method" | "field" | "property"),
+        };
+        if !fits { return Ok(false); }
+        let parent = |qualified: &str| qualified.rfind("::").map_or("", |cut| &qualified[..cut]).to_string();
+        let scope = parent(&if constructor { parent(&n.qualified_name) } else { n.qualified_name.clone() });
+        Ok(scope.is_empty() || self.cpp_class_decls(&scope)?.is_empty())
+    }
+
+    /// Whether as many arguments as `args` can fill the parameters of the function `n`, its
+    /// defaults and a pack counted; None when `n` is no function or its parameters can't be read.
+    fn cpp_argument_count_fits(&mut self, n: &KNode, args: &[String], r: &ResolveRefIn) -> Option<bool> {
+        if !matches!(n.kind.as_str(), "function" | "method") { return None; }
+        self.declaration_arity(n, r).map(|(min, max)| args.len() >= min && args.len() <= max)
+    }
+
+    /// Same-named candidates for a C or C++ reference, narrowed to the ones its translation unit
+    /// declares, when there are any: the name a file uses is one its includes declare. protobuf's
+    /// csharp generator tests call the `TestSourceDir()` googletest.h declares, not
+    /// test_util2.h's `TestUtil::TestSourceDir`, a test suite none of them includes; its Python
+    /// and Ruby extensions and upb's own code call `upb_Encode()` in upb/wire/encode.c, not the
+    /// copy php-upb.c bundles. For a name the reference writes alone (`by_name`), only what the
+    /// name alone can mean counts, and a call the extractor recorded without the receiver it is
+    /// written on (`columns()[0].value()`) is left to the name strategies. When the unit declares
+    /// none of them — a file whose includes don't resolve — the candidates stay as they are. Not
+    /// for an `#include`, which names a file. (withinCppTranslationUnit)
+    pub(super) fn within_cpp_translation_unit(&mut self, candidates: Vec<Arc<KNode>>, r: &ResolveRefIn, by_name: bool) -> Res<Vec<Arc<KNode>>> {
+        if candidates.len() < 2 || !matches!(r.language.as_str(), "c" | "cpp") || r.reference_kind == "imports" { return Ok(candidates); }
+        let calls = r.reference_kind == "calls";
+        if by_name && calls && self.cpp_implicit_receiver(r) != Some(Receiver::Bare) { return Ok(candidates); }
+        // A "call" outside any function is a macro, or a declaration read as a call
+        // (rocksdb's c.h `extern … rocksdb_t*` above `rocksdb_open(…);`): no call.
+        if calls && self.node_by_id(&r.from_node_id)?.is_some_and(|n| n.kind == "file") { return Ok(candidates); }
+        let mut within: Vec<Arc<KNode>> = Vec::new();
+        for n in &candidates {
+            if self.is_in_cpp_translation_unit(n, r)? && (!by_name || n.file_path == r.file_path || self.is_cpp_name_alone_target(n, r)?) { within.push(n.clone()); }
+        }
+        if within.is_empty() || within.len() == candidates.len() { return Ok(candidates); }
+        let outside: Vec<Arc<KNode>> = candidates.iter().filter(|n| !within.iter().any(|w| w.id == n.id)).cloned().collect();
+        // Nor, for a C call, to definitions only a flag nothing sets compiles, past one the build
+        // without it does (lua-cjson's fpconv.h defines `fpconv_init` under `#ifdef
+        // USE_INTERNAL_FPCONV`; redis's build calls fpconv.c's).
+        if r.language == "c" && calls && !self.is_off_by_default(&r.file_path, r.line) {
+            let mut every_variant = true;
+            for n in &within {
+                if !self.is_c_feature_variant(n, r) { every_variant = false; break; }
+            }
+            if every_variant {
+                for n in &outside {
+                    if n.kind == "function" && !self.is_static_c_function(n)? && !self.is_c_feature_variant(n, r) { return Ok(candidates); }
+                }
+            }
+        }
+        // Nor to functions too few or too many arguments for the call, past one that takes them:
+        // glog's `GetStackTrace(stack, ARRAYSIZE(stack), 1)` is the one stacktrace.h declares,
+        // which the stacktrace_*-inl.h headers its stacktrace.cc includes define, not
+        // utilities.h's `GetStackTrace()`.
+        if calls {
+            let name = within[0].name.clone();
+            if let Some(args) = self.call_arguments(r, &name) {
+                let mut none_fit = true;
+                for n in &within {
+                    if self.cpp_argument_count_fits(n, &args, r) != Some(false) { none_fit = false; break; }
+                }
+                if none_fit {
+                    for n in &outside {
+                        if self.cpp_argument_count_fits(n, &args, r) == Some(true) { return Ok(candidates); }
+                    }
+                }
+            }
+        }
+        Ok(within)
+    }
+
+    /// The class-like candidates of a receiver's name, for a C or C++ reference narrowed to its
+    /// translation unit's (the class-name and capitalized-receiver strategies; isMethodOwnerKind).
+    pub(super) fn cpp_translation_unit_owners(&mut self, named: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
+        if !matches!(r.language.as_str(), "c" | "cpp") { return Ok(named); }
+        let owners = named.into_iter().filter(|n| matches!(n.kind.as_str(), "class" | "struct" | "union" | "interface")).collect();
+        self.within_cpp_translation_unit(owners, r, false)
     }
 
     /// Of the methods a C or C++ type's name gives, those `r`'s translation unit can see, when

@@ -254,6 +254,13 @@ impl KernelResolver {
                 .find(|i| i.local_name == r.reference_name)
                 .map(|i| i.source.clone())
         };
+        // A barrel's `export { name } from 'pkg'` binds no name here, but its
+        // `imports` reference names the package's export.
+        let source = match source {
+            Some(source) => Some(source),
+            None if r.reference_kind == "imports" => self.re_export_source(&r.reference_name, r)?,
+            None => None,
+        };
         let Some(source) = source else { return local };
         if source.starts_with('.') || source.starts_with('/') {
             return local;
