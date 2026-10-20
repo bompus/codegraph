@@ -760,6 +760,14 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - In this fork, the three Swift changes above run in the native Swift walker and resolver, which are the only Swift readers here. The Swift grammar with upstream's `try!` scanner fix is built into the native engine the same way.
 
+- In Objective-C, a macro written alone on its line, like `NS_ASSUME_NONNULL_BEGIN`, `OF_SUBCLASSING_RESTRICTED` or React Native's `RCT_EXTERN_C_BEGIN`, no longer hides the declaration below it. Before, the parser read such a macro as the start of a declaration, so an `@interface` under it could come out as a function and a `typedef` under it as two variables: many of ObjFW's classes, with their properties and methods and the classes they extend and protocols they adopt, were missing, and so were classes and protocols in React Native and KSCrash headers. A message to `super` from a class whose `@interface` follows an attribute macro like `NS_SWIFT_NAME(…)` still reaches the superclass. Re-index Objective-C projects after upgrading.
+
+- In this fork, the Objective-C change above blanks the macro in the extraction step before the native parser reads the file, and a message to `super` reads the superclass from the class's `@interface` line wherever in the file it sits.
+
+- In Rust, a type alias, struct, enum or function declared without `pub` now links only from its own module and the modules inside it, and a name a `use` brings in from one of your workspace's crates, like `use tokio_test::task::spawn` or `use crate::error::Error`, links only to an item of that crate or of a crate it depends on. Before, a file's `use crate::Result` could link its `Result<…>` types to another module's private `type Result`, as in dioxus's CLI, and a call to an imported function could link to another crate's function of the same name, such as tokio's test `spawn(…)` calls to one in its examples, or to nothing because a private function of that name was in the way. Re-index Rust projects after upgrading.
+
+- In this fork, the two Rust changes above run in the native resolver, and the native Rust walker records a type alias's visibility. The project's crates are the ones with a `Cargo.toml` above an indexed `.rs` file and the path dependencies those name; upstream reads the root package, the workspace's members and their path dependencies, which is the same set for a workspace of the usual shape. The dependency names the resolver tells from the project's own crates now come from every one of those manifests, not only the root's.
+
 #### MCP / indexing
 
 - Full indexes of large projects no longer sometimes run two to three times slower than usual. A timing clash between two background database maintenance steps could switch reference resolution from several threads to one partway through.
