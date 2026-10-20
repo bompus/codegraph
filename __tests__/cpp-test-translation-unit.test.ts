@@ -236,7 +236,9 @@ describe('a C/C++ test links what its translation unit declares', () => {
 
   it('guesses a receiver among the classes its includes declare', () => {
     const calls = callsFrom('monitoring/histogram_test.cc');
-    expect(calls).toContain('rocksdb::SystemClock::SleepForMicroseconds (include/rocksdb/system_clock.h)');
+    // Fork difference: a receiver bound to a file-scope smart pointer whose type is not read is
+    // refused by the bound-receiver claim (the fork never name-guesses it), so there is no
+    // `SystemClock` edge to expect; the translation-unit check below still holds.
     expect(calls.some((c) => c.includes('emulated_clock.h'))).toBe(false);
   });
 

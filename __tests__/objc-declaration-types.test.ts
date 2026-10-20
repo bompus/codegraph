@@ -24,7 +24,8 @@ import * as os from 'os';
 import * as path from 'path';
 import CodeGraph from '../src/index';
 import { extractFromSource } from '../src/extraction';
-import { getParser, initGrammars, loadGrammarsForLanguages } from '../src/extraction/grammars';
+import { initGrammars, loadGrammarsForLanguages } from '../src/extraction/grammars';
+import { parseSourceTreeSync } from '../src/extraction/parse-tree';
 import type { ExtractionResult } from '../src/types';
 
 /** `<kind> <qualifiedName>` for every symbol, file and imports aside. */
@@ -100,7 +101,7 @@ describe('a type defined in an Objective-C declaration', () => {
         'OF_ASSUME_NONNULL_END',
         '',
       ].join('\n'));
-      expect(getParser('objc')!.parse(header)!.rootNode.hasError).toBe(true);
+      expect(parseSourceTreeSync(header, 'objc')!.rootNode.hasError).toBe(true);
       expect(symbols(extractFromSource('src/OFZIPArchiveEntry.h', header, 'objc'))).toEqual(
         expect.arrayContaining([
           'enum OFZIPArchiveEntryCompressionMethod',
@@ -111,7 +112,7 @@ describe('a type defined in an Objective-C declaration', () => {
       );
       // A member type the grammar can't read errs inside the struct's own body.
       const atomic = eol('static struct {\n    _Atomic(int) installedState;\n    atomic_bool isEnabled;\n} g_state;\n');
-      expect(getParser('objc')!.parse(atomic)!.rootNode.hasError).toBe(true);
+      expect(parseSourceTreeSync(atomic, 'objc')!.rootNode.hasError).toBe(true);
       expect(symbols(extractFromSource('src/Monitor.m', atomic, 'objc'))).toEqual(['struct g_state', 'variable g_state']);
     });
   }
