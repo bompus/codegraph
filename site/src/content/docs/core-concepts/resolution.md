@@ -36,3 +36,7 @@ Kotlin chains use the callee position and declared return type, including nested
 Kotlin receiver inference follows bounded chains of declared returns and verified receiver-preserving methods. Properties initialized by typed factory calls retain compatible imported extensions. Explicit casts, single-type `when` branches, filtered collection elements and bound generic factory arguments also supply receiver types.
 
 Rust chains follow declared method returns and field types. Matches without a proved receiver type keep confidence at most 0.7.
+
+Rust `Self::` calls use the enclosing type and prefer its inherent method. Calls into project trait implementations on standard-library types need evidence from the argument type or an in-scope project trait.
+
+C++ declarations give each listed variable its shared type, including callable locals. A source definition can implement its adjacent same-name header through transitive includes. Objective-C globals defined in source files stay local; other files reach them through header declarations.

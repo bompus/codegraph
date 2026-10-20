@@ -117,7 +117,7 @@ impl KernelResolver {
         let mut seen=HashSet::new();let mut pending=vec![file.to_string()];
         while let Some(file)=pending.pop() {
             if !seen.insert(file.clone()) {continue;}
-            for node in self.nodes_in_file(&file)?.iter().filter(|n| n.kind == "import" && matches!(n.language.as_str(), "c" | "cpp")) {
+            for node in self.nodes_in_file(&file)?.iter().filter(|n| n.kind == "import" && matches!(n.language.as_str(), "c" | "cpp" | "objc")) {
                 let delimiter = if node.signature.as_deref().is_some_and(|s| s.contains('<')) { '<' } else { '"' };
                 if let Some(target)=self.resolve_cpp_include(&file,delimiter,&node.name,language)? {pending.push(target);}
             }

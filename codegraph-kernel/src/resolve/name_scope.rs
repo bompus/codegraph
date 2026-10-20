@@ -172,7 +172,7 @@ fn js_dir(p: &str) -> &str {
 
 /// Does one of the file's globs bring in this candidate's module (or, for
 /// `use super::*`, its parent's)?
-fn rust_glob_covers(uses: &RustScopeUses, candidate: &KNode, r: &ResolveRefIn) -> bool {
+pub(super) fn rust_glob_covers(uses: &RustScopeUses, candidate: &KNode, r: &ResolveRefIn) -> bool {
     if uses.globs.contains(rust_module_name(&candidate.file_path)) {
         return true;
     }

@@ -859,15 +859,6 @@ pub(super) fn bare_alias_re() -> Rc<Regex> {
     re!(r"^=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:as\s+[A-Za-z0-9_.<>\[\]]+\s*)?;?$")
 }
 
-pub(super) fn impl_re() -> Rc<Regex> {
-    re!(r"^\s*(pub(\([^)]*\))?\s+)?(unsafe\s+)?impl(?-u:\b)")
-}
-pub(super) fn impl_for_re() -> Rc<Regex> {
-    re!(r"\sfor\s")
-}
-pub(super) fn item_re() -> Rc<Regex> {
-    re!(r"^(pub(\([^)]*\))?\s+)?(fn|struct|enum|mod|trait|const|static|type)(?-u:\b)")
-}
 pub(super) fn js_call_prefix_re() -> Rc<Regex> {
     re!(r"[.A-Za-z0-9_$\]\)]\s*$")
 }

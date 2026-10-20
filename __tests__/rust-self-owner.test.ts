@@ -23,46 +23,46 @@ function targets(file: string) {
   });
 }
 
-it('does not borrow a missing method from a same-named type in another module (#1861)', async () => {
+it.each(['self.reset()', 'Self::reset()'])('does not borrow a missing method from a same-named type in another module (#1861) (%s)', async (call) => {
   await index({
     'lib.rs': 'pub mod caller; pub mod decoy;',
-    'caller.rs': 'pub struct Target;\nimpl Target { pub fn run(&self) { self.reset(); } }',
+    'caller.rs': 'pub struct Target;\nimpl Target { pub fn run(&self) { self.reset(); } }'.replaceAll('self.reset()', call),
     'decoy.rs': 'pub struct Target;\nimpl Target { pub fn reset(&self) {} }',
   });
   expect(targets('caller.rs')).toEqual([]);
 });
 
-it('keeps a proven local owner despite a same-named type and method in another module (#1861)', async () => {
+it.each(['self.reset()', 'Self::reset()'])('keeps a proven local owner despite a same-named type and method in another module (#1861) (%s)', async (call) => {
   await index({
     'lib.rs': 'pub mod caller; pub mod decoy;',
-    'caller.rs': 'pub struct Target;\nimpl Target { pub fn reset(&self) {} }\nimpl Target { pub fn run(&self) { self.reset(); } }',
+    'caller.rs': 'pub struct Target;\nimpl Target { pub fn reset(&self) {} }\nimpl Target { pub fn run(&self) { self.reset(); } }'.replaceAll('self.reset()', call),
     'decoy.rs': 'pub struct Target;\nimpl Target { pub fn reset(&self) {} }',
   });
   expect(targets('caller.rs')).toEqual(['src/caller.rs:Target::reset']);
-  fs.writeFileSync(path.join(root, 'src/caller.rs'), 'pub struct Target;\nimpl Target { pub fn run(&self) { self.reset(); } }');
+  fs.writeFileSync(path.join(root, 'src/caller.rs'), 'pub struct Target;\nimpl Target { pub fn run(&self) { self.reset(); } }'.replaceAll('self.reset()', call));
   await cg!.sync();
   expect(targets('caller.rs')).toEqual([]);
-  fs.writeFileSync(path.join(root, 'src/caller.rs'), 'pub struct Target;\nimpl Target { pub fn reset(&self) {} }\nimpl Target { pub fn run(&self) { self.reset(); } }');
+  fs.writeFileSync(path.join(root, 'src/caller.rs'), 'pub struct Target;\nimpl Target { pub fn reset(&self) {} }\nimpl Target { pub fn run(&self) { self.reset(); } }'.replaceAll('self.reset()', call));
   await cg!.sync();
   expect(targets('caller.rs')).toEqual(['src/caller.rs:Target::reset']);
 });
 
-it('keeps a unique owner whose impl is split across files (#1861)', async () => {
+it.each(['self.reset()', 'Self::reset()'])('keeps a unique owner whose impl is split across files (#1861) (%s)', async (call) => {
   await index({
     'lib.rs': 'pub mod caller;\npub struct Target;\nimpl Target { pub fn reset(&self) {} }',
-    'caller.rs': 'use crate::Target;\nimpl Target { pub fn run(&self) { self.reset(); } }',
+    'caller.rs': 'use crate::Target;\nimpl Target { pub fn run(&self) { self.reset(); } }'.replaceAll('self.reset()', call),
   });
   expect(targets('caller.rs')).toEqual(['src/lib.rs:Target::reset']);
 });
 
-it('declines indistinguishable inline-module owners instead of claiming one (#1861)', async () => {
+it.each(['self.reset()', 'Self::reset()'])('declines indistinguishable inline-module owners instead of claiming one (#1861) (%s)', async (call) => {
   await index({ 'lib.rs': `mod a {
     pub struct Target;
     impl Target { pub fn reset(&self) {} }
   }
   mod b {
     pub struct Target;
-    impl Target { pub fn run(&self) { self.reset(); } }
+    impl Target { pub fn run(&self) { ${call}; } }
   }` });
   expect(targets('lib.rs')).toEqual([]);
 });

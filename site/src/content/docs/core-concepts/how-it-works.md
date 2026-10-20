@@ -17,7 +17,7 @@ files → Extraction (tree-sitter) → DB (nodes/edges/files)
 
 ## 1. Extraction
 
-[tree-sitter](https://tree-sitter.github.io/) parses source into ASTs. Language-specific queries extract **nodes** (functions, classes, methods, types…) and **edges** (calls, imports, extends, implements). Heavy parsing runs off the main thread.
+[tree-sitter](https://tree-sitter.github.io/) parses source into ASTs. Language-specific queries extract **nodes** (functions, classes, methods, types…) and **edges** (calls, imports, extends, implements). Heavy parsing runs off the main thread. Objective-C extraction includes file-scope variables and constants, Foundation enum macros, and documentation attached to implementations.
 
 ## 2. Storage
 

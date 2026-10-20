@@ -740,7 +740,8 @@ impl KernelResolver {
     }
 
     pub(super) fn name_post_guard(&mut self, hit: &KCand, r: &ResolveRefIn) -> Res<bool> {
-        if self.is_import_binding_call_target(&hit.node, r)? {
+        if (r.language == "rust" && r.reference_kind == "calls" && !self.rust_foreign_impl_callable(&hit.node, r)?)
+            || self.is_import_binding_call_target(&hit.node, r)? {
             return Ok(false);
         }
         if self.java_outside_import(r)? || !self.language_type_visible(&hit.node, r)?

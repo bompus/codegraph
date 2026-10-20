@@ -852,7 +852,8 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // fn has no `Self` and the 3-seg associated-type path declines — both
     // fall through to the strats exactly like TS.
     seed(nodeId('again', 'sub.rs', 'method'), 'Self::new', 'src/sub.rs', 'rust', 'calls', 5);
-    seed(nodeId('make', 'sub.rs', 'method'), 'Self::On', 'src/sub.rs', 'rust', 'calls', 6);
+    const modeMake = cg!.getNode(nodeId('make', 'sub.rs', 'method'))!;
+    seed(modeMake.id, 'Self::On', 'src/sub.rs', 'rust', 'calls', modeMake.startLine);
     seed(nodeId('make', 'sub.rs', 'method'), 'Self::Assoc::new', 'src/sub.rs', 'rust', 'calls', 7);
     // `step` exists twice — the trait declaration `Step::step` and the impl
     // method `Mode::step`; the ref lives inside the impl, so select by QN.

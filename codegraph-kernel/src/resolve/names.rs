@@ -16,17 +16,32 @@ fn cpp_overload_set(nodes: &[Arc<KNode>]) -> bool {
     nodes.first().is_some_and(|first| nodes.iter().all(|n| n.kind == "function" && n.language == "cpp" && n.qualified_name == first.qualified_name))
 }
 
+fn objc_file_local_elsewhere(n: &KNode, r: &ResolveRefIn) -> bool {
+    n.language == "objc" && n.file_path != r.file_path
+        && matches!(n.kind.as_str(), "struct" | "union" | "enum" | "type_alias" | "variable" | "constant")
+        && c_source_ext_re().is_match(&n.file_path)
+}
+
 impl KernelResolver {
     // -----------------------------------------------------------------------
     // Name machinery (name-matcher.ts)
     // -----------------------------------------------------------------------
+
+    /// Objective-C imports C header globals, even when that header has no Objective-C syntax.
+    pub(super) fn objc_header_global_ref(&mut self, n: &KNode, r: &ResolveRefIn) -> bool {
+        r.language == "objc" && r.reference_kind == "references"
+            && matches!(n.language.as_str(), "c" | "cpp")
+            && matches!(n.kind.as_str(), "variable" | "constant") && n.is_exported
+            && re!(r"(?i)\.(?:h|hh|hpp|hxx)$").is_match(&n.file_path)
+            && self.namespace_visible_files(&r.file_path, "objc").is_ok_and(|files| files.contains(&n.file_path))
+    }
 
     /// applyLanguageGate (name-matcher.ts).
     pub(super) fn apply_language_gate(&mut self, candidates: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Vec<Arc<KNode>> {
         if r.reference_kind == "references" || r.reference_kind == "function_ref" {
             return candidates
                 .into_iter()
-                .filter(|c| same_language_family(&c.language, &r.language))
+                .filter(|c| same_language_family(&c.language, &r.language) || self.objc_header_global_ref(c, r))
                 .collect();
         }
         if r.reference_kind == "imports" {
@@ -249,23 +264,13 @@ impl KernelResolver {
         if let Some(&hit) = self.rust_trait_memo.get(&candidate.id) {
             return Ok(hit);
         }
-        let lines = self
-            .read_file(&candidate.file_path)
-            .unwrap_or_else(|| Rc::new(SourceFile::new(Vec::new())));
-        let mut is_trait = false;
-        let mut i = candidate.start_line.saturating_sub(2);
-        while i >= 0 {
-            let line = lines.get(i as usize).map(|s| s.as_str()).unwrap_or("");
-            if impl_re().is_match(line) {
-                let stripped = line.split("//").next().unwrap_or("");
-                is_trait = impl_for_re().is_match(stripped);
-                break;
-            }
-            if item_re().is_match(line) {
-                break;
-            }
-            i -= 1;
-        }
+        let site = ResolveRefIn {
+            row_id: None, from_node_id: candidate.id.clone(), reference_name: candidate.name.clone(),
+            reference_kind: "calls".to_string(), line: candidate.start_line,
+            column: candidate.start_column, candidates: None, file_path: candidate.file_path.clone(),
+            language: "rust".to_string(), failure_reason: None,
+        };
+        let is_trait = self.rust_self_context(&site).is_some_and(|cx| cx.trait_name.is_some());
         self.rust_trait_memo.insert(candidate.id.clone(), is_trait);
         Ok(is_trait)
     }
@@ -333,12 +338,8 @@ impl KernelResolver {
             // declare, with its members (cpp_translation_unit).
             return Ok(static_seen && !self.cpp_translation_unit_local(candidate, r)?);
         }
-        // An Objective-C source file is a translation unit too: a C type it
-        // defines is its own, as in C (a class is the runtime's, wherever it is
-        // written).
-        if lang == "objc"
-            && matches!(candidate.kind.as_str(), "struct" | "union" | "enum" | "type_alias")
-            && c_source_ext_re().is_match(&candidate.file_path)
+        // Objective-C source globals and C types stay local; headers expose their declarations.
+        if objc_file_local_elsewhere(candidate, r)
         {
             return Ok(false);
         }
@@ -681,6 +682,7 @@ impl KernelResolver {
                 && !named.iter().any(|n| n.file_path == r.file_path && cpp::is_define(n)));
         let all_named: Vec<Arc<KNode>> = named
             .iter()
+            .filter(|n| !objc_file_local_elsewhere(n, r))
             .filter(|n| !macro_named || matches!(n.kind.as_str(), "function" | "method"))
             .cloned()
             .collect();
@@ -965,6 +967,7 @@ impl KernelResolver {
         let mut callable: Vec<Arc<KNode>> = candidates
             .iter()
             .filter(|n| matches!(n.kind.as_str(), "function" | "method" | "class"))
+            .filter(|n| !objc_file_local_elsewhere(n, r))
             .filter(|n| !type_ref || can_name_in_type_position(n))
             // `new …MockData()` makes an instance of a type; a method is never what it names.
             .filter(|n| !(r.reference_kind == "instantiates" && n.kind == "method"))
