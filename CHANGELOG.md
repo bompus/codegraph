@@ -782,6 +782,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - In C++, every name a declaration lists now has the declaration's type, like `strings_found` in google/breakpad's `ByteBuffer symbols_found, strings_found;` or `data_` in a class's `Table *index_, *data_;`, so calls on it link to that class's methods. Before, only the first name had its type read, and a call on another name linked to nothing or to the class of an earlier variable with the same name.
 
+- In JavaScript and TypeScript, a call written as the body of an `if`, `while`, `for` or `do` without braces, like `if (e.key === "Escape") setOpen(false);`, no longer links to a same-named property or method in another file when the name is the file's own, such as a `setOpen` from `useState` (#2585).
+
 #### MCP / indexing
 
 - Full indexes of large projects no longer sometimes run two to three times slower than usual. A timing clash between two background database maintenance steps could switch reference resolution from several threads to one partway through.

@@ -863,7 +863,7 @@ pub(super) fn js_call_prefix_re() -> Rc<Regex> {
     re!(r"[.A-Za-z0-9_$\]\)]\s*$")
 }
 pub(super) fn js_call_keyword_re() -> Rc<Regex> {
-    re!(r"(?-u:\b)(?:return|await|yield|typeof|void|new|else|case|throw|in|of|instanceof|go|defer|if|for|switch|range)\s*$")
+    re!(r"(?-u:\b)(?:return|await|yield|typeof|void|new|else|case|throw|in|of|instanceof|go|defer|if|for|switch|range|do)\s*$")
 }
 pub(super) fn cpp_this_dot_re() -> Rc<Regex> {
     re!(r"(?:^|[^A-Za-z0-9_])this\.$")
