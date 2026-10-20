@@ -108,6 +108,21 @@ impl KernelResolver {
                     if guard5_tail_re().is_match(&line[m.end..]) {
                         continue;
                     }
+                } else if pat.guard == 6 {
+                    // SWIFT_UNCHAINED_CALL: the argument list closes on the line
+                    // with no `.`/`?.` after it, or is left open at the line's
+                    // end (its arguments go on below).
+                    let rest = &line[m.end..];
+                    if !rest.starts_with('(') {
+                        continue;
+                    }
+                    let unchained = match swift_closed_call_re().find(rest) {
+                        Some(closed) => !swift_member_tail_re().is_match(&rest[closed.end()..]),
+                        None => !rest[1..].contains(')'),
+                    };
+                    if !unchained {
+                        continue;
+                    }
                 } else if pat.guard == 4 {
                     // An assignment statement, not a trailing keyword argument.
                     if line[m.end..].split('\n').next().is_some_and(|rest| rest.trim_end().ends_with(',')) { continue; }

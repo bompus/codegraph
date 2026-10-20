@@ -7,6 +7,9 @@ use super::name_scope::{can_name_in_type_position, is_bare_rust_name};
 /// no repository class uses may claim: a guess, not a proven link.
 const PHP_UNSEEN_ANCESTOR_CONFIDENCE: f64 = 0.5;
 
+/// A module a bundler loads as data, not code: a stylesheet, an image, a GraphQL document, JSON, a font.
+const ASSET_MODULE: &str = r"(?i)\.(?:css|scss|sass|less|styl|stylus|pcss|graphql|gql|png|jpe?g|gif|svg|webp|avif|ico|bmp|tiff?|json5?|ya?ml|toml|md|mdx|txt|html?|xml|csv|woff2?|ttf|otf|eot|mp3|mp4|webm|ogg|wav|flac|pdf|wasm)$";
+
 /// Whether `nodes` are one C++ function's overloads (and declarations): functions all of one
 /// qualified name, which a call's arguments choose among (cpp_function_overload).
 fn cpp_overload_set(nodes: &[Arc<KNode>]) -> bool {
@@ -329,6 +332,15 @@ impl KernelResolver {
             // So is what a source file's unnamed namespace declares, and a type only source files
             // declare, with its members (cpp_translation_unit).
             return Ok(static_seen && !self.cpp_translation_unit_local(candidate, r)?);
+        }
+        // An Objective-C source file is a translation unit too: a C type it
+        // defines is its own, as in C (a class is the runtime's, wherever it is
+        // written).
+        if lang == "objc"
+            && matches!(candidate.kind.as_str(), "struct" | "union" | "enum" | "type_alias")
+            && c_source_ext_re().is_match(&candidate.file_path)
+        {
+            return Ok(false);
         }
         if lang == "go" {
             return Ok(go_name_visible(candidate, r));
@@ -839,7 +851,12 @@ impl KernelResolver {
         let Some(cpp_form) = self.apply_cpp_call_site_form(r, candidates)? else {
             return Ok(None);
         };
-        let candidates = cpp_form;
+        // (Above the ceiling below nothing is picked, so no translation unit is read.)
+        let candidates = if cpp_form.len() as i64 <= self.ambiguous_ceiling {
+            self.within_cpp_translation_unit(cpp_form, r, true)?
+        } else {
+            cpp_form
+        };
         if candidates.is_empty() {
             return Ok(None);
         }
@@ -1597,6 +1614,8 @@ impl KernelResolver {
         // from react-router-dom, is not an email template's `Link`.
         if candidates.len() == 1 && (named_count == 1 || (r.language == "python" && self.import_mappings(&r.file_path)?.iter().any(|m| m.local_name == r.reference_name)))
             && !(is_js_family(&r.language) && self.is_bound_to_bare_import(r)?)
+            // Nor a name a project import binds to something else.
+            && !(is_js_family(&r.language) && self.import_binds_other(&candidates[0], r)?)
         {
             return Ok(Some(KCand {
                 node: candidates[0].clone(),
@@ -1605,6 +1624,40 @@ impl KernelResolver {
             }));
         }
         Ok(None)
+    }
+
+    /// importBindsOther (name-matcher.ts): does a project import bind `r`'s
+    /// name to something other than `candidate`, a function of that name in
+    /// another file? A namespace import is the module object, and an asset
+    /// import is what the bundler makes of the file: topcoder's `import TCO21
+    /// from './themes/TCO21.scss'` is no `TCO21()` route. An import the import
+    /// resolver binds to a constant, class or component names that: outline's
+    /// `isCloudHosted` constant is not the server's `isCloudHosted()`. Two
+    /// bindings still lead to the namesake: a wrapper declared beside it
+    /// (`export default styled(Disclosure)`), and a lazy loader (signoz's
+    /// `Loadable(() => import('pages/Home'))`), which loads the page it is named
+    /// after. An import the resolver can't follow at all says nothing.
+    fn import_binds_other(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        if !re!(r"^[A-Za-z_$][A-Za-z0-9_$]*$").is_match(&r.reference_name) {
+            return Ok(false);
+        }
+        let Some(binding) = self.import_mappings(&r.file_path)?.iter().find(|m| m.local_name == r.reference_name).cloned() else {
+            return Ok(false);
+        };
+        let source = binding.source.split(['?', '#']).next().unwrap_or("");
+        if binding.is_namespace || re!(ASSET_MODULE).is_match(source) {
+            return Ok(true);
+        }
+        let Some(bound) = self.resolve_via_import(r)? else { return Ok(false) };
+        let node = bound.node;
+        if node.kind == "function" || node.kind == "method" || node.file_path == candidate.file_path {
+            return Ok(false);
+        }
+        let Some(file) = self.read_file(&node.file_path) else { return Ok(true) };
+        let from = (node.start_line.max(1) - 1) as usize;
+        let to = node.end_line.min(node.start_line + 15).max(0) as usize;
+        let head = (from..to).filter_map(|i| file.get(i).map(|l| l.as_str())).collect::<Vec<_>>().join("\n");
+        Ok(!re!(r"(?-u:\b)import\s*\(").is_match(&head))
     }
 
     /// matchFunctionRef's `::` member-pointer arm (name-matcher.ts): an

@@ -8,11 +8,25 @@ import (
 
 const MAX_ITEMS = 128 // the line's own comment, not DefaultRegistry's doc
 
+// Limits: the group's comment, for a member without its own.
+const (
+	// MinItems is documented inside its group.
+	MinItems = 1
+	MaxSlots = 64
+)
+
 var DefaultRegistry = NewRegistry()
 
 var handlerTable = map[string]func(int){
 	"recv": TargetCb,
 }
+
+// Registries: the group's comment, for a member without its own.
+var (
+	// handlersByName is documented inside its group.
+	handlersByName = map[string]func(int){"recv": TargetCb}
+	DefaultWidget  = NewRegistry()
+)
 
 // Widget is documented above its own type declaration.
 type Widget struct {
@@ -24,6 +38,8 @@ type Widget struct {
 	error
 	name string
 }
+
+// Containers: a banner a blank line separates from Stack, not its doc.
 
 type Stack[T any] struct {
 	items []T
@@ -160,6 +176,9 @@ func (w Widget) Render() string {
 	return w.name
 }
 
+// Callbacks: a section comment above TargetCb's own doc.
+
+// TargetCb is documented right above.
 func TargetCb(n int) {}
 
 func shadowed() {
@@ -167,6 +186,8 @@ func shadowed() {
 	fmt.Println(MAX_ITEMS)
 }
 
+// reads is documented above a directive, which is no part of its doc.
+//go:noinline
 func reads() int {
 	return MAX_ITEMS
 }

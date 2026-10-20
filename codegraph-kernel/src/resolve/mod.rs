@@ -579,6 +579,7 @@ mod method_call;
 mod pipeline;
 mod file_refs;
 mod rust_modules;
+mod rust_crates;
 mod awaited;
 mod iteration;
 mod kotlin_receiver;
@@ -756,7 +757,8 @@ pub struct KernelResolver {
     upstream_js_bindings: HashMap<String, js_scope_upstream::JsBindingIndex>,
     csharp_namespace_globals_memo: HashMap<Option<String>, Rc<HashSet<String>>>,
     upstream_scope_memo: HashMap<String, bool>,
-    upstream_rust_uses: HashMap<String, (HashSet<String>, HashSet<String>)>,
+    upstream_rust_uses: HashMap<String, resolver_upstream::RustUseFacts>,
+    rust_crate_graph_memo: Option<Rc<rust_crates::RustCrateGraph>>,
     upstream_rust_deps: Option<HashSet<String>>,
     /// isSwiftExtension (swift-type-visibility.ts) memo, by node id.
     swift_extension_memo: HashMap<String, bool>,
@@ -780,6 +782,7 @@ pub struct KernelResolver {
     /// C/C++ directive summaries and per-root macro timelines (#1838).
     cpp_macros: cpp::MacroCache,
     cpp_namespaces: cpp_namespace::NamespaceCache,
+    cpp_units: cpp_translation_unit::UnitMemo,
     /// C definitions only an unset build flag compiles (c_feature_variants).
     c_variants: c_feature_variants::VariantCache,
     /// A C++ function's id → the template arguments it is an explicit specialization for.
@@ -960,6 +963,7 @@ impl KernelResolver {
             csharp_namespace_globals_memo: HashMap::new(),
             upstream_scope_memo: HashMap::new(),
             upstream_rust_uses: HashMap::new(),
+            rust_crate_graph_memo: None,
             upstream_rust_deps: None,
             swift_extension_memo: HashMap::new(),
             swift_conformance_memo: HashMap::new(),
@@ -974,6 +978,7 @@ impl KernelResolver {
             factory_init_memo: HashMap::new(),
             cpp_macros: cpp::MacroCache::default(),
             cpp_namespaces: cpp_namespace::NamespaceCache::default(),
+            cpp_units: cpp_translation_unit::UnitMemo::default(),
             c_variants: c_feature_variants::VariantCache::default(),
             cpp_specializations: HashMap::new(),
             inherited_class_methods: HashMap::new(),
@@ -1509,7 +1514,10 @@ mod tests {
 
     const RECEIVERS: [&str; 7] = ["user", "x", "my_var", "über", "Foo", "this", "req"];
     const LINES: &[&str] = &[
+        "let user = try! Foo.Bar<Baz>(path: p); var x = await Loader()",
         "const user = new UserStore();",
+        "const user = inject<Foo.Bar>(TOKEN); x = this.svc.createInstance(Baz, 1); req = inject(Loader)",
+        "readonly user: Item<K>[] = []; x: Foo[0]",
         "let user: Foo<Bar> | null = x;",
         "user = Foo.new; user: Bar",
         "  user := &Store{}",
@@ -1559,7 +1567,9 @@ mod tests {
         let originals: &[(&str, &[&str])] = &[
             ("typescript", &[
                 r"(?-u:\b)R(?-u:\b)\s*=\s*(?:\$(?:state|derived)(?:\.raw)?\s*\(\s*)?new\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
-                r"(?-u:\b)R(?-u:\b)\s*\??\s*:\s*([A-Z][A-Za-z0-9_.$]*)",
+                r"(?-u:\b)R(?-u:\b)\s*=\s*(?:inject|(?:this\.)?(?:[A-Za-z0-9_$#]+\.)*createInstance)\s*<\s*([A-Z][A-Za-z0-9_.$]*)[^;=(){}]*>\s*\(",
+                r"(?-u:\b)R(?-u:\b)\s*=\s*(?:inject|(?:this\.)?(?:[A-Za-z0-9_$#]+\.)*createInstance)\s*\(\s*([A-Z][A-Za-z0-9_.$]*)",
+                r"(?-u:\b)R(?-u:\b)\s*\??\s*:\s*([A-Z][A-Za-z0-9_.$]*(?:(?:\s*<[^;=(){}<>]*(?:<[^;=(){}<>]*>[^;=(){}<>]*)*>)?\s*\[[^\]]*\])?)",
             ]),
             ("python", &[
                 r"(?m)(?:^|;)\s*R(?-u:\b)\s*=\s*([A-Z]\w*)\.objects\.(?:create|get|first|last|latest|earliest|get_by_natural_key)\s*\(",
@@ -1598,7 +1608,9 @@ mod tests {
                 r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)(?:\s*<[^;=(){}<>]*(?:<[^;=(){}<>]*>[^;=(){}<>]*)*>)?(?:\s*\[[\s,]*\])*\??\s+R(?-u:\b)\s*(?:[=;,)]|in\b)",
             ]),
             ("swift", &[
-                r"(?-u:\b)R(?-u:\b)\s*=\s*(_*[A-Z][A-Za-z0-9_.]*)\s*\(",
+                r"(?-u:\b)R(?-u:\b)\s*=\s*(_*[A-Z][A-Za-z0-9_.]*)\s*(?:<[^;=(){}<>]*(?:<[^;=(){}<>]*>[^;=(){}<>]*)*>)?\s*(?:\[[\s,]*\]\s*)*\(",
+                // (The call's opening `(` and what follows it are guard 6.)
+                r"(?-u:\b)(?:let|var)\s+R(?-u:\b)\s*=\s*(?:try[!?]\s*|(?:try|await)\s+)+([A-Z][A-Za-z0-9_.]*)\s*(?:<[^;=(){}<>]*(?:<[^;=(){}<>]*>[^;=(){}<>]*)*>)?\s*(?:\[[\s,]*\]\s*)*",
                 r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)",
             ]),
             ("ruby", &[r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_:]*)\.new(?-u:\b)"]),

@@ -967,7 +967,47 @@ impl KernelResolver {
                 resolved_by: "import",
             }));
         }
+        // A barrel's own `export { A, B as C } from './x'` names `A` and `B` the
+        // way the module calls them, and binds neither, so no import above holds
+        // them. Each resolves through the module the statement names, as an
+        // import does: looked up by its name alone, it reached a namesake
+        // elsewhere in the project.
+        if r.reference_kind == "imports" && is_esm_import_language(&r.language) {
+            if let Some(source) = self.re_export_source(&r.reference_name, r)? {
+                if let Some(resolved_path) = self.resolve_import_path(&source, &r.file_path, &r.language)? {
+                    let want = ExportWant {
+                        is_default: false,
+                        is_namespace: false,
+                        exported_name: r.reference_name.clone(),
+                        member_name: None,
+                    };
+                    let mut visited = HashSet::new();
+                    if let Some(node) = self.find_exported_symbol(&resolved_path, &want, &r.language, &mut visited, 0)? {
+                        return Ok(Some(KCand { node, confidence: 0.9, resolved_by: "import" }));
+                    }
+                }
+            }
+        }
         Ok(None)
+    }
+
+    /// reExportSource (name-matcher.ts): the module the file passes `name` on
+    /// from with `export { name } from './x'` (or `export { name as alias } from
+    /// './x'`), `name` being what that module calls it, when exactly one
+    /// statement of the file does. A re-export binds no local name, so the
+    /// file's import bindings never hold it.
+    pub(super) fn re_export_source(&mut self, name: &str, r: &ResolveRefIn) -> Res<Option<String>> {
+        let mut source: Option<String> = None;
+        for rex in self.reexports(&r.file_path)?.iter() {
+            if rex.kind != "named" || rex.original_name.as_deref() != Some(name) {
+                continue;
+            }
+            if source.as_deref().is_some_and(|s| s != rex.source) {
+                return Ok(None);
+            }
+            source = Some(rex.source.clone());
+        }
+        Ok(source)
     }
 
     /// resolveObjectLiteralAlias (import-resolver.ts): `Api.upload()` where

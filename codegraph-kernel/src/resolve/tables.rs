@@ -764,12 +764,16 @@ pub(super) fn extension_resolution(language: &str) -> &'static [&'static str] {
             ".ets", ".ts", ".d.ts", ".js", "/Index.ets", "/index.ets", "/index.ts", "/index.js",
         ],
         "javascript" => &[
-            ".js", ".jsx", ".mjs", ".cjs", ".xsjs", ".xsjslib", "/index.js", "/index.jsx",
+            // A JavaScript file imports TypeScript modules too, as the bundler
+            // and tsc's `allowJs` read it; JavaScript comes first, and never
+            // `.d.ts` (a declaration file is not the module it runs).
+            ".js", ".jsx", ".mjs", ".cjs", ".xsjs", ".xsjslib", ".ts", ".tsx",
+            "/index.js", "/index.jsx", "/index.ts", "/index.tsx",
         ],
         "tsx" => &[
             ".tsx", ".ts", ".d.ts", ".js", ".jsx", "/index.tsx", "/index.ts", "/index.js", "/index.jsx",
         ],
-        "jsx" => &[".jsx", ".js", "/index.jsx", "/index.js"],
+        "jsx" => &[".jsx", ".js", ".tsx", ".ts", "/index.jsx", "/index.js", "/index.tsx", "/index.ts"],
         "svelte" => &[
             ".ts", ".js", ".svelte", ".tsx", ".jsx", "/index.ts", "/index.js", "/index.svelte",
         ],
