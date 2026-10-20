@@ -1335,7 +1335,13 @@ Ok(self.dart_member_of(type_name, method, r, false)?
             return None;
         }
         if matches.len() > 1 {
-            if let Some(fqn) = preferred_fqn {
+            // TS/JS: the file declaring the class the call's file imports.
+            if let Some(file) = preferred_fqn.filter(|_| is_esm_import_language(&r.language)) {
+                if let Some(chosen) = matches.iter().find(|m| m.file_path == file) {
+                    return Some(KCand { node: chosen.clone(), confidence, resolved_by });
+                }
+            }
+            if let Some(fqn) = preferred_fqn.filter(|_| !is_esm_import_language(&r.language)) {
                 let ext = if r.language == "kotlin" { ".kt" } else { ".java" };
                 let fqn_path = format!("{}{}", fqn.replace('.', "/"), ext);
                 if let Some(chosen) = matches.iter().find(|m| m.file_path.ends_with(&fqn_path)) {
@@ -1549,6 +1555,32 @@ Ok(self.dart_member_of(type_name, method, r, false)?
         Ok(Some(last.to_string()))
     }
 
+    /// The type a Go constant written alone in a `const ( … )` group has: what
+    /// the nearest spec above it with a type or a value says, which Go
+    /// repeats. None when that spec writes no type (`KindA = iota`).
+    fn go_group_constant_type(&mut self, file: &str, line: i64) -> Option<String> {
+        let lines = self.read_file(file)?;
+        let bare = re!(r"^\s*[A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*\s*$");
+        let typed = re!(r"^\s*(?:const\s*\(\s*)?[A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*\s+\*?([A-Za-z0-9_.]+)\s*=");
+        let own = lines.get((line - 1).max(0) as usize)?;
+        if !bare.is_match(own.split("//").next().unwrap_or("")) {
+            return None;
+        }
+        let mut i = (line - 1).max(0) as usize;
+        while i > 0 && i + 200 > line as usize {
+            i -= 1;
+            let text = lines[i].split("//").next().unwrap_or("");
+            if text.trim().is_empty() || text.trim_start().starts_with("/*") || text.trim_start().starts_with('*') {
+                continue;
+            }
+            if bare.is_match(text) {
+                continue;
+            }
+            return typed.captures(text).map(|c| c[1].to_string());
+        }
+        None
+    }
+
     /// matchGoFactoryReceiver — a Go receiver bound to a declared/param value
     /// or to the first result of a same-line `:=` factory call.
     pub(super) fn match_go_factory_receiver(
@@ -1614,6 +1646,14 @@ Ok(self.dart_member_of(type_name, method, r, false)?
                 None => VAR_TYPE.capture(&declaration, receiver).map(str::to_string),
             }
         };
+        // A constant written alone in its `const ( … )` group repeats the
+        // type of the spec above it (`KindB` after `KindA Kind = iota`).
+        let ty = match ty {
+            None if value.as_ref().is_some_and(|v| v.kind == "constant") => {
+                self.go_group_constant_type(&site.file_path, binding.line)
+            }
+            ty => ty,
+        };
         if let Some(ty) = ty {
             let mut bsite = site.clone();
             bsite.line = binding.line;
@@ -1622,7 +1662,7 @@ Ok(self.dart_member_of(type_name, method, r, false)?
         if binding.kind == "param" {
             return Ok(None);
         }
-        let assign_re = re!(r"(?-u:\b)([A-Za-z0-9_]+(?:\s*,\s*[A-Za-z0-9_]+)*)\s*:=\s*([A-Za-z0-9_.]+)\s*\(");
+        let assign_re = re!(r"(?-u:\b)([A-Za-z0-9_]+(?:\s*,\s*[A-Za-z0-9_]+)*)\s*(?::=|=)\s*([A-Za-z0-9_.]+)\s*\(");
         let site_bindings = self.bindings(&site.file_path)?;
         for caps in assign_re.captures_iter(&declaration) {
             let names: Vec<String> = caps[1]

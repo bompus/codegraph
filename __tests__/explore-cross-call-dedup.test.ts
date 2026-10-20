@@ -264,7 +264,28 @@ describe('a second call against a real index', () => {
     // Every file whose source the second call withheld carries a pointer, and
     // the pointer names it.
     expect(second).toContain(POINTER);
-    for (const [file, lines] of before) {
+    // Fork: a run shorter than EXPLORE_DEDUP.MIN_COVERED_LINES is re-served by
+    // design (a pointer for it would cost more than the lines). The fork's Go
+    // struct-field references leave a 7-line orphan window of
+    // `payslipstore.Store.Timesheet` in the first call, so only runs at least
+    // that long count as source the agent holds.
+    const heldRuns = (lines: Set<number>): Set<number> => {
+      const sorted = [...lines].sort((a, b) => a - b);
+      const held = new Set<number>();
+      let run: number[] = [];
+      const flush = () => {
+        if (run.length >= EXPLORE_DEDUP.MIN_COVERED_LINES) run.forEach((n) => held.add(n));
+        run = [];
+      };
+      for (const n of sorted) {
+        if (run.length > 0 && n !== run[run.length - 1]! + 1) flush();
+        run.push(n);
+      }
+      flush();
+      return held;
+    };
+    for (const [file, sent] of before) {
+      const lines = heldRuns(sent);
       const repeated = [...(after.get(file) ?? [])].filter((n) => lines.has(n));
       if (repeated.length === 0) continue;
       // The only sanctioned repeat is the anti-abandonment restore, which fires

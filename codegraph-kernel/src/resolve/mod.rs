@@ -82,6 +82,9 @@ pub struct KernelAliasPatternIn {
 #[napi(object)]
 pub struct KernelAliasMapIn {
     pub base_url: Option<String>,
+    /// Whether the config (or one it extends) sets `compilerOptions.baseUrl`:
+    /// a bare specifier is then also read from `base_url`.
+    pub declares_base_url: Option<bool>,
     pub patterns: Vec<KernelAliasPatternIn>,
 }
 
@@ -219,6 +222,11 @@ pub struct ResolveOutcome {
     /// component paths, Rust `Self`, a prefilter-miss store binding): it
     /// stands without the framework merge.
     pub pre_framework: bool,
+    /// On an unresolved TS/JS member call (`cache.get`), the head of the type
+    /// the file declares its receiver with (`LRUCache` of `new LRUCache(10)`
+    /// or `cache: LRUCache<K, V>`), none for an array's own method: the name
+    /// an import binds, so a sync can park the call under that import's module.
+    pub type_head: Option<String>,
 }
 
 impl ResolveOutcome {
@@ -234,6 +242,7 @@ impl ResolveOutcome {
             candidates: None,
             reason: None,
             pre_framework: false,
+            type_head: None,
         }
     }
     /// Frameworks are active and the kernel found no name/import candidate —
@@ -284,6 +293,7 @@ impl ResolveOutcome {
             candidates: cands,
             reason: None,
             pre_framework: false,
+            type_head: None,
         }
     }
 }
@@ -563,6 +573,7 @@ mod vbnet;
 mod receivers;
 mod bound;
 mod fields;
+mod ts_known;
 mod go_asserted;
 mod method_call;
 mod pipeline;
@@ -676,6 +687,16 @@ pub struct KernelResolver {
     declared_member_lines: HashMap<String, Rc<Vec<(String, usize)>>>,
     declared_member_walks: HashMap<(String, String), Option<String>>,
     member_shadow_memo: HashMap<(String, String, i64), bool>,
+    /// `(class id, field)` pairs whose declaration is being read: a wrapper's holder field can lead back to the field.
+    ts_field_reading: HashSet<(String, String)>,
+    /// `(file, type as written)` → the file declaring the class the file imports under it.
+    ts_imported_type_memo: HashMap<(String, String), Option<String>>,
+    /// `(package, type)` → the project file declaring the package with that type in it.
+    ts_ambient_memo: HashMap<(String, String), Option<String>>,
+    /// `(file, type as written)` → what the name names there.
+    ts_named_type_memo: HashMap<(String, String), ts_known::TsNamedType>,
+    /// Whether the project declares a `createInstance` returning an `InstanceType` of its constructor argument.
+    ts_create_instance_declared: Option<bool>,
     /// `python_locally_bound` answers by (file, line, name). Like the memos
     /// above, it assumes sources do not change during one resolution run.
     python_bound_memo: HashMap<(String, i64, String), bool>,
@@ -895,6 +916,11 @@ impl KernelResolver {
             declared_member_lines: HashMap::new(),
             declared_member_walks: HashMap::new(),
             member_shadow_memo: HashMap::new(),
+            ts_field_reading: HashSet::new(),
+            ts_imported_type_memo: HashMap::new(),
+            ts_ambient_memo: HashMap::new(),
+            ts_named_type_memo: HashMap::new(),
+            ts_create_instance_declared: None,
             python_bound_memo: HashMap::new(),
             python_file_binds_memo: HashMap::new(),
             kotlin_frames_memo: HashMap::new(),
@@ -1101,10 +1127,16 @@ impl KernelResolver {
         let mut out = Vec::with_capacity(refs.len());
         for r in refs {
             let t0 = PROF_ON.then(std::time::Instant::now);
-            let o = match per_ref(&r, ResolveOutcome::unresolved(), || self.resolve_ref(&r)) {
+            let mut o = match per_ref(&r, ResolveOutcome::unresolved(), || self.resolve_ref(&r)) {
                 Ok(o) => o,
                 Err(Halt::Napi(e)) => return Err(e),
             };
+            if o.status == "unresolved" {
+                o.type_head = match per_ref(&r, None, || self.local_type_head(&r)) {
+                    Ok(head) => head,
+                    Err(Halt::Napi(e)) => return Err(e),
+                };
+            }
             if let Some(t0) = t0 {
                 let key = match o.status.as_str() {
                     "resolved" => format!("hit:{}|{}|{}", o.resolved_by.as_deref().unwrap_or(""), r.reference_kind, r.language),

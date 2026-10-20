@@ -331,9 +331,7 @@ impl KernelResolver {
             return Ok(static_seen && !self.cpp_translation_unit_local(candidate, r)?);
         }
         if lang == "go" {
-            let first = candidate.name.chars().next().unwrap_or('_');
-            return Ok(first.is_ascii_uppercase()
-                || pos_dirname(&candidate.file_path) == pos_dirname(&r.file_path));
+            return Ok(go_name_visible(candidate, r));
         }
         if lang == "rust" {
             if candidate.visibility.as_deref() != Some("private") {
@@ -714,6 +712,10 @@ impl KernelResolver {
         let mut kept: Vec<Arc<KNode>> = Vec::with_capacity(candidates.len());
         for n in candidates.into_iter() {
             if self.dart_top_level_visible(&n, r)? && self.is_lexically_reachable(&n, r)? && self.language_type_visible(&n, r)? && self.php_class_visible(&n,r)?
+                // And a Go name that isn't exported, only its own package's: prometheus
+                // tsdb's `[]*memSeries` is head.go's, not `tsdb/agent`'s, which scored the
+                // same by directory proximity and was then vetoed as invisible.
+                && (n.language != "go" || go_name_visible(&n, r))
                 && !(matches!(r.language.as_str(),"lua"|"luau") && r.reference_kind=="calls" && !r.reference_name.contains(['.',':']) && n.kind=="method")
                 && !(r.language=="python" && r.reference_kind=="calls" && n.file_path!=r.file_path && self.is_receiver_less_call(r)? && self.python_locally_bound(&r.reference_name,r)? && !self.python_fixture_reachable(&n,&r.file_path)) {
                 kept.push(n);
@@ -1590,7 +1592,12 @@ impl KernelResolver {
             }));
         }
         // Cross-file: only an unambiguous match resolves.
-        if candidates.len() == 1 && (named_count == 1 || (r.language == "python" && self.import_mappings(&r.file_path)?.iter().any(|m| m.local_name == r.reference_name))) {
+        // Never a name the file imports from a package outside the repository,
+        // which no project function is: outline's `styled(Link)`, with `Link`
+        // from react-router-dom, is not an email template's `Link`.
+        if candidates.len() == 1 && (named_count == 1 || (r.language == "python" && self.import_mappings(&r.file_path)?.iter().any(|m| m.local_name == r.reference_name)))
+            && !(is_js_family(&r.language) && self.is_bound_to_bare_import(r)?)
+        {
             return Ok(Some(KCand {
                 node: candidates[0].clone(),
                 confidence: 0.8,
@@ -1852,4 +1859,12 @@ mod js_unit_tests {
     fn utf16_total(s: &str) -> usize {
         s.chars().map(char::len_utf16).sum()
     }
+}
+
+/// isGoNameVisible (name-matcher.ts): by the name's first letter, not the
+/// extractor's flag (unset for every Go method, exported or not); an
+/// unexported name is its own package's directory's.
+fn go_name_visible(candidate: &KNode, r: &ResolveRefIn) -> bool {
+    candidate.name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        || pos_dirname(&candidate.file_path) == pos_dirname(&r.file_path)
 }

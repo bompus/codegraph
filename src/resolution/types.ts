@@ -180,8 +180,23 @@ export interface ResolutionContext {
    */
   isOutOfRepoImport?(source: string, fromFile: string, language: Language): boolean;
   /**
-   * Project import-path aliases (tsconfig/jsconfig `paths`). Returns
-   * `null` when the project doesn't define any. Cached per resolver
+   * Whether `source`, imported from `fromFile`, is a package: one the file's
+   * package.json or an enclosing one declares, a Node built-in, or a
+   * runtime's virtual module (`node:`, `bun:`, `astro:`…). Such an import
+   * never binds to a same-named project module, only to a declaration file
+   * the project keeps for the package. Supplied by the coordinator.
+   */
+  isDeclaredPackage?(source: string, fromFile: string): boolean;
+  /**
+   * Whether `filePath` (project-relative) is one of the files the index holds.
+   * `fileExists` also answers for a directory and for a file on disk the
+   * index never read, such as one under `node_modules`. Supplied by the
+   * coordinator; a minimal context can omit it.
+   */
+  isIndexedFile?(filePath: string): boolean;
+  /**
+   * Project import-path aliases (tsconfig/jsconfig `paths`, and `baseUrl`).
+   * Returns `null` when the project doesn't define any. Cached per resolver
    * instance — safe to call from any resolver code path. Optional so
    * existing test fixtures and external context implementations
    * compile without modification; production resolver implements it.
@@ -191,6 +206,8 @@ export interface ResolutionContext {
   getAliasScopes?(): import('./path-aliases').AliasScope[];
   /** The aliases of the nearest nested config enclosing a file, tried before the root's. */
   getScopedAliasesFor?(filePath: string): import('./path-aliases').AliasMap | null;
+  /** The aliases a file's own app reads: the nearest nested config's, else the root's. */
+  getNearestAliases?(filePath: string): import('./path-aliases').AliasMap | null;
   /**
    * The project-relative directory (`/`-separated, `.` for the root) of
    * the Go package an import path names, when it is a package of one of the

@@ -1,5 +1,6 @@
 //! matchMethodCall and the bound-receiver claim.
 
+use super::ts_known::TsBracketed;
 use super::*;
 
 impl KernelResolver {
@@ -625,7 +626,16 @@ impl KernelResolver {
 
         // `this.#field.method` keeps its ES private field (#1987).
         let dot_re = re!(r"^((?:this\.#)?[A-Za-z0-9_.]+)\.([A-Za-z0-9_]+:?(?:[A-Za-z0-9_]+:)*)$");
-        let mut dot_match = dot_re.captures(&r.reference_name);
+        // A JS/TS method name may carry `$`, which `\w` doesn't: an RxJS-style
+        // `this.organizationService.organizations$()`, vscode's RPC
+        // `this._proxy.$acceptModelChanged()`. The receiver part keeps no `$`,
+        // so `this.destroy$.next()` stays out of name guessing.
+        let mut dot_match = if is_js_family(&r.language) {
+            re!(r"^((?:this\.#)?[A-Za-z0-9_.]+)\.([A-Za-z0-9_$]+)$").captures(&r.reference_name)
+        } else {
+            None
+        }
+        .or_else(|| dot_re.captures(&r.reference_name));
         if dot_match.is_none() && r.language == "cpp" {
             let op_re = re!(r"^([A-Za-z0-9_.]+)\.(operator[^A-Za-z0-9_\s.]+)$");
             dot_match = op_re.captures(&r.reference_name);
@@ -768,7 +778,22 @@ if inferred.is_none() && r.language == "dart" {
                 }
             }
             if let Some(t) = inferred.take() {
-                let Some(t) = self.inferred_member_type_bound(&t, r)? else { return Ok(None) };
+                let Some(mut t) = self.inferred_member_type_bound(&t, r)? else { return Ok(None) };
+                if is_esm_family(&r.language) && t.ends_with(']') {
+                    match self.ts_bracketed_type(&t, &method_name, r)? {
+                        TsBracketed::Settled(hit) => return Ok(hit),
+                        TsBracketed::Type(name) => t = name,
+                    }
+                }
+                if is_esm_family(&r.language) {
+                    let name = t.split('<').next().unwrap_or(&t).trim().to_string();
+                    let simple = name.rsplit('.').next().unwrap_or(&name).to_string();
+                    match self.ts_typed_local_known(&name, &simple, &method_name, r)? {
+                        TsTypedLocal::NoProjectMethod => return Ok(None),
+                        TsTypedLocal::Hit(hit) => return Ok(Some(hit)),
+                        TsTypedLocal::Pass(_) => {}
+                    }
+                }
                 let mut bsite = r.clone();
                 if let Some(b) = &binding {
                     bsite.line = b.line;
@@ -914,16 +939,38 @@ if inferred.is_none() && r.language == "dart" {
                 }
             }
             if let Some(t) = inferred {
-                let Some(t) = self.inferred_member_type_bound(&t, r)? else { return Ok(None) };
+                let Some(mut t) = self.inferred_member_type_bound(&t, r)? else { return Ok(None) };
+                if is_esm_family(&r.language) && awaited_file.is_none() && t.ends_with(']') {
+                    match self.ts_bracketed_type(&t, &method_name, r)? {
+                        TsBracketed::Settled(hit) => return Ok(hit),
+                        TsBracketed::Type(name) => t = name,
+                    }
+                }
                 if matches!(r.language.as_str(), "java" | "kotlin" | "csharp") && t.contains('.') {
                     return self.match_bound_type_member(&t, &method_name, r);
                 }
                 // Java/Kotlin: the file's import pins WHICH same-named class.
-                let fqn = if r.language == "java" || r.language == "kotlin" {
+                let mut fqn = if r.language == "java" || r.language == "kotlin" {
                     self.imported_fqn_of(&t, r)?
                 } else {
                     None
                 };
+                // TS/JS: the file declaring the class the file imports under
+                // that name. A type imported from a package outside the
+                // project has no project method, whatever project class
+                // shares its name, unless a project file declares the package.
+                // The class the file names decides through its own supertypes;
+                // only a method found counts here, since a local's type is
+                // read by an unscoped scan that can find another function's
+                // `agent: IAgent`.
+                if is_esm_family(&r.language) && awaited_file.is_none() {
+                    let raw = self.infer_local_receiver_type(&object_or_class, r, true)?.unwrap_or_else(|| t.clone());
+                    match self.ts_typed_local_known(&raw, &t, &method_name, r)? {
+                        TsTypedLocal::NoProjectMethod => return Ok(None),
+                        TsTypedLocal::Hit(hit) => return Ok(Some(hit)),
+                        TsTypedLocal::Pass(file) => fqn = file,
+                    }
+                }
                 // An awaited type resolves from the file that declares it,
                 // and a hit on that type itself must live there.
                 let mut site = r.clone();
@@ -1734,5 +1781,41 @@ mod tests {
         assert_eq!(own("function f() {\n  const o = { m() {\n    return 1;\n  } };\n  return i;\n}"), vec![4]);
         assert_eq!(own("function f({ a }: { a: T }): R {\n  const g = function () {\n    return 1;\n  };\n  return i;\n}"), vec![4]);
         assert_eq!(own("function f() {\n  const re = /\\}/;\n  return i;\n}"), vec![2]);
+    }
+}
+
+/// What the class a TS/JS typed local's file names settles for the call.
+pub(super) enum TsTypedLocal {
+    /// The type comes from a package outside the project: no project method.
+    NoProjectMethod,
+    /// The method of the class the file names, or of its supertypes.
+    Hit(KCand),
+    /// Nothing settled; the file declaring the imported class, when known.
+    Pass(Option<String>),
+}
+
+impl KernelResolver {
+    /// The class a TS/JS typed local's file names, through its own
+    /// supertypes (tsKnownTypeCall), before any same-named class elsewhere.
+    /// Only a method found counts: a local's type is read by an unscoped scan
+    /// that can find another function's `agent: IAgent`, so one without the
+    /// method mustn't rule out what follows, as a field's does.
+    pub(super) fn ts_typed_local_known(&mut self, written: &str, ty: &str, method: &str, r: &ResolveRefIn) -> Res<TsTypedLocal> {
+        let mut file = self.ts_imported_type_file(written, r)?;
+        if file.is_none() {
+            match self.ts_outside_type_declaration(written, ty, r)? {
+                Some(None) => return Ok(TsTypedLocal::NoProjectMethod),
+                Some(declared) => file = declared,
+                // A package's type, which no manifest need list for the
+                // import to leave the project: it names no project class,
+                // whatever class in this file shares its last name.
+                None if self.ts_imports_package(written, r)? => return Ok(TsTypedLocal::NoProjectMethod),
+                None => {}
+            }
+        }
+        if let Some(Some(hit)) = self.ts_known_type_call(ty, file.as_deref().unwrap_or(&r.file_path), method, r, 0.9)? {
+            return Ok(TsTypedLocal::Hit(hit));
+        }
+        Ok(TsTypedLocal::Pass(file))
     }
 }
