@@ -230,28 +230,41 @@ describe('git sync hooks — project roots and existing hooks', () => {
     expect(isSyncHookInstalled(b, ['post-commit'])).toBe(false);
   });
 
-  it('treats a block from an older install as the top-level project\'s', () => {
-    const legacy = [
-      '#!/bin/sh',
-      '# >>> codegraph sync hook >>>',
-      'if command -v codegraph >/dev/null 2>&1; then',
-      '  ( codegraph sync >/dev/null 2>&1 & ) >/dev/null 2>&1',
-      'fi',
-      '# <<< codegraph sync hook <<<',
-      '',
-    ].join('\n');
-    fs.writeFileSync(hookFile(), legacy, { mode: 0o755 });
-    const sub = path.join(repo, 'sub');
-    fs.mkdirSync(sub);
+  it.each(process.platform === 'win32' ? ['native', 'lowercase drive'] : ['native'])(
+    'treats a block from an older install as the top-level project\'s (%s)',
+    (spelling) => {
+      const projectRoot = spelling === 'lowercase drive'
+        ? repo.replace(/^[A-Z]:/, (drive) => drive.toLowerCase())
+        : repo;
+      const legacy = [
+        '#!/bin/sh',
+        '# >>> codegraph sync hook >>>',
+        'if command -v codegraph >/dev/null 2>&1; then',
+        '  ( codegraph sync >/dev/null 2>&1 & ) >/dev/null 2>&1',
+        'fi',
+        '# <<< codegraph sync hook <<<',
+        '',
+      ].join('\n');
+      fs.writeFileSync(hookFile(), legacy, { mode: 0o755 });
+      const sub = path.join(repo, 'sub');
+      fs.mkdirSync(sub);
 
-    expect(isSyncHookInstalled(repo, ['post-commit'])).toBe(true);
-    expect(isSyncHookInstalled(sub, ['post-commit'])).toBe(false);
+      expect(isSyncHookInstalled(projectRoot, ['post-commit'])).toBe(true);
+      expect(isSyncHookInstalled(sub, ['post-commit'])).toBe(false);
 
-    // Re-installing for the top level replaces the old block rather than adding one.
-    installGitSyncHook(repo, ['post-commit']);
-    const body = fs.readFileSync(hookFile(), 'utf8');
-    expect(body.split('# >>> codegraph sync hook >>>').length - 1).toBe(1);
-  });
+      // Re-installing for the top level replaces the old block rather than adding one.
+      installGitSyncHook(projectRoot, ['post-commit']);
+      const body = fs.readFileSync(hookFile(), 'utf8');
+      expect(body.split('# >>> codegraph sync hook >>>').length - 1).toBe(1);
+
+      if (spelling === 'lowercase drive') {
+        fs.writeFileSync(hookFile(), body.replace(/(# codegraph-root: )[A-Z]:/, (drive) => drive.toLowerCase()));
+        expect(isSyncHookInstalled(repo, ['post-commit'])).toBe(true);
+        removeGitSyncHook(projectRoot, ['post-commit']);
+        expect(fs.existsSync(hookFile())).toBe(false);
+      }
+    },
+  );
 
   it('leaves a hook written in another language untouched', () => {
     const python = '#!/usr/bin/env python3\nprint("my hook")\n';

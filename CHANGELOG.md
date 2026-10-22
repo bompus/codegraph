@@ -99,6 +99,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- On Windows, Git sync hooks from older installs are recognized even when Git and Node spell the drive letter differently.
+
 - JSX child components keep their render links when plain text or a line break precedes the tag.
 - **A member call on an imported constant or variable links to it.** `LIST.includes(x)` after `import { LIST } from './constants'`, `store.get(key)` through a default import and `useStore.setState()` through an aliased one now give the function that makes the call a `calls` edge to the constant, in JavaScript, TypeScript, Vue, Svelte and Astro, as upstream does. Before, a call through an import linked only to a function, method, class or component (or to a store through its `getState`), so `callers` on a constant listed the files that import it and no functions. A name a parameter, a local or a Svelte markup block hides (`({ expect }) => expect.getState()`, `{#each rows as count}`) and a deeper chain (`supabase.auth.signUp()`) still link nothing, and a receiver whose module never resolves is still not guessed by its method's name. A full index of vite gains 1,362 call edges (+4.9%), vitest 2,595 (+3.7%) and svelte 135 (+0.2%); a read-only study of supabase found 1,662 more (+0.5%), with no edge lost on any of the four. Most land in test and playground code (`vi`, `expect`, a Playwright `page`). Of 156 upstream links of this kind read against source, 153 were correct, 3 ambiguous and none wrong. Index time shows no clear change. Re-index JavaScript and TypeScript projects after upgrading.
 

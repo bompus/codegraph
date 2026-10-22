@@ -86,6 +86,11 @@ function gitHooksDir(projectRoot: string): string | null {
   }
 }
 
+function normalizeDriveLetter(key: string): string {
+  // Node preserves the input drive letter's case; Git may spell it differently.
+  return process.platform === 'win32' ? key.replace(/^[a-z]:/, (drive) => drive.toUpperCase()) : key;
+}
+
 /**
  * The key a block records for its project: the resolved root with forward
  * slashes, which Git for Windows' sh also accepts.
@@ -97,7 +102,7 @@ function rootKey(projectRoot: string): string {
   } catch {
     /* keep the lexical path when it can't be resolved */
   }
-  return resolved.split(path.sep).join('/');
+  return normalizeDriveLetter(resolved.split(path.sep).join('/'));
 }
 
 /** The work tree's top level (as a {@link rootKey}), or null when unknown. */
@@ -147,7 +152,7 @@ function ownerFor(projectRoot: string): BlockOwner {
   const root = rootKey(projectRoot);
   let toplevel: string | null | undefined;
   return (blockRoot) => {
-    if (blockRoot !== null) return blockRoot === root;
+    if (blockRoot !== null) return normalizeDriveLetter(blockRoot) === root;
     if (toplevel === undefined) toplevel = gitToplevelKey(projectRoot);
     return toplevel === root;
   };
