@@ -111,7 +111,7 @@ impl<'t> Walker<'t> {
         has_fun && has_interface
     }
 
-    pub(super) fn try_visit_hook(&mut self, node: Node<'t>) -> bool {
+    pub(super) fn try_visit_hook(&mut self, node: Node<'t>) -> Option<Vec<usize>> {
         stack_guard!();
         // An own-line accessor already walked by its owning property below. The
         // ownership test re-derives the property's kind rather than remembering
@@ -120,7 +120,7 @@ impl<'t> Walker<'t> {
         if matches!(node.kind(), "getter" | "setter") {
             return accessor_owner(node)
                 .and_then(|owner| self.property_kind(owner))
-                .is_some();
+                .map(|_| Vec::new());
         }
         // Kotlin `fun interface` misparse recovery (languages/kotlin.ts visitNode
         // hook). tree-sitter-kotlin has no `fun interface` production, so the
@@ -131,10 +131,10 @@ impl<'t> Walker<'t> {
         if node.kind() == "lambda_literal" {
             if let Some(prev) = node.prev_sibling() {
                 if prev.kind() == "ERROR" && self.is_fun_interface_node(prev) {
-                    return true;
+                    return Some(Vec::new());
                 }
             }
-            return false;
+            return None;
         }
         if matches!(node.kind(), "ERROR" | "function_declaration") {
             // An ERROR that is a mangled class BODY (starts with `{`) holds the
@@ -172,14 +172,12 @@ impl<'t> Walker<'t> {
                         }
                     }
                 }
-                let Some(name) = name else { return false };
+                let name = name?;
                 let extra = Extra {
                     docstring: preceding_docstring(node, self.src),
                     ..Extra::default()
                 };
-                let Some(row) = self.create_node("interface", &name, node, extra) else {
-                    return false;
-                };
+                let row = self.create_node("interface", &name, node, extra)?;
                 self.stack.push(Scope { row, kind: "interface", name });
                 if node.kind() == "ERROR" {
                     if let Some(next) = node.next_sibling() {
@@ -200,11 +198,11 @@ impl<'t> Walker<'t> {
                     }
                 }
                 self.stack.pop();
-                return true;
+                return Some(Vec::new());
             }
         }
         if node.kind() != "property_declaration" {
-            return false;
+            return None;
         }
         let var_decl = named_kids(node)
             .find(|c| c.kind() == "variable_declaration");
@@ -222,11 +220,11 @@ impl<'t> Walker<'t> {
             for init in property_initializers(node) {
                 self.visit_for_calls_and_structure(init);
             }
-            return true;
+            return Some(Vec::new());
         };
         let name = self.text(name_node).to_string();
         if name.is_empty() {
-            return false;
+            return None;
         }
         let Some(kind) = self.property_kind(node) else {
             // A local — no node is minted, but the initializer is still code.
@@ -236,7 +234,7 @@ impl<'t> Walker<'t> {
             for init in property_initializers(node) {
                 self.visit_for_calls_and_structure(init);
             }
-            return true;
+            return Some(Vec::new());
         };
         // The `type`-field signature read is dead (zero fields) → signature
         // undefined; NO docstring/visibility/isStatic — the modifiers merge in
@@ -249,16 +247,18 @@ impl<'t> Walker<'t> {
         // The property also OWNS any accessor written on its own line, which the
         // grammar makes a following SIBLING rather than a child; those bodies
         // used to attribute to the enclosing class.
+        let mut walked = Vec::new();
         if let Some(row) = row {
             self.stack.push(Scope { row, kind, name: name.clone() });
             for init in property_initializers(node) {
                 self.visit_for_calls_and_structure(init);
+                walked.push(init.id());
             }
             for acc in following_accessors(node) {
                 self.visit_for_calls_and_structure(acc);
             }
             self.stack.pop();
         }
-        true
+        Some(walked)
     }
 }

@@ -291,6 +291,12 @@ impl KernelResolver {
     }
 
     pub(super) fn js_declaration_reachable(&mut self, n: &KNode, r: &ResolveRefIn) -> Option<bool> {
+        if is_js_family(&n.language) && !matches!(n.language.as_str(), "javascript" | "jsx")
+            && n.file_path != r.file_path && n.kind == "function" {
+            if let Some(scan) = self.ts_scope_scan(&n.file_path, r) {
+                if scan.blocks.iter().any(|b| b.ambient && b.contains(n.start_line, n.start_column)) { return Some(false); }
+            }
+        }
         if !is_js_family(&n.language)
             || n.file_path != r.file_path
             || !matches!(n.kind.as_str(), "function" | "variable" | "constant")
@@ -451,6 +457,27 @@ impl KernelResolver {
             super::names::js_unit_to_byte(line, r.column.max(0) as usize),
         );
         Some((key, point))
+    }
+
+    pub(super) fn js_loop_binding(&mut self, r: &ResolveRefIn, name: &str) -> bool {
+        let Some(source) = self.read_file(&r.file_path) else { return false };
+        let Some(tree) = self.js_binding_tree(&source, r) else { return false };
+        let row = (r.line - 1).max(0) as usize;
+        let Some(line) = source.get(row) else { return false };
+        let point = Point::new(row, super::names::js_unit_to_byte(line, r.column.max(0) as usize));
+        // A nonempty range selects the token starting here, rather than its
+        // preceding sibling at a shared boundary. Convert the column only once.
+        let end = Point::new(row, point.column.saturating_add(1));
+        let mut scope = tree.root_node().descendant_for_point_range(point, end);
+        while let Some(node) = scope {
+            if node.kind() == "for_in_statement" && node.child_by_field_name("kind").is_some() {
+                if let Some(left) = node.child_by_field_name("left") {
+                    if destructured_binding_property(left, name, source.text()).is_some() { return true; }
+                }
+            }
+            scope = node.parent();
+        }
+        false
     }
 
     pub(super) fn js_root_binding_scope(&mut self, r: &ResolveRefIn, name: &str) -> Option<(Point, Point)> {

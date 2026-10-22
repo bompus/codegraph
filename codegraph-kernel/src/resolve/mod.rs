@@ -227,6 +227,7 @@ pub struct ResolveOutcome {
     /// or `cache: LRUCache<K, V>`), none for an array's own method: the name
     /// an import binds, so a sync can park the call under that import's module.
     pub type_head: Option<String>,
+    pub type_from: Option<Vec<String>>,
 }
 
 impl ResolveOutcome {
@@ -243,6 +244,7 @@ impl ResolveOutcome {
             reason: None,
             pre_framework: false,
             type_head: None,
+            type_from: None,
         }
     }
     /// Frameworks are active and the kernel found no name/import candidate —
@@ -294,6 +296,7 @@ impl ResolveOutcome {
             reason: None,
             pre_framework: false,
             type_head: None,
+            type_from: None,
         }
     }
 }

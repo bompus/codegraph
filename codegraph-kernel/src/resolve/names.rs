@@ -22,6 +22,18 @@ fn objc_file_local_elsewhere(n: &KNode, r: &ResolveRefIn) -> bool {
         && c_source_ext_re().is_match(&n.file_path)
 }
 
+fn prefer_adjacent_implementations(candidates: &mut Vec<Arc<KNode>>, r: &ResolveRefIn) {
+    if r.reference_kind != "calls" || !is_js_family(&r.language) { return; }
+    let implementations: HashSet<_> = candidates.iter()
+        .filter(|n| !re!(r"\.d\.[cm]?ts$").is_match(&n.file_path))
+        .filter_map(|n| n.file_path.rsplit_once('.').map(|(stem, _)| (stem.to_string(), n.qualified_name.clone())))
+        .collect();
+    candidates.retain(|n| {
+        let stem = [".d.ts", ".d.mts", ".d.cts"].iter().find_map(|suffix| n.file_path.strip_suffix(suffix));
+        stem.is_none_or(|stem| !implementations.contains(&(stem.to_string(), n.qualified_name.clone())))
+    });
+}
+
 impl KernelResolver {
     // -----------------------------------------------------------------------
     // Name machinery (name-matcher.ts)
@@ -741,6 +753,7 @@ impl KernelResolver {
             }
         }
         let mut candidates = kept;
+        prefer_adjacent_implementations(&mut candidates, r);
         candidates.retain(|n| !is_inheritance_ref(&r.reference_kind) || is_supertype_target(n));
         candidates.retain(|n| r.reference_kind != "imports" || is_importable_kind(&n.kind));
         {
@@ -984,7 +997,9 @@ impl KernelResolver {
         }
         let callable = self.retain_python_java_scope(callable, r)?;
         let callable = self.retain_lang_scope(callable, r)?;
-        let mut callable = self.retain_php_self_scope(callable, r)?;
+        let callable = self.retain_php_self_scope(callable, r)?;
+        let mut callable = self.apply_language_gate(callable, r);
+        callable.retain(|n| self.js_declaration_reachable(n, r) != Some(false));
         // A Vue component's own method is `this.m()` inside that component, as
         // in the exact-name arm: a `this.showToast()` from a plugin or mixin
         // is not another component's `showToast`.
@@ -997,7 +1012,8 @@ impl KernelResolver {
             }
             callable = kept;
         }
-        let gated = self.apply_language_gate(callable, r);
+        prefer_adjacent_implementations(&mut callable, r);
+        let gated = callable;
         let same_language: Vec<Arc<KNode>> = gated
             .iter()
             .filter(|n| n.language == r.language)
@@ -1386,12 +1402,16 @@ impl KernelResolver {
         if !r.reference_name.contains("::") && !r.reference_name.contains('.') {
             return Ok(None);
         }
+        let cpp_visible = if matches!(r.language.as_str(), "c" | "cpp") {
+            Some(self.namespace_visible_files(&r.file_path, &r.language)?)
+        } else { None };
         // A `calls` ref never resolves to a yaml/properties config key (#1180).
         let keep_for_ref = |nodes: &[Arc<KNode>]| -> Vec<Arc<KNode>> {
             nodes
                 .iter()
                 .filter(|n| {
-                    !(r.reference_kind == "imports" && n.kind == "import")
+                    cpp_visible.as_ref().is_none_or(|files| !re!(r"(?i)\.(?:h|hh|hpp|hxx)$").is_match(&n.file_path) || files.contains(&n.file_path))
+                        && !(r.reference_kind == "imports" && n.kind == "import")
                         && (r.reference_kind != "calls"
                         || !(n.kind == "constant"
                             && (n.language == "yaml" || n.language == "properties")))
@@ -1509,7 +1529,9 @@ impl KernelResolver {
         if !last_name.is_empty() {
             let partial = keep_for_ref(&self.nodes_by_name(last_name)?)
                 .into_iter()
-                .filter(|n| n.qualified_name.ends_with(&r.reference_name))
+                .filter(|n| if matches!(r.language.as_str(), "c" | "cpp") {
+                    n.qualified_name == r.reference_name || n.qualified_name.ends_with(&format!("::{}", r.reference_name))
+                } else { n.qualified_name.ends_with(&r.reference_name) })
                 .collect();
             let partial = self.cpp_specialization_pool(partial, r);
             let chosen = prefer_call_site_file(partial, &r.file_path);

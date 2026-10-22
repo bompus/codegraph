@@ -224,7 +224,7 @@ impl KernelResolver {
         let Some(name)=parts.last() else {return Ok(None)};
         let candidates=self.nodes_by_name(name)?;
         let mut matches=Vec::new();
-        for n in candidates.iter().filter(|n|matches!(n.language.as_str(),"c"|"cpp") && n.kind=="function" && visible.contains(&n.file_path)) {
+        for n in candidates.iter().filter(|n|matches!(n.language.as_str(),"c"|"cpp") && matches!(n.kind.as_str(), "function" | "type_alias") && visible.contains(&n.file_path)) {
             let frames=self.namespace_frames(&n.file_path)?;
             let mut path=Vec::new();
             let mut containing:Vec<_>=frames.iter().filter(|(start,end,_)|*start<=n.start_line && *end>=n.start_line).collect();
@@ -237,7 +237,7 @@ impl KernelResolver {
         let args = if r.reference_kind=="calls" { self.call_arguments(r,name) } else { None };
         let mut best:Vec<Arc<KNode>>=Vec::new(); let mut best_score=i64::MIN;
         for n in matches {
-            if args.as_ref().is_some_and(|args| !self.cpp_overload_compatible(&n,args,r)) {continue;}
+            if n.kind == "function" && args.as_ref().is_some_and(|args| !self.cpp_overload_compatible(&n,args,r)) {continue;}
             let score=if is_test_path(&n.file_path){-10}else{0} + args.as_ref().map(|args|self.cpp_overload_fit(&n,args,r)).unwrap_or(0);
             if score>best_score {best_score=score;best=vec![n];}else if score==best_score{best.push(n);}
         }

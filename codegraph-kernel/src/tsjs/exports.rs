@@ -216,6 +216,12 @@ impl<'t> Walker<'t> {
                 exported_as = Some(name.to_string());
                 form = EXPORT_CJS;
             }
+            if let Some((alias, later_form)) = self.later_exports.get(name) {
+                if alias == "default" {
+                    exported_as = Some(alias.clone());
+                    form = *later_form;
+                }
+            }
         }
         let name_ref = self.arena.put(name);
         let exported_ref = self.arena.put_opt(exported_as.as_deref());

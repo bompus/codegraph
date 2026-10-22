@@ -11,6 +11,10 @@
 use super::bound::{python_def_params, python_param_names, PyFile};
 use super::*;
 use std::collections::VecDeque;
+#[path = "python_modules.rs"]
+mod python_modules;
+#[path = "python_types.rs"]
+mod python_types;
 
 /// The declarations `python_shared_declaration` walks before it gives up.
 const DECLARATION_WALK_LIMIT: usize = 32;
@@ -38,6 +42,8 @@ pub(super) struct PyAttrWriters {
 /// Per-run memos for module-global typing.
 #[derive(Default)]
 pub(super) struct PyGlobalsMemo {
+    modules: Option<Rc<python_modules::PythonModules>>,
+    types: python_types::PythonTypesMemo,
     /// The classes a global can hold (`None`: unknown), by global id.
     classes: HashMap<String, Option<Rc<Vec<Arc<KNode>>>>>,
     /// Writes to a global from other files, by global id.
@@ -734,41 +740,25 @@ impl KernelResolver {
         Ok(found)
     }
 
-    /// The indexed files a Python module path names from `from_file`: a
-    /// relative path (`..settings`) exactly, an absolute one by path suffix,
-    /// so a source root (`src/`) still resolves and two files sharing the
-    /// tail (`x/settings.py`, `y/settings.py`) both come back.
+    /// Exact import roots identify a writer's target. An unresolved absolute
+    /// import may still write any module sharing that suffix; it cannot prove
+    /// those modules' globals immutable.
     fn python_module_files(&mut self, dotted: &str, from_file: &str) -> Res<Rc<Vec<String>>> {
-        let dots = dotted.len() - dotted.trim_start_matches('.').len();
-        let mut dir = String::new();
-        if dots > 0 {
-            let mut d = pos_dirname(from_file);
-            for _ in 1..dots {
-                d = pos_dirname(d);
-            }
-            dir = d.to_string();
-        }
-        let key = (dotted.to_string(), dir.clone());
-        if let Some(hit) = self.py_globals.module_files.get(&key) {
-            return Ok(hit.clone());
-        }
-        let parts: Vec<&str> = dotted[dots..].split('.').filter(|p| !p.is_empty()).collect();
-        let mut out = Vec::new();
-        if let Some(last) = parts.last() {
-            let rel = std::iter::once(dir.as_str()).chain(parts.iter().copied()).filter(|p| !p.is_empty()).collect::<Vec<_>>().join("/");
+        let key = (dotted.to_string(), from_file.to_string());
+        if let Some(hit) = self.py_globals.module_files.get(&key) { return Ok(hit.clone()); }
+        let mut files = self.python_module_path(dotted, from_file)?.into_iter().collect::<Vec<_>>();
+        if files.is_empty() && !dotted.starts_with('.') {
+            let rel = dotted.replace('.', "/");
             let wants = [format!("{rel}.py"), format!("{rel}.pyi"), format!("{rel}/__init__.py")];
-            let matches = |f: &str| {
-                wants.iter().any(|w| f == w || (dots == 0 && f.len() > w.len() && f.ends_with(w.as_str()) && f[..f.len() - w.len()].ends_with('/')))
-            };
-            for name in [format!("{last}.py"), format!("{last}.pyi"), "__init__.py".to_string()] {
-                for n in self.nodes_by_name(&name)?.iter() {
-                    if n.kind == "file" && matches(&n.file_path) && !out.contains(&n.file_path) {
-                        out.push(n.file_path.clone());
-                    }
+            let leaf = dotted.rsplit('.').next().unwrap_or(dotted);
+            for name in [format!("{leaf}.py"), format!("{leaf}.pyi"), "__init__.py".to_string()] {
+                for node in self.nodes_by_name(&name)?.iter() {
+                    if node.kind == "file" && wants.iter().any(|want| node.file_path == *want || node.file_path.ends_with(&format!("/{want}")))
+                        && !files.contains(&node.file_path) { files.push(node.file_path.clone()); }
                 }
             }
         }
-        let out = Rc::new(out);
+        let out = Rc::new(files);
         self.py_globals.module_files.insert(key, out.clone());
         Ok(out)
     }
@@ -1308,4 +1298,42 @@ fn python_raw_stmt(file: &PyFile, lines: &[String], k: usize) -> String {
         s.push_str(raw);
     }
     s
+}
+
+impl KernelResolver {
+    /// An import-only receiver whose module is absent from this importer's
+    /// roots cannot name a project method. Any local/global rebinding cancels
+    /// this veto, leaving ordinary receiver evidence authoritative.
+    pub(super) fn python_outside_module_receiver(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
+        if r.language != "python" || !re!(r"^\w+$").is_match(name) { return Ok(false); }
+        let imports: Vec<_> = self.import_mappings(&r.file_path)?.iter().filter(|i| i.local_name==name).cloned().collect();
+        if imports.is_empty() || self.python_global_bindings(name,&r.file_path)?.iter().any(|b| *b != PyBinding::Import)
+            || self.python_binds_locally(name,&r.file_path,r.line,false)? { return Ok(false); }
+        for import in imports {
+            if import.source.starts_with('.') || self.python_module_path(&import.source,&r.file_path)?.is_some() { return Ok(false); }
+        }
+        Ok(true)
+    }
+    /// Reuse the module-global method-value analysis for calls, including
+    /// recursion. An unknown/data member leaves the existing name strategies
+    /// in charge, matching upstream's call contract.
+    pub(super) fn python_global_receiver_call(&mut self, receiver: &str, member: &str, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        let mut site=r.clone(); site.from_node_id=String::new();
+        Ok(self.python_same_file_global(receiver,member,&site)?.flatten().map(|mut c| { c.resolved_by="instance-method"; c }))
+    }
+}
+
+#[napi]
+impl KernelResolver {
+    #[napi]
+    pub fn is_python_outside_module_receiver(&mut self, name: String, r: ResolveRefIn) -> Result<bool> {
+        self.python_outside_module_receiver(&name,&r).map_err(Error::from)
+    }
+    #[napi]
+    pub fn resolve_python_global_call(&mut self, receiver: String, member: String, r: ResolveRefIn) -> Result<ResolveOutcome> {
+        match self.python_global_receiver_call(&receiver,&member,&r).map_err(Error::from)? {
+            Some(c)=>Ok(ResolveOutcome::resolved(&c.node,c.confidence,c.resolved_by,true,None)),
+            None=>Ok(ResolveOutcome::unresolved()),
+        }
+    }
 }

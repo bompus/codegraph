@@ -179,3 +179,6 @@ impl KernelResolver {
             node, resolved_by: "qualified-name" })))
     }
 }
+
+#[path = "rust_types.rs"]
+mod rust_types;

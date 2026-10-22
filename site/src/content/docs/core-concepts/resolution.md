@@ -28,6 +28,7 @@ Static parsing misses computed and indirect calls, so flows can break at dynamic
 - React re-render (`setState` → `render`)
 - JSX child (`render` → child component)
 - Interface → implementation dispatch
+- Go calls through function-valued struct fields, including one field-to-field assignment
 
 Every synthesized edge is marked `provenance: 'heuristic'` with the site that wired it, and is shown inline wherever a path crosses it.
 
@@ -42,3 +43,9 @@ Rust chains follow declared method returns and field types. Matches without a pr
 Rust `Self::` calls use the enclosing type and prefer its inherent method. Calls into project trait implementations on standard-library types need evidence from the argument type or an in-scope project trait.
 
 C++ declarations give each listed variable its shared type, including callable locals. A source definition can implement its adjacent same-name header through transitive includes. Objective-C globals defined in source files stay local; other files reach them through header declarations.
+
+Sync retries unchanged importers when a module's default export moves or a declaration file starts supplying a package. Python module resolution follows package roots and refreshes affected imports when those roots or packages change. Python attribute calls follow declared or assigned types, including factory returns and inherited initializers.
+
+Python attribute typing follows one field hop. An untyped parameter's attributes and missing members of a module-global instance do not borrow unrelated class methods by name. Deeper chains, package qualifiers absent from the indexed roots, and subscripted bases without indexed inheritance edges can remain unresolved. Runtime changes to Python import paths, such as pytest adding a directory with `syspath_prepend`, do not establish a source root for resolution. Calls through those imports can remain unresolved.
+
+Rust paths and calls respect module imports, associated items, generic bounds and receiver types. C++ qualified calls stay within the named type or namespace. A concrete standard-library overload taking mutable class references requires matching argument types; unproved arguments remain unresolved. Go symbol lookup uses package scope. A Go interface's unexported methods match methods declared in that same package, including methods promoted through embedding. TypeScript type-only imports and re-exports retain their type boundary.

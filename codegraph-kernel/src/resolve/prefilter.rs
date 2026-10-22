@@ -454,6 +454,7 @@ impl KernelResolver {
         }
         let rows = self.bindings(&r.file_path)?;
         let root = r.reference_name.split('.').next().unwrap_or("");
+        if self.js_loop_binding(r, root) { return Ok(true); }
         let Some(b) = innermost_binding(&rows, root, Some(r.line)) else { return Ok(false) };
         match b.kind.as_str() {
             "param" => Ok(true),

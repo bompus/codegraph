@@ -65,9 +65,12 @@ impl<'t> Walker<'t> {
         }
     }
 
-    pub(super) fn scan_fn_ref_subtree(&mut self, node: Node<'t>, depth: u32) {
+    pub(super) fn scan_fn_ref_subtree(&mut self, node: Node<'t>, depth: u32, walked: &[usize]) {
         stack_guard!();
         if depth > 12 {
+            return;
+        }
+        if walked.contains(&node.id()) {
             return;
         }
         // (functionTypes is empty for Java; lambda_expression halts the scan)
@@ -76,7 +79,7 @@ impl<'t> Walker<'t> {
         }
         self.maybe_capture_fn_refs(node);
         for c in named_kids(node) {
-            self.scan_fn_ref_subtree(c, depth + 1);
+            self.scan_fn_ref_subtree(c, depth + 1, walked);
         }
     }
 

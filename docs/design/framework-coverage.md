@@ -548,10 +548,11 @@ Each of these cost real debugging time; they are not hypothetical.
    binding rows. A tag's edge depends on the modules the file's lazy values
    load; the fork re-runs synthesis on every sync that changes a file, so a
    sync that gives one its default export redraws the tag, as a fresh index
-   would draw it. Known limit: TypeScript keeps types and values in separate
-   namespaces, but the resolver does not, so a `.tsx` type reference to a name
-   the file also declares as a lazy value (`type User = …; const User =
-   lazy(…)`) binds to the loaded page, not to the type.
+   would draw it. Type positions use TypeScript's type namespace. In
+   `type User = …; const User = lazy(…)`, a type annotation binds to the
+   type alias while a JSX tag follows the lazy value. A lexical type
+   declaration shadows an imported type only inside its enclosing scope.
+   `typeof` retains value lookup.
 20. **A tag imported from the project is what its module exports under the
    name, and a tag in a comment or a string is no tag.** `jsxChild` asks
    `exportedComponent` (the lookup a lazy route's module goes through) for a
@@ -686,3 +687,18 @@ React Router lazy modules follow default or `Component` exports through local na
 Regression coverage: `__tests__/react-router-lazy-barrel.test.ts`, `__tests__/jsx-child-disambiguation.test.ts` and `__tests__/sync-jsx-import-forwarding.test.ts`. These deterministic cases do not establish a new agent-evaluation or performance result.
 
 JSX child rendering preserves tags after plain text and line breaks. The lexer blanks child text without shifting source positions; type arguments and quoted examples remain excluded. Regression coverage is in `__tests__/jsx-child-disambiguation.test.ts`.
+
+### React wrappers and Express handler arguments
+
+React component declarations retain the function or value that owns their
+initializer. JSX outside a function still links from its enclosing value or
+file. Wrapper calls such as `memo`, `forwardRef` and `observer` retain the
+wrapped declaration. A module import must resolve to an exported component;
+a same-named declaration in another module does not supply a missing export.
+
+Express route extraction reads balanced arguments, including arrays, inline
+callbacks and trailing commas. Only handler arguments supply route targets.
+Strings, comments and route-path arguments do not become handlers. These
+contracts are covered by `react-wrapper-initializers.test.ts`,
+`jsx-render-outside-function.test.ts`, `react-own-declaration.test.ts` and
+`express-handler-arguments.test.ts`; they do not establish whole-framework recall.

@@ -270,6 +270,53 @@ describe('sync WAL deferral end-to-end (#1248)', () => {
   // every incremental run (2 minutes for a 7-file sync). These pin that sync
   // defers during the run, restores after — success AND no-change paths —
   // and that a deferred sync produces the same graph as an undeferred one.
+  it('quiesces off-thread checkpoints before incremental native readers', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'a.ts'), 'export class A {}\nexport class B {}\nexport default A;\n');
+    fs.writeFileSync(path.join(tmpDir, 'use.ts'), "import A from './a'; export function make() { return new A(); }\n");
+    fs.writeFileSync(path.join(tmpDir, 'main.py'), 'class Store:\n    def fetch(self): pass\nclass App:\n    def __init__(self): self.cache = Store()\n    def run(self): self.cache.fetch()\n');
+    const cg = await CodeGraph.init(tmpDir, { index: true });
+    const resolver = (cg as unknown as { resolver: ReferenceResolver }).resolver;
+    const violations: string[] = [];
+    let stopped = false;
+    let drained = false;
+    let starts = 0;
+    const start = WalCheckpointValve.prototype.start;
+    const stop = WalCheckpointValve.prototype.stop;
+    const drain = WalCheckpointValve.prototype.drain;
+    const startSpy = vi.spyOn(WalCheckpointValve.prototype, 'start').mockImplementation(function () {
+      starts++;
+      stopped = false; drained = false;
+      return start.call(this);
+    });
+    const stopSpy = vi.spyOn(WalCheckpointValve.prototype, 'stop').mockImplementation(function () {
+      stopped = true;
+      return stop.call(this);
+    });
+    const drainSpy = vi.spyOn(WalCheckpointValve.prototype, 'drain').mockImplementation(async function () {
+      await drain.call(this);
+      drained = true;
+    });
+    // Observe the real native connection boundary, rather than relying on a
+    // nondeterministic cross-build WAL corruption to expose the race.
+    const native = resolver as unknown as { openKernelResolver: (...args: unknown[]) => unknown };
+    const open = native.openKernelResolver;
+    const readerSpy = vi.spyOn(native, 'openKernelResolver').mockImplementation(function (...args) {
+      if (!args[3] && (!stopped || !drained)) violations.push('live reader before checkpoint drain');
+      return open.apply(resolver, args);
+    });
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'a.ts'), 'export class A {}\nexport class B {}\nexport default B;\n');
+      fs.appendFileSync(path.join(tmpDir, 'main.py'), '\ndef added(): pass\n');
+      await cg.sync();
+      expect(starts).toBeGreaterThan(0);
+      expect(readerSpy).toHaveBeenCalled();
+      expect(violations).toEqual([]);
+    } finally {
+      readerSpy.mockRestore(); startSpy.mockRestore(); stopSpy.mockRestore(); drainSpy.mockRestore();
+      await cg.close();
+    }
+  });
+
   it('defers the autocheckpoint interval DURING sync and restores it after', async () => {
     writeFixtureProject();
     const cg = CodeGraph.initSync(tmpDir);

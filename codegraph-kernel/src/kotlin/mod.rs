@@ -505,8 +505,8 @@ impl<'t> Walker<'t> {
 
     fn visit_node(&mut self, node: Node<'t>) {
         stack_guard!();
-        if self.try_visit_hook(node) {
-            self.scan_fn_ref_subtree(node, 0);
+        if let Some(walked) = self.try_visit_hook(node) {
+            self.scan_fn_ref_subtree(node, 0, &walked);
             return;
         }
 
@@ -555,7 +555,7 @@ impl<'t> Walker<'t> {
             // Hook-declined destructuring: extractField/extractVariable both
             // find no matching children for kotlin — NOTHING minted, RHS
             // invisible; candidates-only scan.
-            self.scan_fn_ref_subtree(node, 0);
+            self.scan_fn_ref_subtree(node, 0, &[]);
             skip_children = true;
         } else if kind == "import_header" {
             self.extract_import(node);

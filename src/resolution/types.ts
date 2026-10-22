@@ -144,6 +144,8 @@ export interface ResolutionContext {
   getFileLines?(filePath: string): string[] | null;
   /** Get project root */
   getProjectRoot(): string;
+  /** Borrow the current-generation native scope reader for one synthesis pass. */
+  withGoLocalDeclarations?<T>(run: (lookup: import('./go-func-field-synthesizer').GoLocalDeclarationLookup) => Promise<T>): Promise<T>;
   /** Get all files */
   getAllFiles(): string[];
 
@@ -179,6 +181,12 @@ export interface ResolutionContext {
    * to no project file. Supplied by the coordinator, like `resolveImport`.
    */
   isOutOfRepoImport?(source: string, fromFile: string, language: Language): boolean;
+  /**
+   * The project file a module specifier, written in `fromFile`, names — the
+   * import resolver's own answer (for Python: from the package roots), or null
+   * when no project file provides it. Supplied by the coordinator.
+   */
+  resolveModuleFile?(source: string, fromFile: string, language: Language): string | null;
   /**
    * Whether `source`, imported from `fromFile`, is a package: one the file's
    * package.json or an enclosing one declares, a Node built-in, or a

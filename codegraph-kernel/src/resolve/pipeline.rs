@@ -242,7 +242,7 @@ impl KernelResolver {
         }
     }
 
-    pub(super) fn resolve_nonbare_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
+    fn resolve_nonbare_ref(&mut self, r: &ResolveRefIn, python_attribute: Option<(bool, Option<String>)>) -> Res<ResolveOutcome> {
         // Vue route imports name a rendered component, never the module's file node.
         if r.reference_kind == "calls" && r.from_node_id.starts_with("route:")
             && r.from_node_id.ends_with(":vue") && r.reference_name.starts_with("import:")
@@ -379,6 +379,27 @@ if super::lang_scope::is_dart_member_read(r) {
         if let Some(c) = self.match_object_path_call(r)? {
             if let Some(c) = self.gate_language(Some(c), r) { return self.finish(r, c, None, true); }
         }
+        if r.language == "python" && r.reference_kind == "calls" {
+            if let Some(candidate) = self.resolve_via_import_member(r)? {
+                if let Some(candidate) = self.gate_language(Some(candidate), r) {
+                    return self.finish_pre_framework(r, candidate);
+                }
+            }
+            let root = r.reference_name.split('.').next().unwrap_or(&r.reference_name);
+            if r.reference_name.contains('.') && self.python_outside_module_receiver(root, r)? {
+                return Ok(self.refused());
+            }
+            if let Some((true, target)) = python_attribute {
+                return match target {
+                    Some(id) => match self.node_by_id(&id)? {
+                        Some(node) => self.finish_pre_framework(r, KCand { node, confidence: 0.9, resolved_by: "instance-method" }),
+                        None => Ok(self.refused()),
+                    },
+                    None => Ok(self.refused()),
+                };
+            }
+        }
+
         // matchBoundReceiverCall — claimed refs are terminal either way.
         let namespace_chain = is_unresolved_js_member_call(r)
             && self.import_mappings(&r.file_path)?.iter().any(|m| m.is_namespace
@@ -583,12 +604,24 @@ if super::lang_scope::is_dart_member_read(r) {
     /// gateTargetKind (index.ts): the imports/inheritance target-kind gates
     /// plus the out-of-repo import check.
     pub(super) fn gate_target_kind(&mut self, cand: KCand, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        if r.language == "python" && r.reference_kind == "calls" && self.is_python_property(&cand.node) {
+            return Ok(None);
+        }
         // A `#define` is a value, never a callee (#1838).
         if r.reference_kind == "calls" && cpp::is_define(&cand.node) {
             return Ok(None);
         }
         if r.reference_kind == "imports" {
+            if r.language == "python" && self.is_python_from_import_module(r.clone())
+                && !matches!(cand.node.kind.as_str(), "file" | "module") { return Ok(None); }
             if cand.node.kind == "import" { return Ok(None); }
+            if is_js_family(&r.language) {
+                let mapping = self.import_mappings(&r.file_path)?.iter().find(|m| m.local_name == r.reference_name).cloned();
+                if let Some(mapping) = mapping {
+                    let source = self.resolve_import_path(&mapping.source, &r.file_path, &r.language)?.unwrap_or_else(|| r.file_path.clone());
+                    if !self.ts_import_target_visible(&cand.node, &source, r)? { return Ok(None); }
+                }
+            }
             return Ok(if is_importable_kind(&cand.node.kind) {
                 Some(cand)
             } else {
@@ -778,6 +811,24 @@ if super::lang_scope::is_dart_member_read(r) {
 
     /// The per-ref pipeline: the Rust `::`-path arm, then one route.
     pub(super) fn resolve_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
+        let attribute = if r.language == "python" && r.reference_kind == "calls" {
+            Some(self.resolve_python_attribute(r.clone())?)
+        } else { None };
+        let answer = attribute.as_ref().map(|a| (a.claimed, a.target_node_id.clone()));
+        let mut outcome = self.resolve_ref_inner(r, answer)?;
+        if let Some(attribute) = attribute {
+            if !attribute.type_from.is_empty() { outcome.type_from = Some(attribute.type_from); }
+        }
+        Ok(outcome)
+    }
+
+    fn resolve_ref_inner(&mut self, r: &ResolveRefIn, python_attribute: Option<(bool, Option<String>)>) -> Res<ResolveOutcome> {
+        if r.language == "python" && r.reference_kind == "imports" {
+            let mappings = self.import_mappings(&r.file_path)?;
+            if let Some(binding) = mappings.iter().find(|m| !m.is_namespace && m.local_name == r.reference_name) {
+                if self.python_module_path(&binding.source, &r.file_path)?.is_none() { return Ok(self.refused()); }
+            }
+        }
         if let Some(result) = self.cpp_construction(r)? {
             return match result { Some(candidate) => self.finish_pre_framework(r, candidate), None => Ok(self.refused()) };
         }
@@ -794,6 +845,15 @@ if super::lang_scope::is_dart_member_read(r) {
         }
         if matches!(r.language.as_str(), "c" | "cpp") && is_inheritance_ref(&r.reference_kind) {
             return self.resolve_cpp_supertype(r);
+        }
+        if let Some(result) = self.ts_scoped_reference(r)? {
+            return match result {
+                Some(candidate) => match self.gate_target_kind(candidate, r)? {
+                    Some(candidate) => self.finish_pre_framework(r, candidate),
+                    None => Ok(self.refused()),
+                },
+                None => Ok(self.refused()),
+            };
         }
         if let Some(outcome) = self.resolve_shopify_file(r)? { return Ok(outcome); }
         if matches!(r.language.as_str(), "lua" | "luau") && r.reference_kind == "imports" {
@@ -842,6 +902,12 @@ if super::lang_scope::is_dart_member_read(r) {
         if self.is_visible_cpp_macro(r)? {
             return Ok(ResolveOutcome::unresolved());
         }
+        if let Some(result) = self.rust_written_call(r)? {
+            return match result {
+                Some(candidate) => self.finish(r, candidate, None, true),
+                None => Ok(ResolveOutcome::unresolved()),
+            };
+        }
         if is_rust_path_ref(r) {
             if let Some(o) = self.resolve_rust_path_ref(r)? {
                 return Ok(o);
@@ -873,7 +939,7 @@ if super::lang_scope::is_dart_member_read(r) {
             // Member-access slice (§5.16): boundReceiver's DB sub-arms, the
             // import member descent, filePath, qualifiedName and the member
             // matchers.
-            Route::NonBare => probe!(r, "resolve_nonbare_ref", self.resolve_nonbare_ref(r)),
+            Route::NonBare => probe!(r, "resolve_nonbare_ref", self.resolve_nonbare_ref(r, python_attribute)),
             Route::Bare => self.resolve_bare_ref(r),
         }
     }
@@ -1280,9 +1346,6 @@ impl KernelResolver {
     /// declaration is no such binding, and neither is the right side of the
     /// `:=` that declares the name (`log := log.G(ctx)`).
     pub(super) fn is_go_locally_bound(&mut self, r: &ResolveRefIn) -> Res<bool> {
-        let rows = self.bindings(&r.file_path)?;
-        let before = self.go_declares_on_line(&r.reference_name, r, &rows);
-        Ok(innermost_binding_unless(&rows, &r.reference_name, Some(r.line), before)
-            .is_some_and(|b| matches!(b.kind.as_str(), "local" | "param")))
+        Ok(self.go_local_declaration_at(r.reference_name.clone(), r.file_path.clone(), r.line, r.column)?.is_some())
     }
 }

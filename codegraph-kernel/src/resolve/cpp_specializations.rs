@@ -22,6 +22,7 @@ impl KernelResolver {
     /// `b::f` in place, for the call's scope to choose between them.
     pub(super) fn cpp_specialization_pool(&mut self, candidates: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Vec<Arc<KNode>> {
         if r.language != "cpp" { return candidates; }
+        let candidates = self.cpp_qualifier_specialization_pool(candidates, r);
         let written: Vec<Option<Rc<Vec<String>>>> = candidates.iter().map(|n| self.cpp_specialization_arguments(n)).collect();
         if written.iter().all(Option::is_none) { return candidates; }
         let args = self.cpp_call_template_arguments(r);
@@ -40,6 +41,25 @@ impl KernelResolver {
             kept.extend(if named.is_empty() { others } else { named });
         }
         candidates.into_iter().enumerate().filter(|(i, _)| kept.contains(i)).map(|(_, n)| n).collect()
+    }
+
+    fn cpp_qualifier_specialization_pool(&mut self, candidates: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Vec<Arc<KNode>> {
+        let parts: Vec<_> = r.reference_name.split("::").collect();
+        if parts.len() < 2 { return candidates; }
+        let Some(source) = self.read_file(&r.file_path) else { return candidates };
+        let text = source.iter().skip((r.line - 1).max(0) as usize).take(4).cloned().collect::<Vec<_>>().join("\n");
+        let qualifier = parts[parts.len() - 2];
+        let Some(args) = cpp_template_arguments_after(&text, qualifier, 0) else { return candidates };
+        candidates.into_iter().filter(|node| {
+            let head = node.signature.clone().or_else(|| self.read_file(&node.file_path).map(|s| s.iter().skip((node.start_line - 1).max(0) as usize).take(4).cloned().collect::<Vec<_>>().join(" "))).unwrap_or_default();
+            // A primary template's own T is bound by the call; a fully written
+            // out-of-line specialization is constrained by its owner arguments.
+            if re!(r"template\s*<\s*[^>\s]").is_match(&head)
+                || self.cpp_own_template_parameters(node, r).is_ok_and(|parameters| !parameters.is_empty()) { return true; }
+            let Some(owner) = node.qualified_name.rsplit_once("::").and_then(|(o, _)| o.rsplit("::").next()) else { return true };
+            let Some(written) = cpp_template_arguments_after(&head, owner, 0) else { return true };
+            cpp_template_arguments_match(&written, &args)
+        }).collect()
     }
 
     /// The template arguments the C++ function or method `n` is an explicit specialization for,

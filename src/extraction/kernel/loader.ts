@@ -265,6 +265,7 @@ export interface ResolveOutcome {
   preFramework?: boolean;
   /** On an unresolved TS/JS member call, the head of the type its receiver is declared with. */
   typeHead?: string;
+  typeFrom?: string[];
 }
 
 export interface KernelResolverLike {
@@ -276,6 +277,15 @@ export interface KernelResolverLike {
   resolveDeferredThisMembers(refs: ResolveRefIn[]): ResolveOutcome[];
   /** The import arm for one ref, behind `context.resolveImport`. */
   resolveViaImportRef(ref: ResolveRefIn): ResolveOutcome;
+  resolvePythonModule(spec: string, from: string): string | null;
+  pythonPackageRoots(): string;
+  pythonPackageReopenScope(files: string[]): { targetFiles: string[]; sourceDirs: string[]; moduleLeaves: string[] };
+  pythonPackageImportBindings(inits: string[]): { filePath: string; localName: string; binding?: string }[];
+  clearPythonModuleCaches(): void;
+  isPythonFromImportModule(ref: ResolveRefIn): boolean;
+  isPythonOutsideModuleReceiver(name: string, ref: ResolveRefIn): boolean;
+  resolvePythonGlobalCall(receiver: string, member: string, ref: ResolveRefIn): ResolveOutcome;
+  resolvePythonAttribute(ref: ResolveRefIn): { claimed: boolean; targetNodeId?: string; typeFrom: string[] };
   isNameCandidateVisible(nodeId: string, ref: ResolveRefIn): boolean;
   /** Deterministic conn teardown — must run while no other-build conn can do
    *  shm work (before pool workers spawn / after they die). Without it the
@@ -294,7 +304,14 @@ export interface ContainedSourceReaderLike {
   read(relative: string, maxFileBytes: number, remainingBytes: number): ContainedSourceRead;
 }
 
+export interface GoSourceScopeLike {
+  declarationAt(name: string, line: number, column: number): {
+    line: number; column: number; declaredType?: string;
+  } | null;
+}
+
 export interface KernelModule {
+  GoSourceScope?: new (source: string) => GoSourceScopeLike;
   /** Required for writer mutations; older kernels remain usable for reads. */
   tryWriterMutationLock?(path: string): { release(): void } | null;
   /** Descriptor-verified source reads. Older released kernels omit this API;

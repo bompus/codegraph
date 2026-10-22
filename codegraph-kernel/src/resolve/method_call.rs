@@ -684,13 +684,6 @@ impl KernelResolver {
             }
         }
 
-        // Python `<local>.<field>.method()`: the local's class settles the
-        // field's type, as it does for `self.<field>`.
-        if r.language == "python" && dotted {
-            if let Some(verdict) = self.python_local_field_call(&object_or_class, &method_name, r)? {
-                return Ok(verdict);
-            }
-        }
 
         if inferable {
             if r.language == "go" {
@@ -737,9 +730,17 @@ impl KernelResolver {
                 self.infer_declared_member_receiver_type(&format!("this.{object_or_class}"), r)?
             } else if r.language == "cpp" {
                 self.infer_cpp_receiver_type(&object_or_class, r, 0, true)?
+            } else if r.language == "python" && object_or_class.contains('.') {
+                None
             } else {
                 probe!(r, "mc:infer-local", self.infer_local_receiver_type(&object_or_class, &site, true)?)
             };
+            if r.language == "objc" && inferred.is_none() {
+                inferred = self.objc_member_receiver_type(&object_or_class, r)?;
+            }
+            if inferred.is_none() && r.language == "python" && !object_or_class.contains('.') {
+                if let Some(hit) = self.python_global_receiver_call(&object_or_class, &method_name, r)? { return Ok(Some(hit)); }
+            }
             if inferred.is_none() { if let Some(verdict)=self.python_fixture_member(&object_or_class,&method_name,r)? { return Ok(verdict); } }
 if inferred.is_none() && r.language == "dart" {
     inferred = self.infer_dart_field_receiver_type(&object_or_class, r)?;
@@ -894,6 +895,8 @@ if inferred.is_none() && r.language == "dart" {
                 }
             } else if r.language == "cpp" {
                 self.infer_cpp_receiver_type(&object_or_class, r, 0, false)?
+            } else if r.language == "python" && object_or_class.contains('.') {
+                None
             } else {
                 self.infer_local_receiver_type(&object_or_class, r, r.language == "go")?
             };
@@ -902,6 +905,12 @@ if inferred.is_none() && r.language == "dart" {
             let mut inferred = if matches!(r.language.as_str(), "java" | "kotlin" | "csharp") && self.explicit_this_receiver(&object_or_class, &method_name, r) {
                 self.infer_declared_member_receiver_type(&format!("this.{object_or_class}"), r)?
             } else { inferred };
+            if r.language == "objc" && inferred.is_none() {
+                inferred = self.objc_member_receiver_type(&object_or_class, r)?;
+            }
+            if inferred.is_none() && r.language == "python" && !object_or_class.contains('.') {
+                if let Some(hit) = self.python_global_receiver_call(&object_or_class, &method_name, r)? { return Ok(Some(hit)); }
+            }
             if inferred.is_none() { if let Some(verdict)=self.python_fixture_member(&object_or_class,&method_name,r)? { return Ok(verdict); } }
 if inferred.is_none() && r.language == "dart" {
     inferred = self.infer_dart_field_receiver_type(&object_or_class, r)?;
@@ -991,6 +1000,7 @@ if inferred.is_none() && r.language == "dart" {
                         }
                         return Ok(Some(c));
                     }
+                    None if r.language == "objc" => return Ok(None),
                     None if awaited_file.is_some() => return Ok(None),
                     None if matches!(r.language.as_str(), "java" | "kotlin" | "csharp") => {
                         return self.unique_csharp_extension_method(&t, &method_name, r);
@@ -1078,13 +1088,6 @@ if inferred.is_none() && r.language == "dart" {
             }
         }
 
-        // Python `self.<field>.method()`: the field's type from its class
-        // settles the call when it is known.
-        if r.language == "python" && dotted {
-            if let Some(verdict) = self.python_self_field_call(&object_or_class, &method_name, r)? {
-                return Ok(verdict);
-            }
-        }
 
         // A VB.NET receiver the file declares as a variable (`Dim logger As
         // New FileLogger()`) is a value; that its spelling matches a type
@@ -1415,7 +1418,7 @@ if inferred.is_none() && r.language == "dart" {
                 // `Loudspeaker`. In C and C++, only a method of exactly that
                 // class: protobuf's `arena.get()` is not `Arena::UniquePtr::get`.
                 .find(|n| {
-                    n.kind == "method" && n.name == method && if matches!(c.language.as_str(), "c" | "cpp") {
+                    n.kind == "method" && n.name == method && if matches!(c.language.as_str(), "c" | "cpp" | "python" | "r") {
                         n.qualified_name == format!("{}::{method}", c.qualified_name)
                     } else {
                         n.qualified_name.split([':', '.']).any(|s| s == c.name)

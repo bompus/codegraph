@@ -213,3 +213,125 @@ impl KernelResolver {
         })
     }
 }
+
+/// An actual lexical declaration, including the name's position for reading
+/// its initializer. Used by func-field synthesis through the native bridge.
+fn local_declaration_in<'a>(scope: TsNode<'a>, name: &str, site: usize, text: &str) -> Option<(TsNode<'a>, Option<String>)> {
+    fn names<'a>(decl: TsNode<'a>, name: &str, text: &str) -> Option<(TsNode<'a>, Option<String>)> {
+        let mut cursor = decl.walk();
+        let target = decl.children_by_field_name("name", &mut cursor).find(|n| text_of(*n, text) == name)?;
+        Some((target, decl.child_by_field_name("type").map(|t| text_of(t, text).to_string())))
+    }
+    fn statement<'a>(stmt: TsNode<'a>, name: &str, text: &str) -> Option<(TsNode<'a>, Option<String>)> {
+        match stmt.kind() {
+            "short_var_declaration" | "range_clause" => {
+                let target = identifiers(stmt.child_by_field_name("left")?).into_iter().find(|n| text_of(*n, text) == name)?;
+                Some((target, None))
+            }
+            "var_spec" | "const_spec" | "parameter_declaration" | "variadic_parameter_declaration" => names(stmt, name, text),
+            "var_declaration" | "const_declaration" | "var_spec_list" | "parameter_list" => {
+                let mut c = stmt.walk();
+                stmt.named_children(&mut c).filter_map(|s| statement(s, name, text)).last()
+            }
+            _ => None,
+        }
+    }
+    match scope.kind() {
+        "block" | "expression_case" | "default_case" | "type_case" | "communication_case" => {
+            let mut c=scope.walk();
+            scope.named_children(&mut c).filter(|s| s.end_byte() <= site).filter_map(|s| statement(s, name, text)).last()
+        }
+        "if_statement" | "expression_switch_statement" | "type_switch_statement" | "for_statement" => {
+            if let Some(alias) = scope.child_by_field_name("alias").filter(|n| n.end_byte() <= site) {
+                if let Some(target) = identifiers(alias).into_iter().find(|n| text_of(*n, text) == name) { return Some((target,None)); }
+            }
+            let mut c=scope.walk();
+            for child in scope.named_children(&mut c).filter(|n| n.end_byte() <= site) {
+                if let Some(hit) = statement(child, name, text) { return Some(hit); }
+                if child.kind() == "for_clause" {
+                    if let Some(hit) = child.child_by_field_name("initializer").and_then(|i| statement(i,name,text)) { return Some(hit); }
+                }
+            }
+            None
+        }
+        "function_declaration" | "method_declaration" | "func_literal" => {
+            ["receiver", "parameters", "result"].iter().filter_map(|f| scope.child_by_field_name(f)).filter(|n| n.kind() == "parameter_list").find_map(|n| statement(n,name,text))
+        }
+        _ => None,
+    }
+}
+
+#[napi(object)]
+pub struct GoLocalDeclaration { pub line: i64, pub column: i64, pub declared_type: Option<String> }
+
+/// Source-only lexical lookup. Synthesis must not attach to the live WAL.
+#[napi]
+pub struct GoSourceScope {
+    source: String,
+    tree: tree_sitter::Tree,
+}
+
+#[napi]
+impl GoSourceScope {
+    #[napi(constructor)]
+    pub fn new(source: String) -> Result<Self> {
+        let tree = crate::tree::parse_with_cached_parser(&source, "go")?;
+        Ok(Self { source, tree })
+    }
+
+    #[napi]
+    pub fn declaration_at(&self, name: String, line: i64, column: i64) -> Option<GoLocalDeclaration> {
+        local_at(&self.tree, &self.source, &name, line, column)
+    }
+}
+
+fn local_at(tree: &tree_sitter::Tree, source: &str, name: &str, line: i64, column: i64) -> Option<GoLocalDeclaration> {
+        let site = super::iteration::descendant_for_position(tree.root_node(), source,
+            ((line - 1).max(0) as usize, column.max(0) as usize));
+        let mut scope = Some(site);
+        while let Some(node) = scope {
+            if let Some((target, ty)) = local_declaration_in(node, name, site.start_byte(), source) {
+                return Some(GoLocalDeclaration { line: target.start_position().row as i64 + 1,
+                    column: target.start_position().column as i64, declared_type: ty });
+            }
+            if matches!(node.kind(), "function_declaration" | "method_declaration") { break; }
+            scope = node.parent();
+        }
+        None
+}
+
+impl KernelResolver {
+    pub(super) fn go_local_declaration_at(&mut self, name: String, file_path: String, line: i64, column: i64) -> Result<Option<GoLocalDeclaration>> {
+        let r = ResolveRefIn { row_id: None, from_node_id: String::new(), reference_name: name.clone(), reference_kind: "references".into(),
+            line, column, candidates: None, file_path: file_path.clone(), language: "go".into(), failure_reason: None };
+        let Some(file) = self.read_file(&file_path) else { return Ok(None) };
+        let Some(tree) = self.parsed_tree(&file, &r) else { return Ok(None) };
+        Ok(local_at(&tree, file.text(), &name, line, column))
+    }
+}
+
+#[cfg(test)]
+mod declaration_tests {
+    use super::*;
+    fn declaration(source: &str, name: &str, needle: &str) -> Option<(usize, Option<String>)> {
+        let mut parser=tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_go::LANGUAGE.into()).unwrap();
+        let tree=parser.parse(source,None).unwrap(); let offset=source.find(needle).unwrap();
+        let mut scope=tree.root_node().descendant_for_byte_range(offset,offset);
+        while let Some(node)=scope {
+            if let Some((target,ty))=local_declaration_in(node,name,offset,source) { return Some((target.start_position().row+1,ty)); }
+            scope=node.parent();
+        }
+        None
+    }
+    #[test]
+    fn grouped_and_qualified_parameters_keep_their_declared_types() {
+        assert_eq!(declaration("package p\nfunc f(a,b *other.Client) { b.Send() }", "b", "b.Send"),Some((2,Some("*other.Client".into()))));
+    }
+    #[test]
+    fn closed_case_locals_and_func_result_parameters_do_not_escape() {
+        let text="package p\nfunc f(x other.Client) func(hidden T) {\n switch n {\n case 1: x := v; x.Send()\n case 2: x.Send()\n }\n x.Send()\n}";
+        assert_eq!(declaration(text,"x","case 2: x.Send"),Some((2,Some("other.Client".into()))));
+        assert_eq!(declaration(text,"hidden","case 2:"),None);
+    }
+}

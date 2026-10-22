@@ -3,7 +3,7 @@
 //! names it (tsKnownTypeCall, tsMethodUpChain, tsNamedType and
 //! tsOutsideTypeDeclaration of upstream's name-matcher.ts).
 
-use super::fields::{ts_class_head, TS_BASE_WALK_DEPTH};
+use super::fields::TS_BASE_WALK_DEPTH;
 use super::*;
 
 /// What a type name written in a file names.
@@ -82,7 +82,8 @@ impl KernelResolver {
         if !self.is_out_of_repo_import(&binding.source, &at.file_path, &at.language)? {
             return Ok(None);
         }
-        let key = (binding.source.clone(), type_name.to_string());
+        if let Some(node) = self.ts_ambient_lookup(&binding.source, type_name, false, at)? { return Ok(Some(Some(node.file_path.clone()))); }
+        let key = (format!("{}\0{}", binding.source, at.file_path), type_name.to_string());
         if let Some(hit) = self.ts_ambient_memo.get(&key) {
             return Ok(Some(hit.clone()));
         }
@@ -108,7 +109,24 @@ impl KernelResolver {
     /// extends something that isn't a name, like a mixin call.
     fn ts_head_supertypes(&mut self, cls: &KNode) -> Option<Vec<String>> {
         let source = self.read_file(&cls.file_path)?;
-        let head = ts_class_head(&source, cls);
+        // Multiline interface heads can exceed the shared class-head scan's
+        // eight-line budget; bound this read by the declaration's own extent.
+        let head = source.iter().skip((cls.start_line - 1).max(0) as usize)
+            .take((cls.end_line - cls.start_line + 1).clamp(1, 80) as usize).cloned().collect::<Vec<_>>().join(" ");
+        let mut clean = String::new();
+        let mut depth = 0usize;
+        let mut previous = ' ';
+        for ch in head.chars() {
+            match ch {
+                '<' => depth += 1,
+                '>' if depth > 0 && previous != '=' => depth -= 1,
+                '{' if depth == 0 => break,
+                _ if depth == 0 => clean.push(ch),
+                _ => {},
+            }
+            previous = ch;
+        }
+        let head = clean;
         let mut out = Vec::new();
         for (keyword, clause) in [
             ("extends", re!(r"(?-u:\b)extends(?-u:\b)([\s\S]*?)(?:(?-u:\b)(?:extends|implements)(?-u:\b)|$)")),
@@ -208,6 +226,17 @@ impl KernelResolver {
             .collect();
         if let Some(own) = members.iter().find(|n| n.kind == "method") {
             return Ok((Some(own.clone()), true));
+        }
+        if let Some(scan) = self.ts_scope_scan(&cls.file_path, at) {
+            if let Some(block) = scan.blocks.iter().find(|b| b.ambient && b.contains(cls.start_line, cls.start_column)) {
+                let module = block.name.clone();
+                for candidate in self.nodes_by_name(&cls.name)?.iter().filter(|n| n.id != cls.id && is_member_owner_kind(&n.kind)).cloned().collect::<Vec<_>>() {
+                    if !self.ts_scope_scan(&candidate.file_path, at).is_some_and(|scan| scan.blocks.iter().any(|b| b.ambient && b.name == module && b.contains(candidate.start_line, candidate.start_column))) { continue; }
+                    if let Some(node) = self.nodes_in_file(&candidate.file_path)?.iter().find(|n| n.name == name && n.kind == "method" && n.start_line >= candidate.start_line && n.end_line <= candidate.end_line).cloned() {
+                        return Ok((Some(node), true));
+                    }
+                }
+            }
         }
         // A property of that name is what the call calls, but no method to
         // link, so the answer is left to the lookups that follow.
@@ -434,5 +463,364 @@ impl KernelResolver {
             return Ok(None);
         }
         Ok(raw.split(|c: char| c == '.' || c == '<' || c == '[' || c.is_whitespace()).next().filter(|h| !h.is_empty()).map(str::to_string))
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct TsScopeBlock {
+    name: String,
+    start: (i64, i64),
+    end: (i64, i64),
+    pub(super) ambient: bool,
+    global: bool,
+    text: String,
+}
+impl TsScopeBlock {
+    pub(super) fn contains(&self, line: i64, column: i64) -> bool {
+        self.start <= (line, column) && (line, column) <= self.end
+    }
+}
+
+pub(super) struct TsScopeScan {
+    module_file: bool,
+    pub(super) blocks: Vec<TsScopeBlock>,
+}
+
+impl KernelResolver {
+    pub(super) fn ts_scope_scan(&mut self, file: &str, r: &ResolveRefIn) -> Option<TsScopeScan> {
+        let source = self.read_file(file)?;
+        let mut site = r.clone(); site.file_path = file.to_string(); site.language = "typescript".to_string();
+        let tree = self.js_binding_tree(&source, &site)?;
+        let children = super::iteration::named_children(tree.root_node());
+        let module_file = children.iter().any(|n| matches!(n.kind(), "import_statement" | "export_statement")
+            && !source.text()[n.byte_range()].trim_start().starts_with("export as namespace"));
+        let mut pending = children;
+        let mut blocks = Vec::new();
+        while let Some(node) = pending.pop() {
+            let raw = &source.text()[node.byte_range()];
+            if matches!(node.kind(), "internal_module" | "module") {
+                if let Some(name) = node.child_by_field_name("name") {
+                    let name = source.text()[name.byte_range()].trim().to_string();
+                    blocks.push(TsScopeBlock {
+                        ambient: name.starts_with(['\'', '"']), global: name == "global",
+                        name: name.trim_matches(['\'', '"']).to_string(),
+                        start: (node.start_position().row as i64 + 1, node.start_position().column as i64),
+                        end: (node.end_position().row as i64 + 1, node.end_position().column as i64), text: raw.to_string(),
+                    });
+                }
+            } else if node.kind() == "ambient_declaration" && re!(r"^declare\s+global\s*\{").is_match(raw.trim()) {
+                blocks.push(TsScopeBlock { name: "global".to_string(), ambient: false, global: true,
+                    start: (node.start_position().row as i64 + 1, node.start_position().column as i64),
+                    end: (node.end_position().row as i64 + 1, node.end_position().column as i64), text: raw.to_string() });
+            }
+            pending.extend(super::iteration::named_children(node));
+        }
+        Some(TsScopeScan { module_file, blocks })
+    }
+
+    fn ts_scope_candidate(&mut self, n: &KNode, r: &ResolveRefIn) -> bool {
+        let Some(scan) = self.ts_scope_scan(&n.file_path, r) else { return false };
+        let containing: Vec<_> = scan.blocks.iter().filter(|b| b.contains(n.start_line, n.start_column)).collect();
+        if n.file_path == r.file_path {
+            return containing.iter().all(|b| b.global || b.contains(r.line, r.column));
+        }
+        if is_test_path(&n.file_path) && !is_test_path(&r.file_path) { return false; }
+        if containing.iter().any(|b| b.ambient || (!b.global && b.name != "global")) { return false; }
+        containing.iter().any(|b| b.global) || (!scan.module_file && re!(r"\.d\.[cm]?ts$").is_match(&n.file_path) && !n.qualified_name.contains("::"))
+    }
+
+    pub(super) fn ts_import_target_visible(&mut self, node: &KNode, source_file: &str, r: &ResolveRefIn) -> Res<bool> {
+        let Some(scan) = self.ts_scope_scan(&node.file_path, r) else { return Ok(true) };
+        let Some(block) = scan.blocks.iter().find(|b| b.ambient && b.contains(node.start_line, node.start_column)) else { return Ok(true) };
+        Ok(self.import_mappings(source_file)?.iter().any(|m| m.source == block.name)
+            || self.import_mappings(&r.file_path)?.iter().any(|m| m.source == block.name))
+    }
+
+    fn ts_namespace_member(&mut self, file: &str, written: &str, r: &ResolveRefIn, imported: bool) -> Res<Option<Arc<KNode>>> {
+        let Some((owner, name)) = written.rsplit_once('.') else { return Ok(None) };
+        let Some(scan) = self.ts_scope_scan(file, r) else { return Ok(None) };
+        let nodes = self.nodes_in_file(file)?;
+        Ok(nodes.iter().find(|n| n.name == name && scan.blocks.iter().any(|b| b.name == owner && b.contains(n.start_line, n.start_column)
+            && (imported || file == r.file_path || scan.blocks.iter().any(|g| g.global && g.contains(b.start.0, b.start.1)) || !scan.module_file)))
+            .cloned())
+    }
+
+    fn ts_forwarded_ambient_alias(&mut self, file: &str, name: &str, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        let Some(source) = self.read_file(file) else { return Ok(None) };
+        let mut site = r.clone();
+        site.file_path = file.to_string();
+        let Some(tree) = self.js_binding_tree(&source, &site) else { return Ok(None) };
+        for export in super::iteration::named_children(tree.root_node()).into_iter().filter(|n| n.kind() == "export_statement") {
+            for alias in super::iteration::named_children(export).into_iter().filter(|n| n.kind() == "import_alias") {
+                let parts = super::iteration::named_children(alias);
+                if parts.len() != 2 || &source.text()[parts[0].byte_range()] != name { continue; }
+                let written = &source.text()[parts[1].byte_range()];
+                let Some((head, member)) = written.split_once('.') else { continue };
+                let mapping = self.import_mappings(file)?.iter().find(|m| m.local_name == head && m.is_namespace).cloned();
+                if let Some(mapping) = mapping {
+                    return self.ts_ambient_lookup(&mapping.source, member, false, &site);
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    pub(super) fn ts_ambient_lookup(&mut self, specifier: &str, exported: &str, default: bool, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        if specifier.starts_with('.') || specifier.starts_with('/') { return Ok(None); }
+        let specifier = specifier.strip_prefix("node:").unwrap_or(specifier);
+        let memo_key = (format!("scope-export\0{specifier}\0{}", r.file_path), format!("{default}\0{exported}"));
+        let cached = self.ts_ambient_memo.get(&memo_key).cloned();
+        if cached == Some(None) { return Ok(None); }
+        let files = match self.sorted_files() { Some(files) => files, None => Arc::new(self.table()?.files.iter().cloned().collect()) };
+        let mut hits = Vec::new();
+        for file in files.iter().filter(|f| re!(r"\.d\.[cm]?ts$").is_match(f) && cached.as_ref().is_none_or(|cached| cached.as_ref() == Some(*f))) {
+            let Some(scan) = self.ts_scope_scan(file, r) else { continue };
+            if scan.module_file || (is_test_path(file) && !is_test_path(&r.file_path)) { continue; }
+            for block in scan.blocks.iter().filter(|b| b.ambient && b.name.strip_prefix("node:").unwrap_or(&b.name) == specifier) {
+                if exported == "*" {
+                    if let Some(node) = self.nodes_in_file(file)?.iter().find(|n| n.kind == "file") { hits.push(node.clone()); }
+                    continue;
+                }
+                let mut local = exported.to_string();
+                if default {
+                    let Some(name) = re!(r"\bexport\s+(?:default\s+(?:(?:abstract\s+)?class\s+|function\s+)?|=\s*)([A-Za-z_$][\w$]*)").captures(&block.text).map(|m| m[1].to_string()) else { continue };
+                    local = name;
+                } else {
+                    for list in re!(r"\bexport\s+(?:type\s+)?\{([^}]*)\}").captures_iter(&block.text) {
+                        for item in list[1].split(',') {
+                            let parts: Vec<_> = item.trim().trim_start_matches("type ").split_whitespace().collect();
+                            if parts.len() == 3 && parts[1] == "as" && parts[2].trim_matches(['\'', '"']) == exported { local = parts[0].trim_matches(['\'', '"']).to_string(); }
+                        }
+                    }
+                }
+                if !default && re!(r"\bexport\s+(?:type\s+)?\{").is_match(&block.text) && local == exported {
+                    let direct = Self::cached_regex(&format!(r"\bexport\s+(?:(?:declare|abstract)\s+)?(?:interface|class|type|function|const|let|var|enum|namespace)\s+{}\b", regex::escape(exported)))?;
+                    let listed = Self::cached_regex(&format!(r"(?:\{{|,)\s*(?:type\s+)?{}\s*(?:,|\}})", regex::escape(exported)))?;
+                    if !direct.is_match(&block.text) && !listed.is_match(&block.text) { continue; }
+                }
+                let nodes = self.nodes_in_file(file)?;
+                let named: Vec<_> = nodes.iter().filter(|n| n.name == local && block.contains(n.start_line, n.start_column)
+                    && !scan.blocks.iter().any(|b| !b.ambient && !b.global && b.contains(n.start_line, n.start_column) && b.start > block.start && (n.start_line, n.start_column) > b.start)).cloned().collect();
+                hits.extend(named);
+            }
+        }
+        hits.sort_by_key(|n| (is_test_path(&n.file_path), std::cmp::Reverse(n.file_path.split('/').zip(r.file_path.split('/')).take_while(|(a,b)| a == b).count()), n.file_path.clone(), n.start_line));
+        let hit = hits.into_iter().next();
+        self.ts_ambient_memo.insert(memo_key, hit.as_ref().map(|n| n.file_path.clone()));
+        Ok(hit)
+    }
+
+    fn ts_declared_ambient_receiver(&mut self, receiver: &str, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        let Some(source) = self.read_file(&r.file_path) else { return Ok(None) };
+        let Some(tree) = self.js_binding_tree(&source, r) else { return Ok(None) };
+        let mut class = super::iteration::descendant_for_position(tree.root_node(), source.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
+        while !matches!(class.kind(), "class_declaration" | "class") {
+            let Some(parent) = class.parent() else { return Ok(None) }; class = parent;
+        }
+        let mut pending = super::iteration::named_children(class);
+        while let Some(node) = pending.pop() {
+            if (node.kind() == "public_field_definition" || (matches!(node.kind(), "required_parameter" | "optional_parameter") && super::iteration::named_children(node).iter().any(|n| n.kind() == "accessibility_modifier" || n.kind() == "readonly")))
+                && node.child_by_field_name("name").or_else(|| node.child_by_field_name("pattern")).is_some_and(|n| &source.text()[n.byte_range()] == receiver) {
+                    if let Some(annotation) = node.child_by_field_name("type") {
+                        let written = source.text()[annotation.byte_range()].trim_start_matches(':').trim();
+                        let head = written.split('.').next().unwrap_or(written);
+                        if let Some(mapping) = self.import_mappings(&r.file_path)?.iter().find(|m| m.local_name == head).cloned() {
+                            let name = if mapping.is_namespace { written.rsplit('.').next().unwrap_or(written) } else { &mapping.exported_name };
+                            return self.ts_ambient_lookup(&mapping.source, name, mapping.is_default, r);
+                        }
+                    }
+            }
+            if !matches!(node.kind(), "statement_block" | "class_declaration" | "class") { pending.extend(super::iteration::named_children(node)); }
+        }
+        Ok(None)
+    }
+
+    /// Type names occupy a different namespace from parameters and local values.
+    /// A `typeof` type query still names a value and keeps the ordinary binding veto.
+    pub(super) fn ts_reference_is_type_position(&mut self, r: &ResolveRefIn) -> bool {
+        if !matches!(r.language.as_str(), "typescript" | "tsx") || r.reference_kind != "references" { return false; }
+        let Some(source) = self.read_file(&r.file_path) else { return false };
+        let Some(tree) = self.js_binding_tree(&source, r) else { return false };
+        let mut node = super::iteration::descendant_for_position(tree.root_node(), source.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
+        let mut type_name = false;
+        loop {
+            if node.kind() == "type_query" { return false; }
+            type_name |= node.kind() == "type_identifier";
+            if matches!(node.kind(), "statement_block" | "program") { return type_name; }
+            let Some(parent) = node.parent() else { return type_name }; node = parent;
+        }
+    }
+
+    fn ts_lexical_type(&mut self, name: &str, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
+        let Some(source) = self.read_file(&r.file_path) else { return Ok(None) };
+        let Some(tree) = self.js_binding_tree(&source, r) else { return Ok(None) };
+        let mut scope = Some(super::iteration::descendant_for_position(tree.root_node(), source.text(),
+            ((r.line - 1).max(0) as usize, r.column.max(0) as usize)));
+        while let Some(at) = scope {
+            if matches!(at.kind(), "statement_block" | "program") {
+                for child in super::iteration::named_children(at) {
+                    let declaration = if child.kind() == "export_statement" {
+                        child.child_by_field_name("declaration").unwrap_or(child)
+                    } else { child };
+                    if !matches!(declaration.kind(), "type_alias_declaration" | "interface_declaration" | "class_declaration" | "enum_declaration") { continue; }
+                    let Some(binding) = declaration.child_by_field_name("name") else { continue };
+                    if &source.text()[binding.byte_range()] != name { continue; }
+                    let node = self.nodes_in_file(&r.file_path)?.iter().find(|n| n.name == name
+                        && n.start_line == declaration.start_position().row as i64 + 1
+                        && matches!(n.kind.as_str(), "type_alias" | "interface" | "class" | "enum")).cloned();
+                    return Ok(Some(node.map(|node| KCand { node, confidence: 0.95, resolved_by: "qualified-name" })));
+                }
+            }
+            scope = at.parent();
+        }
+        Ok(None)
+    }
+
+    /// An authoritative TS import or type scope, before ordinary name matching.
+    /// None leaves other languages and value references to the existing pipeline.
+    pub(super) fn ts_scoped_reference(&mut self, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
+        if !is_js_family(&r.language) { return Ok(None); }
+        if r.reference_kind == "calls" {
+            if let Some((receiver, method)) = r.reference_name.strip_prefix("this.").and_then(|name| name.rsplit_once('.')) {
+                if !receiver.contains('.') {
+                    if let Some(ty) = self.ts_declared_ambient_receiver(receiver, r)? {
+                        let (node, _) = self.ts_method_up_chain(&ty, method, r, 0)?;
+                        return Ok(Some(node.map(|node| KCand { node, confidence: 0.95, resolved_by: "instance-method" })));
+                    }
+                }
+            }
+        }
+        let type_ref = self.ts_reference_is_type_position(r) || is_inheritance_ref(&r.reference_kind);
+        let imported = r.reference_kind == "imports";
+        if r.reference_kind == "references" && !type_ref { return Ok(None); }
+        let mappings = self.import_mappings(&r.file_path)?;
+        let mut written = r.reference_name.clone();
+        if type_ref {
+            if let Some(source) = self.read_file(&r.file_path) {
+                if let Some(line) = source.get((r.line - 1).max(0) as usize) {
+                    let before = super::names::js_prefix(line, r.column.max(0) as usize);
+                    if let Some(qualifier) = re!(r"([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*\.\s*$").captures(before) {
+                        written = format!("{}.{}", qualifier[1].split_whitespace().collect::<String>(), written);
+                    }
+                }
+                if let Some(tree) = self.js_binding_tree(&source, r) {
+                    let mut node = super::iteration::descendant_for_position(tree.root_node(), source.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
+                    loop {
+                        if let Some(parameters) = node.child_by_field_name("type_parameters") {
+                            let pattern = Self::cached_regex(&format!(r"(?:<|,)\s*{}\s*(?:[,>=]|extends\b)", regex::escape(&r.reference_name)))?;
+                            if pattern.is_match(&source.text()[parameters.byte_range()]) { return Ok(Some(None)); }
+                        }
+                        let Some(parent) = node.parent() else { break }; node = parent;
+                    }
+                }
+            }
+        }
+        if imported && mappings.iter().any(|m| m.source == written) {
+            if let Some(node) = self.ts_ambient_lookup(&written, "*", false, r)? {
+                return Ok(Some(Some(KCand { node, confidence: 0.95, resolved_by: "import" })));
+            }
+            if !written.starts_with('.') && self.resolve_import_path(&written, &r.file_path, &r.language)?.is_none() { return Ok(Some(None)); }
+        }
+        // TypeScript's import-equals aliases can name a namespace member.
+        if type_ref && !written.contains('.') {
+            if let Some(source) = self.read_file(&r.file_path) {
+                let alias = Self::cached_regex(&format!(r"\bimport\s+{}\s*=\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)\s*;", regex::escape(&written)))?;
+                if let Some(hit) = alias.captures(source.text()) { written = hit[1].to_string(); }
+            }
+        }
+        if r.reference_kind == "calls" && !written.contains('.') && self.js_root_binding_scope(r, &written).is_some()
+            && mappings.iter().any(|m| m.local_name == written) { return Ok(None); }
+        if type_ref && !written.contains('.') {
+            if let Some(local) = self.ts_lexical_type(&written, r)? { return Ok(Some(local)); }
+        }
+        let head = written.split('.').next().unwrap_or(&written);
+        let binding = mappings.iter().find(|m| m.local_name == head).cloned();
+        if let Some(binding) = binding {
+            if r.reference_kind == "calls" && matches!(self.repository_package(package_name_of(&binding.source), &r.file_path), RepositoryPackage::Manifest | RepositoryPackage::Mapped) { return Ok(None); }
+            if r.reference_kind == "calls" && self.resolve_via_import(r)?
+                .is_some_and(|hit| !re!(r"\.d\.[cm]?ts$").is_match(&hit.node.file_path)) { return Ok(None); }
+            let member = written.strip_prefix(&format!("{head}."));
+            let exported = member.unwrap_or(&binding.exported_name);
+            if let Some(node) = self.ts_ambient_lookup(&binding.source, exported, binding.is_default && member.is_none(), r)? {
+                return Ok(Some(Some(KCand { node, confidence: 0.95, resolved_by: "import" })));
+            }
+            if imported {
+                if let (Some(hit), Some(file)) = (self.resolve_via_import(r)?, self.resolve_import_path(&binding.source, &r.file_path, &r.language)?) {
+                    if !self.ts_import_target_visible(&hit.node, &file, r)? { return Ok(Some(None)); }
+                }
+                return Ok(None);
+            }
+            if type_ref {
+                if self.ts_ambient_lookup(&binding.source, "*", false, r)?.is_some() { return Ok(Some(None)); }
+                if let Some(file) = self.resolve_import_path(&binding.source, &r.file_path, &r.language)? {
+                    if self.nodes_in_file(&file)?.iter().any(|n| n.language == "arkts") { return Ok(None); }
+                    if member.is_none() && !binding.is_namespace {
+                        if let Some(node) = self.ts_forwarded_ambient_alias(&file, &binding.exported_name, r)? {
+                            return Ok(Some(Some(KCand { node, confidence: 0.95, resolved_by: "import" })));
+                        }
+                        let want = ExportWant { is_default: binding.is_default, is_namespace: false, exported_name: binding.exported_name.clone(), member_name: None };
+                        if let Some(node) = self.find_exported_symbol(&file, &want, &r.language, &mut HashSet::new(), 0)? {
+                            if !self.ts_import_target_visible(&node, &file, r)? { return Ok(Some(None)); }
+                            return Ok(Some(Some(KCand { node, confidence: 0.95, resolved_by: "import" })));
+                        }
+                    }
+                    let qualified = if binding.is_namespace { member.map(str::to_string) } else { member.map(|m| format!("{}.{m}", binding.exported_name)) };
+                    if let Some(qualified) = qualified {
+                        if let Some(node) = self.ts_namespace_member(&file, &qualified, r, true)? {
+                            return Ok(Some(Some(KCand { node, confidence: 0.95, resolved_by: "import" })));
+                        }
+                    }
+                }
+                let hit = self.resolve_via_import(&r.clone().naming(&written, "references"))?;
+                if hit.as_ref().is_some_and(|hit| hit.node.language == "arkts") { return Ok(Some(hit)); }
+                if let (Some(hit), Some(file)) = (&hit, self.resolve_import_path(&binding.source, &r.file_path, &r.language)?) {
+                    if !self.ts_import_target_visible(&hit.node, &file, r)? { return Ok(Some(None)); }
+                }
+                if hit.is_none() && self.resolve_import_path(&binding.source, &r.file_path, &r.language)?.is_some()
+                    && (binding.is_namespace || member.is_some() || binding.exported_name == binding.local_name) { return Ok(Some(None)); }
+                if hit.is_none() && !self.is_declared_outside_package(&binding.source, &r.file_path) { return Ok(None); }
+                return Ok(Some(hit));
+            }
+            if imported { return Ok(None); }
+        }
+        if !type_ref { return Ok(None); }
+        if let Some(scan) = self.ts_scope_scan(&r.file_path, r) {
+            for block in scan.blocks.iter().filter(|b| b.ambient && b.contains(r.line, r.column)) {
+                if block.name.starts_with('.') {
+                    if let Some(file) = self.resolve_import_path(&block.name, &r.file_path, &r.language)? {
+                        if let Some(node) = self.nodes_in_file(&file)?.iter().find(|n| n.name == written) {
+                            return Ok(Some(Some(KCand { node: node.clone(), confidence: 0.95, resolved_by: "import" })));
+                        }
+                    }
+                }
+            }
+        }
+        if written.contains('.') {
+            let files = match self.sorted_files() { Some(files) => files, None => Arc::new(self.table()?.files.iter().cloned().collect()) };
+            for file in files.iter().filter(|f| **f == r.file_path || re!(r"\.d\.[cm]?ts$").is_match(f)) {
+                if is_test_path(file) && !is_test_path(&r.file_path) { continue; }
+                if let Some(node) = self.ts_namespace_member(file, &written, r, false)? {
+                    return Ok(Some(Some(KCand { node, confidence: 0.95, resolved_by: "qualified-name" })));
+                }
+            }
+        }
+        if let Some(scan) = self.ts_scope_scan(&r.file_path, r) {
+            for block in scan.blocks.iter().filter(|b| b.ambient && b.contains(r.line, r.column)) {
+                if let Some(node) = self.ts_ambient_lookup(&block.name, &written, false, r)? {
+                    return Ok(Some(Some(KCand { node, confidence: 0.95, resolved_by: "import" })));
+                }
+            }
+        }
+        let leaf = written.rsplit('.').next().unwrap_or(&written);
+        let mut candidates: Vec<_> = self.nodes_by_name(leaf)?.iter().filter(|n| is_js_family(&n.language)
+            && matches!(n.kind.as_str(), "class" | "interface" | "type_alias" | "enum" | "enum_member" | "namespace")).cloned().collect();
+        if written.contains('.') {
+            let qualified = written.replace('.', "::");
+            candidates.retain(|n| (n.qualified_name == qualified || n.qualified_name.ends_with(&format!("::{qualified}"))) && self.ts_scope_candidate(n, r));
+        } else {
+            candidates.retain(|n| self.ts_scope_candidate(n, r));
+        }
+        candidates.sort_by_key(|n| (n.file_path != r.file_path, is_test_path(&n.file_path), n.start_line));
+        Ok(Some(candidates.into_iter().next().map(|node| KCand { node, confidence: 0.95, resolved_by: "qualified-name" })))
     }
 }

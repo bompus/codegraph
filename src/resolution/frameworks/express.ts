@@ -18,24 +18,20 @@ function extractTailIdent(expr: string): string | null {
   return m ? m[1]! : null;
 }
 
-/**
- * Index of the delimiter matching the one at `open`, skipping string/template
- * literals so a `)` or `}` inside a string doesn't throw off the balance.
- */
-function matchDelim(s: string, open: number, oc: string, cc: string): number {
-  let depth = 0;
-  for (let i = open; i < s.length; i++) {
-    const ch = s[i];
-    if (ch === '"' || ch === "'" || ch === '`') {
-      const q = ch;
-      i++;
-      while (i < s.length && s[i] !== q) { if (s[i] === '\\') i++; i++; }
-      continue;
+/** Read each call boundary once; regex cannot distinguish division from literals. */
+function argumentEnds(source: string): Map<number, number> {
+  const ends = new Map<number, number>();
+  const tree = parseSourceTreeSync(source, 'tsx');
+  if (!tree) return ends;
+  try {
+    const pending = [tree.rootNode];
+    while (pending.length) {
+      const node = pending.pop()!;
+      if (node.type === 'arguments') ends.set(node.startIndex, node.endIndex - 1);
+      pending.push(...node.namedChildren);
     }
-    if (ch === oc) depth++;
-    else if (ch === cc) { depth--; if (depth === 0) return i; }
-  }
-  return -1;
+    return ends;
+  } finally { tree.delete(); }
 }
 
 // Express res/req methods + common JS builtins — calls to these inside a handler
@@ -194,6 +190,8 @@ export const expressResolver: FrameworkResolver = {
     const now = Date.now();
     const lang = detectLanguage(filePath);
     const safe = stripCommentsForRegex(content, lang);
+    let callEnds: Map<number, number> | undefined;
+    const endOfCall = (open: number): number => (callEnds ??= argumentEnds(safe)).get(open) ?? -1;
     const foreignCalls = extractHttpRoutes(filePath, content).callStarts;
     // Match the route head up to the first arg: (app|router).METHOD('/path',
     // (NOT the whole call — handlers are often inline arrows whose `)`/`{}` the
@@ -223,7 +221,7 @@ export const expressResolver: FrameworkResolver = {
 
       // The full argument list = balanced parens from the route call's open paren.
       const openParen = safe.indexOf('(', match.index);
-      const closeParen = openParen >= 0 ? matchDelim(safe, openParen, '(', ')') : -1;
+      const closeParen = openParen >= 0 ? endOfCall(openParen) : -1;
       const args = closeParen > openParen ? safe.slice(openParen + 1, closeParen) : '';
       const inline = inlineHandlerBody(args, filePath.endsWith('.tsx') ? 'tsx' : lang);
 
@@ -249,13 +247,11 @@ export const expressResolver: FrameworkResolver = {
         references.push(...replyRefs(safe, bodyStart, bodyStart + inline.body.length, routeNode.id, filePath, lang));
       } else {
         // Named handler: the LAST comma-separated arg (earlier ones are middleware).
-        const parts = args.split(',').map((s) => s.trim()).filter(Boolean);
-        const last = parts[parts.length - 1];
-        const handlerName = last ? extractTailIdent(last) : null;
-        if (handlerName) {
+        const handler = handlerName(args);
+        if (handler) {
           references.push({
             fromNodeId: routeNode.id,
-            referenceName: handlerName,
+            referenceName: handler,
             referenceKind: 'references',
             line,
             column: 0,
@@ -277,7 +273,7 @@ export const expressResolver: FrameworkResolver = {
         const link = /^\s*\.\s*(get|post|put|patch|delete|all)\s*\(/.exec(safe.slice(at, at + 64));
         if (!link) break;
         const openParen = at + link[0].length - 1;
-        const closeParen = matchDelim(safe, openParen, '(', ')');
+        const closeParen = endOfCall(openParen);
         if (closeParen < 0) break;
         const method = link[1]!;
         const line = safe.slice(0, openParen).split('\n').length;
@@ -305,11 +301,9 @@ export const expressResolver: FrameworkResolver = {
           const bodyStart = openParen + 1 + inline.start;
           references.push(...replyRefs(safe, bodyStart, bodyStart + inline.body.length, routeNode.id, filePath, lang));
         } else {
-          const parts = splitTopLevel(args).map((s) => s.trim()).filter(Boolean);
-          const last = parts[parts.length - 1];
-          const handlerName = last ? extractTailIdent(last) : null;
-          if (handlerName) {
-            references.push({ fromNodeId: routeNode.id, referenceName: handlerName, referenceKind: 'references', line, column: 0, filePath, language: lang });
+          const handler = handlerName(args);
+          if (handler) {
+            references.push({ fromNodeId: routeNode.id, referenceName: handler, referenceKind: 'references', line, column: 0, filePath, language: lang });
           }
         }
         at = closeParen + 1;
@@ -347,11 +341,13 @@ export const expressResolver: FrameworkResolver = {
       if (!content || !content.includes('.use(')) continue;
       const lang = detectLanguage(file);
       const safe = stripCommentsForRegex(content, lang);
+      let callEnds: Map<number, number> | undefined;
+      const endOfCall = (open: number): number => (callEnds ??= argumentEnds(safe)).get(open) ?? -1;
       const mount = /\b[A-Za-z_$][\w$]*\.use\s*\(\s*(['"`])(\/[^'"`]*)\1\s*,/g;
       let m: RegExpExecArray | null;
       while ((m = mount.exec(safe)) !== null) {
         const open = safe.indexOf('(', m.index);
-        const close = open >= 0 ? matchDelim(safe, open, '(', ')') : -1;
+        const close = open >= 0 ? endOfCall(open) : -1;
         if (close < 0) continue;
         const args = splitTopLevel(safe.slice(open + 1, close));
         const last = args[args.length - 1]?.trim() ?? '';
@@ -408,29 +404,32 @@ export const expressResolver: FrameworkResolver = {
 
 /** Top-level comma split of an argument list, strings and brackets respected. */
 function splitTopLevel(args: string): string[] {
-  const out: string[] = [];
-  let depth = 0;
-  let start = 0;
-  for (let i = 0; i < args.length; i++) {
-    const ch = args[i];
-    if (ch === '"' || ch === "'" || ch === '`') {
-      const q = ch;
-      i++;
-      while (i < args.length && args[i] !== q) {
-        if (args[i] === '\\') i++;
-        i++;
-      }
-      continue;
+  const prefix = '__route(';
+  const tree = parseSourceTreeSync(`${prefix}${args})`, 'tsx');
+  if (!tree) return [];
+  try {
+    const call = tree.rootNode.namedChildren[0]?.namedChildren[0];
+    const values = call?.childForFieldName('arguments')?.namedChildren.filter((n) => n.type !== 'comment') ?? [];
+    const parts: string[] = [];
+    let start = 0;
+    for (const value of values.slice(0, -1)) {
+      const comma = args.indexOf(',', value.endIndex - prefix.length);
+      if (comma < 0) return [];
+      parts.push(args.slice(start, comma));
+      start = comma + 1;
     }
-    if (ch === '(' || ch === '[' || ch === '{') depth++;
-    else if (ch === ')' || ch === ']' || ch === '}') depth--;
-    else if (ch === ',' && depth === 0) {
-      out.push(args.slice(start, i));
-      start = i + 1;
-    }
-  }
-  out.push(args.slice(start));
-  return out;
+    const last = values.at(-1);
+    if (last) parts.push(args.slice(start, last.endIndex - prefix.length));
+    return parts;
+  } finally { tree.delete(); }
+}
+
+function handlerName(args: string): string | null {
+  const parts = splitTopLevel(args).map((s) => s.trim()).filter(Boolean);
+  while (parts.length > 1 && parts.at(-1)!.startsWith('{')) parts.pop();
+  let last = parts.at(-1);
+  if (last?.startsWith('[') && last.endsWith(']')) last = splitTopLevel(last.slice(1, -1)).at(-1)?.trim();
+  return last ? extractTailIdent(last) : null;
 }
 
 /**
@@ -444,9 +443,11 @@ function splitTopLevel(args: string): string[] {
 function inlineHandlerBody(args: string, language: 'javascript' | 'typescript' | 'tsx'): { body: string; start: number; calls: Array<{ name: string; start: number }> } | null {
   // A trailing comma (Prettier's default) leaves an empty last part.
   const parts = splitTopLevel(args);
-  let lastStart = args.length;
+  while (parts.length > 1 && (!parts.at(-1)!.trim() || /^\s*\{/.test(parts.at(-1)!))) parts.pop();
+  const retainedEnd = parts.join(',').length;
+  let lastStart = retainedEnd;
   let last = '';
-  for (let i = parts.length - 1, end = args.length; i >= 0; i--) {
+  for (let i = parts.length - 1, end = retainedEnd; i >= 0; i--) {
     const start = end - parts[i]!.length;
     if (parts[i]!.trim() !== '') {
       last = parts[i]!;
@@ -469,11 +470,7 @@ function inlineHandlerBody(args: string, language: 'javascript' | 'typescript' |
       !!node && ['arrow_function', 'function_expression', 'generator_function'].includes(node.type);
     handler = unwrap(handler);
     while (handler?.type === 'call_expression') {
-      const candidates = handler.childForFieldName('arguments')?.namedChildren
-        .filter((node) => node.type !== 'comment').map(unwrap)
-        .filter((node) => inline(node) || node?.type === 'call_expression') ?? [];
-      if (candidates.length !== 1) return null;
-      handler = candidates[0] ?? null;
+      handler = unwrap(handler.childForFieldName('arguments')?.namedChildren.filter((node) => node.type !== 'comment').at(-1) ?? null);
     }
     if (!inline(handler)) return null;
     const body = handler!.childForFieldName('body');

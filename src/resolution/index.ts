@@ -6,6 +6,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHash } from 'node:crypto';
+import { stripCommentsForRegex } from './strip-comments';
 import { Binding, Language, Node, UnresolvedReference, Edge } from '../types';
 import { QueryBuilder } from '../db/queries';
 import {
@@ -404,6 +406,7 @@ export class ReferenceResolver {
    * Clear internal caches
    */
   clearCaches(): void {
+    this.kernelResolver?.clearPythonModuleCaches();
     this.nodeCache.clear();
     this.fileCache.clear();
     this.importMappingCache.clear();
@@ -709,6 +712,19 @@ export class ReferenceResolver {
       },
 
       getProjectRoot: () => this.projectRoot,
+      withGoLocalDeclarations: async (run) => {
+        const Scope = getKernel()?.GoSourceScope;
+        if (!Scope) throw new Error('Go synthesis requires native source scope lookup.');
+        const scopes = new LRUCache<string, import('../extraction/kernel/loader').GoSourceScopeLike | null>(32);
+        return run((name, site) => {
+          if (!scopes.has(site.filePath)) {
+            const source = this.readFileCached(site.filePath);
+            scopes.set(site.filePath, source === null ? null : new Scope(source));
+          }
+          const declaration = scopes.get(site.filePath)?.declarationAt(name, site.line, site.column);
+          return declaration ? { line: declaration.line, column: declaration.column, type: declaration.declaredType } : null;
+        });
+      },
 
       getAllFiles: () => (this.allFilesCache ??= this.queries.getAllFilePaths()).slice(),
 
@@ -808,6 +824,172 @@ export class ReferenceResolver {
       },
 
     };
+  }
+
+  /** Find unchanged importers whose existing default-import targets moved. */
+  changedDefaultExports(
+    modifiedFilePaths: readonly string[],
+    changedFilePaths: readonly string[],
+    resolvedUpToEdgeId: number,
+  ): Array<{ path: string; language: Language; was: string[] }> {
+    const fresh = new Set(changedFilePaths);
+    const moved: Array<{ path: string; language: Language; was: string[] }> = [];
+    for (const filePath of modifiedFilePaths) {
+      if (!/\.(?:[cm]?[jt]sx?)$/.test(filePath)) continue;
+      const bindings = new Map<string, Set<string>>();
+      for (const imp of this.queries.getImportsInto(`file:${filePath}`, filePath)) {
+        if (fresh.has(imp.filePath)) continue;
+        const names = bindings.get(imp.filePath) ?? new Set<string>();
+        for (const binding of this.context.getImportMappings(imp.filePath, imp.language)) {
+          if (binding.isDefault && this.resolveModuleFile(binding.source, imp.filePath, imp.language) === filePath) {
+            names.add(binding.localName);
+          }
+        }
+        if (names.size > 0) bindings.set(imp.filePath, names);
+      }
+      if (bindings.size === 0) continue;
+      const language = this.queries.getFileByPath(filePath)?.language;
+      if (!language) continue;
+      const readsDefault = (edge: Edge & { edgeId: number; sourceFilePath: string }): boolean => {
+        const name = edge.metadata?.refName;
+        return typeof name === 'string' && edge.metadata?.resolvedBy === 'import' && edge.edgeId <= resolvedUpToEdgeId &&
+          !edge.target.startsWith('file:') && bindings.get(edge.sourceFilePath)?.has(name) === true;
+      };
+      let readers: Array<Edge & { edgeId: number; sourceFilePath: string; sourceLanguage: Language }> =
+        this.queries.getCrossFileIncomingEdgesWithTarget(filePath).filter(readsDefault);
+      if (readers.length === 0) {
+        // A forwarded default's target lives elsewhere, so sample its importers.
+        readers = [...bindings].slice(0, 8)
+          .flatMap(([file, names]) => this.queries.getResolutionEdgesThrough(file, [...names]))
+          .filter(readsDefault);
+      }
+      const was = new Set<string>();
+      for (const edge of readers) {
+        const ref = resurrectRefFromDroppedEdge(edge);
+        if (ref && this.resolveNow(ref)?.targetNodeId !== edge.target) was.add(edge.target);
+      }
+      if (was.size > 0) moved.push({ path: filePath, language, was: [...was] });
+    }
+    return moved;
+  }
+
+  private withPythonKernel<T>(read: (kernel: KernelResolverLike) => T): T {
+    const opened = !this.kernelResolver;
+    const kernel = this.liveKernel(1);
+    try { return read(kernel); }
+    finally { if (opened) this.closeKernel(); }
+  }
+
+  private pythonKernelRef(ref: UnresolvedReference): ResolveRefIn {
+    return {
+      fromNodeId: ref.fromNodeId, referenceName: ref.referenceName,
+      referenceKind: ref.referenceKind, line: ref.line, column: ref.column,
+      filePath: ref.filePath ?? '', language: ref.language ?? '',
+      candidates: ref.candidates ? JSON.stringify(ref.candidates) : undefined,
+    };
+  }
+
+  getPythonRootFingerprint(): string {
+    return this.withPythonKernel((kernel) => {
+      const roots = kernel.pythonPackageRoots();
+      return roots === '' ? '' : createHash('sha1').update(roots).digest('hex');
+    });
+  }
+
+  getPythonReopenScope(changedFiles: string[]) {
+    return this.withPythonKernel((kernel) => kernel.pythonPackageReopenScope(changedFiles));
+  }
+
+  getPythonPackageImporters(initFiles: string[]): Map<string, Map<string, string | null>> {
+    return this.withPythonKernel((kernel) => {
+      const result = new Map<string, Map<string, string | null>>();
+      for (const item of kernel.pythonPackageImportBindings(initFiles)) {
+        let names = result.get(item.filePath);
+        if (!names) result.set(item.filePath, names = new Map());
+        names.set(item.localName, item.binding ?? null);
+      }
+      return result;
+    });
+  }
+
+  pythonAttrRetryCandidates(touched: string[], ceiling: number = 2000): UnresolvedReference[] | null {
+    return this.withPythonKernel((kernel) => {
+    const touchedSet = new Set(touched);
+    const closure = this.queries.getPythonImporterClosure(touched).filter((f) => !touchedSet.has(f));
+    // One answer per (calling symbol, name): the same call written twice in
+    // one function resolves the same way, so it is asked — and counted — once.
+    const keyOf = (ref: { fromNodeId: string; referenceName: string }) => `${ref.fromNodeId}\0${ref.referenceName}`;
+    const resolvable = (refs: UnresolvedReference[]) => {
+      const answers = new Map<string, boolean>();
+      return refs.filter((ref) => {
+        if (!ref.filePath || !ref.language) return false;
+        const key = keyOf(ref);
+        let ok = answers.get(key);
+        if (ok === undefined) answers.set(key, (ok = kernel.resolvePythonAttribute(this.pythonKernelRef(ref)).targetNodeId != null));
+        return ok;
+      });
+    };
+    const candidates = this.queries.getFailedPythonAttrRefKeys(closure);
+    const load = (keys: typeof candidates) => this.queries.getUnresolvedReferencesByIds(keys.map((k) => k.id));
+    if (new Set(candidates.map(keyOf)).size <= ceiling) return resolvable(load(candidates));
+
+    const assigned = new Set<string>();
+    const defined = new Set<string>();
+    const subclassing = new Set<string>();
+    const calling = new Set<string>();
+    for (const file of touched) {
+      const source = this.context.readFile(file);
+      if (source) {
+        const text = stripCommentsForRegex(source, 'python');
+        for (const m of text.matchAll(/\b(?:self|cls)\.(\w+)\s*(?::[^=\n]*)?=(?!=)|^[ \t]+(\w+)\s*(?::[^=\n]*)?=(?!=)/gm)) {
+          assigned.add((m[1] ?? m[2])!);
+        }
+      }
+      for (const n of this.context.getNodesInFile(file)) {
+        if (n.kind === 'class' || n.kind === 'function' || n.kind === 'method') defined.add(n.name);
+      }
+      for (const f of this.queries.getPythonFilesWithEdgesInto(file, ['extends'], ['class'])) subclassing.add(f);
+      for (const f of this.queries.getPythonFilesWithEdgesInto(file, ['calls', 'instantiates'], ['function', 'method', 'class'])) {
+        calling.add(f);
+      }
+    }
+
+    const callees = new Map<string, Map<string, Set<string>>>(); // file → attr → callee names
+    const assignedCallees = (file: string, attr: string): Set<string> => {
+      let byAttr = callees.get(file);
+      if (!byAttr) {
+        byAttr = new Map();
+        const source = this.context.readFile(file);
+        const text = source ? stripCommentsForRegex(source, 'python') : '';
+        for (const m of text.matchAll(/\b(\w+)\s*(?::[^=\n]*)?=(?!=)\s*(?:await\s+)?(?:[\w.]*\.)?(\w+)\s*\(/g)) {
+          let set = byAttr.get(m[1]!);
+          if (!set) byAttr.set(m[1]!, (set = new Set()));
+          set.add(m[2]!);
+        }
+        callees.set(file, byAttr);
+      }
+      return byAttr.get(attr) ?? new Set();
+    };
+
+    const kept = candidates.filter((ref) => {
+      const name = ref.referenceName;
+      if (name.includes('().')) return defined.has(name.split('().')[0]!.split('.').pop()!);
+      const segs = name.split('.');
+      if (segs.length !== 3 || !segs.every((seg) => /^[A-Za-z_]\w*$/.test(seg))) return false;
+      const attr = segs[1]!;
+      if (assigned.has(attr)) return true;
+      if (subclassing.has(ref.filePath) && (segs[0] === 'self' || segs[0] === 'cls')) return true;
+      return calling.has(ref.filePath) && [...assignedCallees(ref.filePath, attr)].some((c) => defined.has(c));
+    });
+    return new Set(kept.map(keyOf)).size <= ceiling ? resolvable(load(kept)) : null;
+    });
+  }
+
+  /** Resolve against the current graph without persisting the result. */
+  resolveNow(ref: UnresolvedReference): { targetNodeId: string; resolvedBy: string } | null {
+    if (!ref.filePath || !ref.language) return null;
+    const resolved = this.resolveAll([ref]).resolved[0];
+    return resolved ? { targetNodeId: resolved.targetNodeId, resolvedBy: resolved.resolvedBy } : null;
   }
 
   /**
@@ -1085,6 +1267,7 @@ export class ReferenceResolver {
       targetNodeId: outcome.targetNodeId,
       edgeKind: outcome.edgeKind as ResolvedRef['edgeKind'],
       alsoTargets: outcome.alsoTargetNodeIds?.map(targetNodeId => ({ targetNodeId })),
+      ...(outcome.typeFrom?.length ? { metadata: { typeFrom: outcome.typeFrom } } : {}),
       confidence: outcome.confidence ?? 0,
       resolvedBy: (outcome.resolvedBy ?? 'exact-match') as ResolvedRef['resolvedBy'],
     };
@@ -1620,6 +1803,7 @@ export class ReferenceResolver {
     const settled = gateSwiftTypeTarget(this.settleKernelOutcome(ref, outcome), ref, this.context);
     const scoped = gateRustScope(gateTypeParameter(settled, ref, this.context), ref, this.context);
     const result = gateSuperSelfCall(scoped, ref, this.context);
+    if (result && outcome.typeFrom?.length) result.metadata = { ...result.metadata, typeFrom: outcome.typeFrom };
     if (!result) ref.nameTail = importBindingTail(ref, this.context, outcome.typeHead);
     return { ref, result };
   }

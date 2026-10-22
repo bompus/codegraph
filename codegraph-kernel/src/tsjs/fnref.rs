@@ -129,7 +129,9 @@ impl<'t> Walker<'t> {
                 *self.fs_value_counts.entry(name.to_string()).or_insert(0) += 1;
             }
         }
-        if matches!(kind, "function" | "method" | "constant" | "variable") {
+        // A React wrapper component reads values as a constant's declaration
+        // does (`${BaseMenuItemCSS}` in a styled template).
+        if matches!(kind, "function" | "method" | "constant" | "variable" | "component") {
             self.value_scopes.push(ValueScope { row, node, name: name.to_string() });
         }
     }
@@ -195,9 +197,9 @@ impl<'t> Walker<'t> {
     }
 
     /// scanFnRefSubtree: capture-only walk of subtrees the main walkers skip.
-    pub(super) fn scan_fn_ref_subtree(&mut self, node: Node<'t>, depth: u32) {
+    pub(super) fn scan_fn_ref_subtree(&mut self, node: Node<'t>, depth: u32, walked: Option<&HashSet<usize>>) {
         stack_guard!();
-        if depth > 12 {
+        if depth > 12 || walked.is_some_and(|w| w.contains(&node.id())) {
             return;
         }
         let kind = node.kind();
@@ -208,7 +210,7 @@ impl<'t> Walker<'t> {
         }
         self.maybe_capture_fn_refs(node);
         for c in named_kids(node) {
-            self.scan_fn_ref_subtree(c, depth + 1);
+            self.scan_fn_ref_subtree(c, depth + 1, walked);
         }
     }
 }

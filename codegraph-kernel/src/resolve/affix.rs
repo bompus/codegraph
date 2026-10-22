@@ -385,7 +385,7 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
             // `FMResultSet *rs = …` / `NSString * _Nullable name;` / a block's
             // `^(FMResultSet *rs)`; guard 3 rejects a function pointer's `(`.
             rp(
-                r"(?-u:\b)([A-Z][A-Za-z0-9_]*)\s*(?:<[^<>;]*>\s*)?\*\s*(?:(?:_Nullable|_Nonnull|__strong|__weak|__unsafe_unretained|const)\s+)*",
+                r"(?-u:\b)([A-Z][A-Za-z0-9_]*)\s*(?:<[^<>;]*>\s*|[A-Z][A-Z0-9_]*\s*\([^;{}]*?\)\s*)?\*\s*(?:(?:_Nullable|_Nonnull|__strong|__weak|__unsafe_unretained|const)\s+)*",
                 "",
                 false,
                 true,
@@ -394,7 +394,7 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
             ),
             // A method parameter: `- (void)read:(nullable FMResultSet *)rs`.
             rp(
-                r"\(\s*(?:(?:nullable|nonnull|__kindof)\s+)*([A-Z][A-Za-z0-9_]*)\s*(?:<[^<>)]*>\s*)?\*[^)]*\)\s*",
+                r"\(\s*(?:(?:nullable|nonnull|__kindof)\s+)*([A-Z][A-Za-z0-9_]*)\s*(?:<[^<>)]*>\s*|[A-Z][A-Z0-9_]*\s*\([^;{}]*?\)\s*)?\*[^)]*\)\s*",
                 "",
                 false,
                 true,
