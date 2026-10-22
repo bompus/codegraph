@@ -257,8 +257,10 @@ describe('git sync hooks — project roots and existing hooks', () => {
       const body = fs.readFileSync(hookFile(), 'utf8');
       expect(body.split('# >>> codegraph sync hook >>>').length - 1).toBe(1);
 
-      if (spelling === 'lowercase drive') {
-        fs.writeFileSync(hookFile(), body.replace(/(# codegraph-root: )[A-Z]:/, (drive) => drive.toLowerCase()));
+      if (process.platform === 'win32') {
+        // Older markers may retain the short directory names from the input root.
+        const storedRoot = projectRoot.split(path.sep).join('/');
+        fs.writeFileSync(hookFile(), body.replace(/^# codegraph-root: .*$/m, `# codegraph-root: ${storedRoot}`));
         expect(isSyncHookInstalled(repo, ['post-commit'])).toBe(true);
         removeGitSyncHook(projectRoot, ['post-commit']);
         expect(fs.existsSync(hookFile())).toBe(false);

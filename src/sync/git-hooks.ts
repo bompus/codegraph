@@ -98,7 +98,8 @@ function normalizeDriveLetter(key: string): string {
 function rootKey(projectRoot: string): string {
   let resolved = path.resolve(projectRoot);
   try {
-    resolved = fs.realpathSync(resolved);
+    // Git expands Windows 8.3 directory names; the JavaScript realpath keeps them.
+    resolved = process.platform === 'win32' ? fs.realpathSync.native(resolved) : fs.realpathSync(resolved);
   } catch {
     /* keep the lexical path when it can't be resolved */
   }
@@ -152,7 +153,7 @@ function ownerFor(projectRoot: string): BlockOwner {
   const root = rootKey(projectRoot);
   let toplevel: string | null | undefined;
   return (blockRoot) => {
-    if (blockRoot !== null) return normalizeDriveLetter(blockRoot) === root;
+    if (blockRoot !== null) return path.isAbsolute(blockRoot) && rootKey(blockRoot) === root;
     if (toplevel === undefined) toplevel = gitToplevelKey(projectRoot);
     return toplevel === root;
   };

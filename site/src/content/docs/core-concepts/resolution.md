@@ -46,7 +46,7 @@ C++ declarations give each listed variable its shared type, including callable l
 
 Sync retries unchanged importers when a module's default export moves or a declaration file starts supplying a package. Python module resolution follows package roots and refreshes affected imports when those roots or packages change. Python attribute calls follow declared or assigned types, including factory returns and inherited initializers.
 
-Git sync hooks retain their project root across reinstall and removal. On Windows, drive-letter casing does not change ownership, including hooks from older installs.
+Git sync hooks retain their project root across reinstall and removal. On Windows, drive-letter casing and short directory names do not change ownership, including hooks from older installs.
 
 Python attribute typing follows one field hop. An untyped parameter's attributes and missing members of a module-global instance do not borrow unrelated class methods by name. Deeper chains, package qualifiers absent from the indexed roots, and subscripted bases without indexed inheritance edges can remain unresolved. Runtime changes to Python import paths, such as pytest adding a directory with `syspath_prepend`, do not establish a source root for resolution. Calls through those imports can remain unresolved.
 
