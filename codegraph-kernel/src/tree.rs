@@ -57,7 +57,11 @@
 //! offsets), and the child table is built by a counting pass over the parent
 //! array rather than one Vec per node.
 
+#[cfg(feature = "addon")]
 use napi::bindgen_prelude::*;
+#[cfg(not(feature = "addon"))]
+use crate::native::{Buffer, Error, Result};
+#[cfg(feature = "addon")]
 use napi_derive::napi;
 use std::time::{Duration, Instant};
 use tree_sitter::{Node, ParseOptions, Parser};
@@ -76,7 +80,7 @@ const FLAG_HAS_ERROR: u8 = 2;
 const FLAG_MISSING: u8 = 4;
 
 /// Whole-tree buffers for one parse. `src/extraction/kernel/tree.ts` mirrors.
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct TreeBuffers {
     /// u32 LE: [abi, node_count, root_has_error]
     pub meta: Buffer,
@@ -89,7 +93,7 @@ pub struct TreeBuffers {
 
 /// Kind and field names for one grammar (NUL-joined; kinds then fields), with
 /// the two counts. Fetched once per language by the TS facade.
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct TreeNames {
     pub kind_count: u32,
     pub field_count: u32,
@@ -336,12 +340,12 @@ fn finish(rows: Vec<Row>, root_has_error: bool) -> TreeBuffers {
     for v in [TREE_ABI_VERSION, n as u32, root_has_error as u32] {
         meta.extend_from_slice(&v.to_le_bytes());
     }
-    TreeBuffers { meta: meta.into(), nodes: nodes.into(), children: children.into(), fields: fields.into() }
+    TreeBuffers { meta: crate::boundary::buffer(meta), nodes: crate::boundary::buffer(nodes), children: crate::boundary::buffer(children), fields: crate::boundary::buffer(fields) }
 }
 
 /// Kind and field names for `language`'s grammar. Field ids are 1-based in
 /// tree-sitter, so slot 0 of the field table is the empty "no field" name.
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn tree_names(language: String) -> Option<TreeNames> {
     let grammar = grammar_for(&language)?;
     let kind_count = grammar.node_kind_count() as u32;
@@ -356,7 +360,7 @@ pub fn tree_names(language: String) -> Option<TreeNames> {
         names.push_str(grammar.field_name_for_id(id).unwrap_or(""));
         names.push('\0');
     }
-    Some(TreeNames { kind_count, field_count: field_count + 1, names: names.into_bytes().into() })
+    Some(TreeNames { kind_count, field_count: field_count + 1, names: crate::boundary::buffer(names.into_bytes()) })
 }
 
 /// Parse `content` with the native grammar for `language` and return the
@@ -364,7 +368,7 @@ pub fn tree_names(language: String) -> Option<TreeNames> {
 /// needs no stack guard; a missing grammar surfaces as a napi error.
 /// An optional request budget cancels parsing at progress callbacks. It does
 /// not interrupt external scanners or bound tree serialization.
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn parse_tree(content: String, language: String, budget_ms: Option<u32>) -> Result<TreeBuffers> {
     parse_tree_inner(&content, &language, budget_ms)
 }

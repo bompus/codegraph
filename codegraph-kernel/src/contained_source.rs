@@ -167,28 +167,28 @@ fn opened_path(_file: &File) -> io::Result<PathBuf> {
     ))
 }
 
-#[napi_derive::napi(object)]
+#[cfg_attr(feature = "addon", napi_derive::napi(object))]
 pub struct ContainedSourceRead {
-    pub content: Option<napi::bindgen_prelude::Buffer>,
+    pub content: Option<crate::boundary::Buffer>,
     pub bytes_read: u32,
     pub limit_reached: bool,
 }
 
-#[napi_derive::napi]
+#[cfg_attr(feature = "addon", napi_derive::napi)]
 pub struct ContainedSourceReader {
     inner: SourceReader,
 }
 
-#[napi_derive::napi]
+#[cfg_attr(feature = "addon", napi_derive::napi)]
 impl ContainedSourceReader {
-    #[napi(constructor)]
-    pub fn new(root: String) -> napi::Result<Self> {
+    #[cfg_attr(feature = "addon", napi(constructor))]
+    pub fn new(root: String) -> crate::boundary::Result<Self> {
         let inner = SourceReader::new(Path::new(&root))
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            .map_err(|e| crate::boundary::Error::from_reason(e.to_string()))?;
         Ok(Self { inner })
     }
 
-    #[napi]
+    #[cfg_attr(feature = "addon", napi)]
     pub fn read(
         &self,
         relative: String,
@@ -199,7 +199,7 @@ impl ContainedSourceReader {
             .inner
             .read(Path::new(&relative), max_file_bytes, remaining_bytes);
         ContainedSourceRead {
-            content: read.content.map(Into::into),
+            content: read.content.map(crate::boundary::buffer),
             bytes_read: read.bytes_read,
             limit_reached: read.limit_reached,
         }

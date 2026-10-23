@@ -22,7 +22,11 @@
 //! baseline's reads would (WAL readers never pin a snapshot here — there is
 //! no spanning transaction).
 
+#[cfg(feature = "addon")]
 use napi::bindgen_prelude::*;
+#[cfg(not(feature = "addon"))]
+use crate::native::{Error, Result};
+#[cfg(feature = "addon")]
 use napi_derive::napi;
 use regex::Regex;
 use rusqlite::{Connection, OpenFlags};
@@ -65,13 +69,13 @@ macro_rules! re {
 // napi input/output shapes
 // ---------------------------------------------------------------------------
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct KernelKv {
     pub key: String,
     pub value: String,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct KernelAliasPatternIn {
     pub prefix: String,
     pub suffix: String,
@@ -79,7 +83,7 @@ pub struct KernelAliasPatternIn {
     pub replacements: Vec<String>,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct KernelAliasMapIn {
     pub base_url: Option<String>,
     /// Whether the config (or one it extends) sets `compilerOptions.baseUrl`:
@@ -90,13 +94,13 @@ pub struct KernelAliasMapIn {
 
 /// A nested tsconfig/jsconfig's aliases: files under `dir` (project-relative)
 /// use `map` in place of the root config's.
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct KernelScopedAliasIn {
     pub dir: String,
     pub map: KernelAliasMapIn,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct KernelWorkspaceIn {
     /// Import-source path prefix → workspace package name (longest prefix wins).
     pub source_entries: Vec<KernelKv>,
@@ -108,13 +112,13 @@ pub struct KernelWorkspaceIn {
     pub local_link_names: Option<Vec<String>>,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct KernelGoModule {
     pub module_path: String,
     pub dir: String,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct KernelResolverConfig {
     pub db_path: String,
     pub project_root: String,
@@ -158,7 +162,7 @@ pub struct KernelResolverConfig {
 }
 
 /// One unresolved_refs row — mirrors the UnresolvedReference/rowId shape.
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 #[derive(Clone)]
 pub struct ResolveRefIn {
     pub row_id: Option<i64>,
@@ -189,7 +193,7 @@ impl ResolveRefIn {
     }
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct KernelCandidateOut {
     pub target_node_id: String,
     pub confidence: f64,
@@ -198,15 +202,16 @@ pub struct KernelCandidateOut {
 
 /// One verdict per input ref. `status`:
 ///   - `resolved`    — verdict (gates + alias forwarding applied). `isFinal`
-///                     marks the import early-win; under frameworks it can
-///                     still be displaced by a ≥0.9 framework hit.
+///     marks the import early-win; under frameworks it can
+///     still be displaced by a ≥0.9 framework hit.
 ///   - `unresolved`  — a miss. With a candidate list (`[]` included) the
-///                     framework merge still runs; `reason` marks a ref the
-///                     deferred passes retry (`defer`, `defer-this`).
+///     framework merge still runs; `reason` marks a ref the
+///     deferred passes retry (`defer`, `defer-this`).
+///
 /// `candidates` is populated only when `frameworksActive` and the kernel
 /// produced a non-final verdict — the raw [import?, name?] list for the TS
 /// first-max merge.
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct ResolveOutcome {
     pub status: String,
     pub edge_kind: Option<String>,
@@ -621,7 +626,7 @@ use self::names::*;
 use self::object_literal::LiteralProperty;
 use self::prefilter::*;
 
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub struct KernelResolver {
     // Option so close() can drop the Connection deterministically — see
     // close() for why GC-timed teardown is unsafe on a shared -shm.
@@ -847,9 +852,9 @@ fn uri_path(db_path: &str) -> String {
     out
 }
 
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 impl KernelResolver {
-    #[napi(constructor)]
+    #[cfg_attr(feature = "addon", napi(constructor))]
     pub fn new(config: KernelResolverConfig) -> Result<Self> {
         let snapshot = config.snapshot.unwrap_or(false);
         let conn = if snapshot {
@@ -998,7 +1003,7 @@ impl KernelResolver {
     /// whenever V8 GCs the JS wrapper. A live-db conn is parked, not closed
     /// (live_conn): closing it would drop this process's POSIX locks on the
     /// db, node:sqlite's included. A snapshot conn closes.
-    #[napi]
+    #[cfg_attr(feature = "addon", napi)]
     pub fn close(&mut self) {
         self.debug_stats("close");
         self.release_conn();
@@ -1056,7 +1061,7 @@ impl KernelResolver {
     /// The `read` stage — same keyset cursor and prerequisite split as
     /// queries.getUnresolvedReferencesBatchAfter, plus the denormalized
     /// file/language fallback via the origin node that resolveOne applies.
-    #[napi]
+    #[cfg_attr(feature = "addon", napi)]
     pub fn read_pending_batch(
         &mut self,
         after_row_id: i64,
@@ -1131,7 +1136,7 @@ impl KernelResolver {
     }
 
     /// The `settle` stage — one verdict per ref in input order.
-    #[napi]
+    #[cfg_attr(feature = "addon", napi)]
     pub fn resolve_chunk(&mut self, refs: Vec<ResolveRefIn>) -> Result<Vec<ResolveOutcome>> {
         let mut out = Vec::with_capacity(refs.len());
         for r in refs {
@@ -1159,7 +1164,7 @@ impl KernelResolver {
     }
 
     /// Scope checks shared with the framework name heuristics.
-    #[napi]
+    #[cfg_attr(feature = "addon", napi)]
     pub fn is_name_candidate_visible(&mut self, node_id: String, r: ResolveRefIn) -> Result<bool> {
         match per_ref(&r, false, || {
             let Some(node) = self.node_by_id(&node_id)? else { return Ok(false) };
@@ -1180,7 +1185,7 @@ impl KernelResolver {
 
     /// resolveViaImport for one ref: what a framework resolver reaches through
     /// `context.resolveImport` (expo-modules' imported-receiver lookup).
-    #[napi]
+    #[cfg_attr(feature = "addon", napi)]
     pub fn resolve_via_import_ref(&mut self, r: ResolveRefIn) -> Result<ResolveOutcome> {
         match per_ref(&r, None, || self.resolve_via_import_member(&r)) {
             Ok(Some(c)) => Ok(ResolveOutcome::resolved(&c.node, c.confidence, c.resolved_by, true, None)),
@@ -1191,7 +1196,7 @@ impl KernelResolver {
 
     /// resolveDeferredThisMemberRefs' per-ref match (matchDeferredThisMember),
     /// run after the main pass wrote every implements/extends edge.
-    #[napi]
+    #[cfg_attr(feature = "addon", napi)]
     pub fn resolve_deferred_this_members(&mut self, refs: Vec<ResolveRefIn>) -> Result<Vec<ResolveOutcome>> {
         let mut out = Vec::with_capacity(refs.len());
         for r in refs {
@@ -1212,7 +1217,7 @@ impl KernelResolver {
     /// pass wrote every implements/extends edge: PHP `this->prop.method`
     /// through the method-call arm, Rust chains through bound factory returns,
     /// every other chain through the dotted arm, then the language gate.
-    #[napi]
+    #[cfg_attr(feature = "addon", napi)]
     pub fn resolve_deferred_chains(&mut self, refs: Vec<ResolveRefIn>) -> Result<Vec<ResolveOutcome>> {
         let mut out = Vec::with_capacity(refs.len());
         for r in refs {

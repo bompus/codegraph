@@ -418,7 +418,7 @@ pub(super) fn framework_claims_reference(framework: &str, name: &str) -> bool {
 /// Diagnostic/differential probe: `f.claimsReference(name)` for the resolver
 /// registered as `framework` — the same table `framework_claims` iterates,
 /// including the conservative claim for names the kernel does not know.
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn framework_claims_name(framework: String, name: String) -> bool {
     framework_claims_reference(&framework, &name)
 }

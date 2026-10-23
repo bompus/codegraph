@@ -1323,13 +1323,13 @@ impl KernelResolver {
     }
 }
 
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 impl KernelResolver {
-    #[napi]
+    #[cfg_attr(feature = "addon", napi)]
     pub fn is_python_outside_module_receiver(&mut self, name: String, r: ResolveRefIn) -> Result<bool> {
         self.python_outside_module_receiver(&name,&r).map_err(Error::from)
     }
-    #[napi]
+    #[cfg_attr(feature = "addon", napi)]
     pub fn resolve_python_global_call(&mut self, receiver: String, member: String, r: ResolveRefIn) -> Result<ResolveOutcome> {
         match self.python_global_receiver_call(&receiver,&member,&r).map_err(Error::from)? {
             Some(c)=>Ok(ResolveOutcome::resolved(&c.node,c.confidence,c.resolved_by,true,None)),

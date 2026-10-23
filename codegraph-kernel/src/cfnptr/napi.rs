@@ -2,25 +2,26 @@
 //! passes and receives, and the entry points for the sweep (stages A/B),
 //! the macro environment (stage C) and the link (stages D/E).
 
+#[cfg(feature = "addon")]
 use napi_derive::napi;
 
 /// One struct node's extent for the cFnPtr sweep (mirror of the TS caller's
 /// `{ id, startLine, endLine }`, with `endLine ?? startLine` applied TS-side).
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrStructIn {
     pub id: String,
     pub start_line: u32,
     pub end_line: u32,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrFileIn {
     /// RAW file text, exactly as the resolver's readFile returned it.
     pub text: String,
     pub structs: Vec<CfnptrStructIn>,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrPathIn {
     /// Absolute file path — the kernel reads the text itself (utf-8-lossy, the
     /// same bytes JS `readFileSync(path, 'utf-8')` produces) instead of taking
@@ -29,16 +30,16 @@ pub struct CfnptrPathIn {
     pub structs: Vec<CfnptrStructIn>,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrField {
     pub name: String,
     pub index: u32,
     pub ptr: bool,
-    #[napi(js_name = "type")]
+    #[cfg_attr(feature = "addon", napi(js_name = "type"))]
     pub ty: String,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrStructOut {
     pub id: String,
     pub parsed: bool,
@@ -47,7 +48,7 @@ pub struct CfnptrStructOut {
 
 /// The cFnPtr extraction-sweep facts for one file — see cfnptr.rs (and the
 /// TS synthesizer's `FileFacts`) for field semantics.
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrFacts {
     pub fn_ptr_typedefs: Vec<String>,
     pub fn_type_typedefs: Vec<String>,
@@ -124,7 +125,7 @@ fn empty_cfnptr_facts() -> CfnptrFacts {
 /// of files and returns their collected facts, amortizing the NAPI boundary.
 /// Feature-detected by the TS loader — absent on older binaries, where the
 /// synthesizer keeps its JS sweep.
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn cfnptr_scan_files(files: Vec<CfnptrFileIn>) -> Vec<CfnptrFacts> {
     files
         .into_iter()
@@ -150,7 +151,7 @@ fn read_lossy(path: &str) -> Option<String> {
 /// itself and fans the batch across scoped threads. Output stays 1:1 with
 /// input order: an unreadable file or a per-file panic yields empty facts,
 /// and a chunk thread's own failure pads its outputs the same way.
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn cfnptr_scan_paths(files: Vec<CfnptrPathIn>) -> Vec<CfnptrFacts> {
     fn scan_one(f: &CfnptrPathIn) -> CfnptrFacts {
         let Some(text) = read_lossy(&f.path) else {
@@ -172,28 +173,28 @@ pub fn cfnptr_scan_paths(files: Vec<CfnptrPathIn>) -> Vec<CfnptrFacts> {
 /// Debug/differential hook: the native `stripCommentsForRegex(text, 'c')`.
 /// Exists so the strip differential oracle can pin the Rust stripper against
 /// the TS reference directly.
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn cfnptr_strip_c(text: String) -> String {
     String::from_utf8(super::strip_c(text.as_bytes())).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
 // ---- cFnPtr stage C env extraction + stages D/E link ----
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrFnMacro {
     pub name: String,
     pub params: Vec<String>,
     pub expansion: String,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrObjMacro {
     pub name: String,
     pub value: String,
 }
 
 /// One file's `buildEnv` inputs — see `super::file_env`.
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrFileEnv {
     pub fn_macros: Vec<CfnptrFnMacro>,
     pub obj_macros: Vec<CfnptrObjMacro>,
@@ -213,7 +214,7 @@ pub struct CfnptrFileEnv {
 /// so a virtual FS still resolves) and per slot of a chunk thread that
 /// panicked. OPTIONAL: absent on older binaries, where the synthesizer keeps
 /// its lazy LRU-cached extractor path.
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn cfnptr_file_envs(paths: Vec<String>) -> Vec<Option<CfnptrFileEnv>> {
     fn one(path: &str) -> Option<CfnptrFileEnv> {
         let text = read_lossy(path)?;
@@ -239,22 +240,22 @@ pub fn cfnptr_file_envs(paths: Vec<String>) -> Vec<Option<CfnptrFileEnv>> {
 
 /// `{name, type, isFnPtr}` — the FieldInfo members stages D/E consult; `type`
 /// arrives null for fn-pointer fields (the TS side stores `''` there).
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrLinkField {
     pub name: String,
-    #[napi(js_name = "type")]
+    #[cfg_attr(feature = "addon", napi(js_name = "type"))]
     pub ty: Option<String>,
     pub is_fn_ptr: bool,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrLinkFn {
     pub id: String,
     pub start_line: u32,
     pub end_line: u32,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrLinkFile {
     /// Project-relative path (the node filePath — `registeredAt` uses it).
     pub rel: String,
@@ -268,51 +269,51 @@ pub struct CfnptrLinkFile {
     pub fns: Vec<CfnptrLinkFn>,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrFieldStructs {
     pub field: String,
     pub structs: Vec<String>,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrLayout {
     pub name: String,
     pub fields: Vec<CfnptrLinkField>,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrLayoutVariants {
     pub name: String,
     pub variants: Vec<Vec<CfnptrLinkField>>,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrVarType {
     pub var: String,
-    #[napi(js_name = "type")]
+    #[cfg_attr(feature = "addon", napi(js_name = "type"))]
     pub ty: String,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrRegEntry {
     pub key: String,
     pub ids: Vec<String>,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrArrEntry {
     pub file: String,
     pub ids: Vec<String>,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrArrReg {
     pub name: String,
     pub entries: Vec<CfnptrArrEntry>,
 }
 
 /// The registration tables verbatim — see `super::LinkTables`.
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrLinkTables {
     pub field_to_structs: Vec<CfnptrFieldStructs>,
     pub struct_layout: Vec<CfnptrLayout>,
@@ -322,7 +323,7 @@ pub struct CfnptrLinkTables {
     pub array_reg: Vec<CfnptrArrReg>,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrLinkEdge {
     pub source: String,
     pub target: String,
@@ -331,7 +332,7 @@ pub struct CfnptrLinkEdge {
     pub registered_at: String,
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct CfnptrLinkOut {
     pub edges: Vec<CfnptrLinkEdge>,
 }
@@ -339,7 +340,7 @@ pub struct CfnptrLinkOut {
 /// Stages D+E of the fn-pointer synthesis — field←field propagation to a
 /// fixpoint, then dispatch-site edges — internally threaded, file-order
 /// deterministic. OPTIONAL: absent on older binaries.
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn cfnptr_link(files: Vec<CfnptrLinkFile>, tables: CfnptrLinkTables) -> CfnptrLinkOut {
     let files: Vec<super::LinkFile> = files
         .into_iter()

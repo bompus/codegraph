@@ -8,11 +8,16 @@ publish = false
 description = "Native extraction kernel for CodeGraph — tree-sitter parse+extract with one JS boundary crossing per file"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["addon"]
+addon = ["dep:napi", "dep:napi-derive", "dep:napi-build"]
+addon-tests = ["addon", "napi/dyn-symbols"]
 
 [dependencies]
-napi = { version = "3", default-features = false, features = ["napi8"] }
-napi-derive = "3"
+napi = { version = "3", default-features = false, features = ["napi8"], optional = true }
+napi-derive = { version = "3", optional = true }
 tree-sitter = "0.25"
 sha2 = "0.10"
 memchr = "2"
@@ -83,14 +88,10 @@ tree-sitter-language = "0.1"
 libc = "0.2"
 
 [build-dependencies]
-napi-build = "2"
+napi-build = { version = "2", optional = true }
 cc = "1"
 
-# Unit tests run outside Node: load the N-API symbols at run time instead of
-# linking them, so a test that builds a KernelResolver links. Release builds
-# keep the features above.
-[dev-dependencies]
-napi = { version = "3", default-features = false, features = ["napi8", "dyn-symbols"] }
+# Addon unit tests outside Node use --features addon-tests for dynamic symbols.
 
 [profile.release]
 # Never `panic = "abort"`: lib.rs walk_file turns a walker panic into a

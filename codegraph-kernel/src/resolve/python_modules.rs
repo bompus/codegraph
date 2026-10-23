@@ -2,13 +2,13 @@
 //! Root discovery and sync invalidation use the same indexed-file snapshot.
 use super::*;
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct PythonReopenScope {
     pub target_files: Vec<String>,
     pub source_dirs: Vec<String>,
     pub module_leaves: Vec<String>,
 }
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct PythonImportBinding {
     pub file_path: String,
     pub local_name: String,
@@ -356,15 +356,15 @@ impl KernelResolver {
     }
 }
 
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 impl KernelResolver {
-    #[napi]
+    #[cfg_attr(feature = "addon", napi)]
     pub fn resolve_python_module(&mut self, spec: String, from: String) -> Result<Option<String>> {
         self.python_module_path(&spec, &from).map_err(Error::from)
     }
     /// Stable root-set serialization. The caller may hash it; sync compares it
     /// before/after extraction, using a fresh resolver snapshot each time.
-    #[napi]
+    #[cfg_attr(feature = "addon", napi)]
     pub fn python_package_roots(&mut self) -> Result<String> {
         let index = self.build_python_modules().map_err(Error::from)?;
         if index.files.is_empty() {
@@ -384,11 +384,11 @@ impl KernelResolver {
             local.join("\n")
         ))
     }
-    #[napi]
+    #[cfg_attr(feature = "addon", napi)]
     pub fn clear_python_module_caches(&mut self) {
         self.py_globals = Default::default();
     }
-    #[napi]
+    #[cfg_attr(feature = "addon", napi)]
     pub fn python_package_reopen_scope(
         &mut self,
         changed_files: Vec<String>,
@@ -556,11 +556,11 @@ mod tests {
     }
 }
 
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 impl KernelResolver {
     /// Flat importer entries for grouping by file and local name. A binding is
     /// `file\0symbol`, `file\0` for a submodule, or null for a namespace.
-    #[napi]
+    #[cfg_attr(feature = "addon", napi)]
     pub fn python_package_import_bindings(
         &mut self,
         init_files: Vec<String>,
@@ -641,11 +641,11 @@ impl KernelResolver {
     }
 }
 
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 impl KernelResolver {
     /// The module ref of `from X import y` is emitted at the statement's
     /// start. Imported names have their own columns, even when one is also X.
-    #[napi]
+    #[cfg_attr(feature = "addon", napi)]
     pub fn is_python_from_import_module(&mut self, r: ResolveRefIn) -> bool {
         if r.language != "python" || r.reference_kind != "imports" {
             return false;

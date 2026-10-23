@@ -15,10 +15,10 @@
 //! parity — checked by kernel-generic-extractor-tree.test.ts and golden dumps.
 
 #![deny(clippy::all)]
-// napi-derive registers `#[napi]` exports only outside `cfg(test)`, so a test
-// build sees every export, and all it alone reaches, as unused. The release
-// build's `clippy --lib -D warnings` gate still reports real dead code.
-#![cfg_attr(test, allow(dead_code))]
+// Exports registered with napi-derive are reached only by the addon: a test
+// build or a build without the `addon` feature sees them as unused. The
+// addon build's `clippy --lib -D warnings` gate still reports real dead code.
+#![cfg_attr(any(test, not(feature = "addon")), allow(dead_code))]
 
 /// First statement of every recursive walker function (see stack.rs, #1581):
 /// once the stack pointer is inside the red zone, stop descending — the
@@ -376,6 +376,20 @@ macro_rules! markdown_refs_impl {
 }
 
 mod buffers;
+pub mod native;
+mod boundary {
+    pub fn buffer(bytes: Vec<u8>) -> Buffer {
+        #[cfg(feature = "addon")]
+        { bytes.into() }
+        #[cfg(not(feature = "addon"))]
+        { bytes }
+    }
+    #[cfg(feature = "addon")]
+    pub use napi::{bindgen_prelude::Buffer, Error, Result};
+    #[cfg(not(feature = "addon"))]
+    pub use crate::native::{Buffer, Error, Result};
+}
+pub use buffers::EmitOut as NativeExtractBuffers;
 mod ccpp;
 mod cfnptr;
 mod csharp;
@@ -404,12 +418,16 @@ mod walker;
 mod python;
 mod tsjs;
 
+#[cfg(feature = "addon")]
 use napi::bindgen_prelude::*;
+#[cfg(not(feature = "addon"))]
+use crate::native::{Buffer, Error, Result};
+#[cfg(feature = "addon")]
 use napi_derive::napi;
 
 /// The six flat tables for one file. See buffers.rs for the byte layout;
 /// `src/extraction/kernel/layout.ts` is the TS mirror.
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct ExtractBuffers {
     pub meta: Buffer,
     pub nodes: Buffer,
@@ -423,7 +441,7 @@ pub struct ExtractBuffers {
 /// Wire-contract description — the TS loader verifies this against
 /// src/types.ts before routing anything to the kernel, so an out-of-date
 /// `.node` is rejected instead of mis-decoding.
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct ContractInfo {
     pub abi_version: u32,
     pub kernel_version: String,
@@ -435,7 +453,7 @@ pub struct ContractInfo {
 
 /// Grammar identity: exposes the native grammar's ABI and node-kind/field tables
 /// for grammar inspection and compatibility checks.
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct GrammarInfo {
     pub abi_version: u32,
     pub node_kind_count: u32,
@@ -444,7 +462,7 @@ pub struct GrammarInfo {
     pub field_names: Vec<String>,
 }
 
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn contract_info() -> ContractInfo {
     ContractInfo {
         abi_version: buffers::KERNEL_ABI_VERSION as u32,
@@ -455,7 +473,7 @@ pub fn contract_info() -> ContractInfo {
     }
 }
 
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn grammar_info(language: String) -> Option<GrammarInfo> {
     let lang = langs::grammar_for(&language)?;
     let node_kind_count = lang.node_kind_count();
@@ -519,14 +537,14 @@ fn dispatch_walker(file_path: &str, content: &str, language: &str) -> std::resul
     }
 }
 
-fn to_buffers(out: buffers::EmitOut) -> ExtractBuffers {
+fn to_buffers(out: NativeExtractBuffers) -> ExtractBuffers {
     ExtractBuffers {
-        meta: out.meta.into(),
-        nodes: out.nodes.into(),
-        edges: out.edges.into(),
-        refs: out.refs.into(),
-        bindings: out.bindings.into(),
-        arena: out.arena.into(),
+        meta: boundary::buffer(out.meta),
+        nodes: boundary::buffer(out.nodes),
+        edges: boundary::buffer(out.edges),
+        refs: boundary::buffer(out.refs),
+        bindings: boundary::buffer(out.bindings),
+        arena: boundary::buffer(out.arena),
     }
 }
 
@@ -537,14 +555,20 @@ fn to_buffers(out: buffers::EmitOut) -> ExtractBuffers {
 /// and refs are dropped and the rows come back nodeless for the TS side to
 /// attach by name and line. A file too deep for the walk yields `defer:` and
 /// no rows, like its nodes.
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn bindings_file(file_path: String, content: String, language: String) -> Result<ExtractBuffers> {
-    let out = walk_file(&file_path, &content, &language).map_err(Error::from_reason)?;
+    let out = extract_native(&file_path, &content, &language).map_err(|e| Error::from_reason(e.to_string()))?;
     Ok(to_buffers(out.bindings_only()))
 }
 
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn extract_file(file_path: String, content: String, language: String) -> Result<ExtractBuffers> {
-    let out = walk_file(&file_path, &content, &language).map_err(Error::from_reason)?;
+    let out = extract_native(&file_path, &content, &language).map_err(|e| Error::from_reason(e.to_string()))?;
     Ok(to_buffers(out))
+}
+
+/// Extract through the production walkers without any Node conversion or copy.
+/// The caller owns every table. Stack exhaustion and walker panics remain errors.
+pub fn extract_native(file_path: &str, content: &str, language: &str) -> native::Result<NativeExtractBuffers> {
+    walk_file(file_path, content, language).map_err(native::Error::from_reason)
 }
