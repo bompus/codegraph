@@ -243,6 +243,35 @@ impl KernelResolver {
         false
     }
 
+    /// A primitive cannot bind to a non-const class reference. A concrete
+    /// standard-library overload requires a proved argument owner; an unindexed
+    /// generic standard overload may otherwise be the actual callee.
+    pub(super) fn cpp_reference_argument_mismatch(&mut self, node: &Arc<KNode>, name: &str, r: &ResolveRefIn) -> Res<bool> {
+        let Some(types) = self.cpp_call_argument_types(name, r)? else { return Ok(false) };
+        let Some(params) = self.declaration_parameters(node, r) else { return Ok(false) };
+        let own = self.cpp_own_template_parameters(node, r)?;
+        for (arg, param) in types.iter().zip(params) {
+            let param = cpp_parameter_type(&param);
+            if cpp_type_category(&param) != CppTypeCategory::Class || cpp_refers_to_const(&param) != Some(false) { continue; }
+            if self.normalize_cpp_type_name(&param, false)?.is_some_and(|name| own.contains(&name)) { continue; }
+            if let Some(CppArgument::Type { text, dependent: false, .. }) = arg {
+                if matches!(cpp_type_category(text), CppTypeCategory::Char | CppTypeCategory::Number | CppTypeCategory::Bool | CppTypeCategory::Pointer | CppTypeCategory::CString) { return Ok(true); }
+                if node.qualified_name.trim_start_matches("::").starts_with("std::") {
+                    if self.normalize_cpp_type_name(text, false)? == self.normalize_cpp_type_name(&param, false)? { continue; }
+                    let visible = self.namespace_visible_files(&r.file_path, "cpp")?;
+                    let argument_owner = self.cpp_type_owner_visible(text, r, 0, false, &visible)?;
+                    let mut site = r.clone().at(node); site.from_node_id = node.id.clone();
+                    let parameter_owner = self.cpp_type_owner_visible(&param, &site, 0, false, &visible)?;
+                    if argument_owner.zip(parameter_owner).is_some_and(|(a, p)| a.id == p.id) { continue; }
+                    return Ok(true);
+                }
+            } else if node.qualified_name.trim_start_matches("::").starts_with("std::") {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// How well the read argument types `types` fit the parameters of the overload `n`: the same
     /// type, or a character to a character, scores; a character, number or pointer to a string, or
     /// a string or pointer to a number, counts against. Classes of other names score nothing: a

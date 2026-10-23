@@ -84,129 +84,12 @@ impl KernelResolver {
         Ok(self.unique_member(named, r, 0.8)?.filter(|c| c.node.kind == "method" && super::method_call::shares_receiver_word(super::call_shape::receiver_link(receiver), &c.node)))
     }
 
-    /// `self.<field>.method()` / `cls.<field>.method()` in Python: the field's
-    /// type from its class or a base (`self.cache = Store()` in `__init__`,
-    /// an annotation, an annotated parameter assigned to it), then the member
-    /// on that type or along its MRO, else a subclass's. `None`: the field's
-    /// type (or the subclass) is not known here, so the name strategies
-    /// decide; `Some(None)`: the type's member is data or a property.
-    pub(super) fn python_self_field_call(&mut self, receiver: &str, member: &str, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
-        let Some(field) = receiver.strip_prefix("self.").or_else(|| receiver.strip_prefix("cls.")).filter(|f| is_word(f)) else {
-            return Ok(None);
-        };
-        let owner = self
-            .nodes_in_file(&r.file_path)?
-            .iter()
-            .filter(|n| n.kind == "class" && n.start_line <= r.line && n.end_line >= r.line)
-            .max_by_key(|n| n.start_line)
-            .cloned();
-        let Some(owner) = owner else { return Ok(None) };
-        self.python_field_member_call(&owner, field, member, r)
-    }
-
-    /// `<local>.<field>.method()` in Python: the local's class from its
-    /// declaration (`app = Flask()`, `app = pkg.Flask()`, an annotation), then
-    /// the call settles on the field's type as `self.<field>.method()` does.
-    /// `None`: the local or field type is not known here, so the name
-    /// strategies decide as before.
-    pub(super) fn python_local_field_call(&mut self, receiver: &str, member: &str, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
-        let Some((root, field)) = receiver.split_once('.').filter(|(a, b)| is_word(a) && is_word(b) && !matches!(*a, "self" | "cls")) else {
-            return Ok(None);
-        };
-        let Some(binding) = self.receiver_binding(root, r)?.filter(|b| b.kind != "import" && b.line <= r.line) else {
-            return Ok(None);
-        };
-        let mut site = r.clone();
-        site.line = binding.line;
-        if let Some(nid) = &binding.node_id {
-            site.from_node_id = nid.clone();
-        }
-        let Some(ty) = self.infer_local_receiver_type(root, &site, true)? else { return Ok(None) };
-        // `pkg.Flask()` names the import only while no parameter or local
-        // called `pkg` hides it.
-        if ty.contains('.') && self.is_shadowed_import(ty.split('.').next().unwrap_or(&ty), &site)? {
-            return Ok(None);
-        }
-        let Some(owner) = self.python_ref_class(&ty, r)? else { return Ok(None) };
-        self.python_field_member_call(&owner, field, member, r)
-    }
-
-    /// The call `<instance of owner>.<field>.<member>()`. `Some(None)`: the
-    /// field's type is known and its member is data or a property.
-    fn python_field_member_call(&mut self, owner: &Arc<KNode>, field: &str, member: &str, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
-        // The field's evidence in the class and every base along its MRO,
-        // each read in its own file, must name one class: a subclass's
-        // `self.cache = Other()` conflicts with the base's `Store()`, and
-        // the name strategies decide. A base's declared type
-        // (`cache: Base`) may be narrowed to a subclass of it.
-        let mut classes: Vec<Arc<KNode>> = vec![owner.clone()];
-        if self.supertypes_complete {
-            if let Some(mro) = self.python_mro(owner, 0)? {
-                classes.extend(mro.iter().skip(1).cloned());
-            }
-        }
-        // (class, every fact naming it is declared)
-        let mut named: Vec<(Arc<KNode>, bool)> = Vec::new();
-        for class in &classes {
-            let site = r.clone().at(class);
-            let facts = self.python_field_facts(field, class)?;
-            for fact in visible_field_facts(&facts, r) {
-                let Some(t) = fact.ty.as_deref().filter(|t| *t != UNKNOWN_TYPE && *t != "object" && *t != "Any") else {
-                    return Ok(None);
-                };
-                let Some(found) = self.python_ref_class(t, &site)? else { return Ok(None) };
-                match named.iter_mut().find(|(c, _)| c.id == found.id) {
-                    Some((_, declared)) => *declared &= fact.declared,
-                    None => named.push((found, fact.declared)),
-                }
-            }
-        }
-        let (cls, exact) = match named.len() {
-            0 => return Ok(None),
-            1 => (named[0].0.clone(), !named[0].1),
-            _ => {
-                let mut narrowest = None;
-                for (c, own_declared) in &named {
-                    let mro = self.python_mro(c, 0)?.unwrap_or_default();
-                    let covers = named
-                        .iter()
-                        .all(|(d, declared)| d.id == c.id || (*declared && mro.iter().any(|m| m.id == d.id)));
-                    if covers {
-                        narrowest = Some((c.clone(), !*own_declared));
-                        break;
-                    }
-                }
-                let Some(pick) = narrowest else { return Ok(None) };
-                pick
-            }
-        };
-        let mut members = self.python_members(&cls, member, r, &mut HashSet::new())?;
-        let mut confidence = 0.9;
-        if members.is_empty() {
-            // A field only ever assigned `Store()` holds exactly a `Store`.
-            if exact {
-                return Ok(Some(None));
-            }
-            // A declared base type can hold a subclass: its one method of
-            // that name, else the name strategies decide as before.
-            members = self.python_descendant_members(&cls, member, r)?;
-            if members.len() != 1 {
-                return Ok(None);
-            }
-            confidence = 0.8;
-        }
-        let mut methods = members.into_iter().filter(|n| n.language == "python");
-        Ok(Some(match (methods.next(), methods.next()) {
-            (Some(m), None) if m.kind == "method" && !self.is_python_property(&m) => {
-                Some(KCand { node: m, confidence, resolved_by: "instance-method" })
-            }
-            _ => None,
-        }))
-    }
-
     /// Is `name` bound at `r` by something other than its import (a
     /// parameter, a local)? Files without binding rows keep the import.
     pub(super) fn is_shadowed_import(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
+        if r.language == "go" {
+            return Ok(self.go_local_declaration_at(name.to_string(), r.file_path.clone(), r.line, r.column)?.is_some());
+        }
         let rows = self.bindings(&r.file_path)?;
         let before = self.go_declares_on_line(name, r, &rows);
         Ok(innermost_binding_unless(&rows, name, Some(r.line), before).is_some_and(|b| b.kind != "import"))
@@ -281,7 +164,7 @@ impl KernelResolver {
     /// `member` methods of the classes deriving from `cls` (a base-typed
     /// receiver can hold a subclass): only descendants of THAT base, so
     /// unrelated same-name methods can't win.
-    fn python_descendant_members(&mut self, cls: &KNode, member: &str, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
+    pub(super) fn python_descendant_members(&mut self, cls: &KNode, member: &str, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
         let key = (cls.id.clone(), member.to_string());
         if let Some(hit) = self.py_descendants_memo.get(&key) {
             return Ok(hit.as_ref().clone());

@@ -6,7 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { moduleTail } from '../db/reference-tail';
+import { moduleTail, moduleReferenceKeys } from '../db/reference-tail';
 import { Binding, Language } from '../types';
 import { UnresolvedRef,  ResolutionContext, ImportMapping } from './types';
 import { applyAliases, aliasAndBaseUrlCandidates, type AliasMap } from './path-aliases';
@@ -557,10 +557,12 @@ function ownConfigCandidates(
   language: Language,
   context: ResolutionContext
 ): string[] | null {
-  if (!ESM_IMPORT_LANGUAGES.has(language) || !importPath || importPath.startsWith('/') || /^[A-Za-z][\w+.-]*:/.test(importPath)) return null;
+  if (!ESM_IMPORT_LANGUAGES.has(language) || !importPath || importPath.startsWith('//') || /^[A-Za-z][\w+.-]*:/.test(importPath)) return null;
   const config = context.getNearestAliases?.(fromFile) ?? context.getProjectAliases?.();
   if (!config) return null;
-  const candidates = aliasAndBaseUrlCandidates(importPath, config, context.getProjectRoot());
+  const candidates = importPath.startsWith('/')
+    ? applyAliases(importPath, config, context.getProjectRoot())
+    : aliasAndBaseUrlCandidates(importPath, config, context.getProjectRoot());
   return candidates.length > 0 ? candidates : null;
 }
 
@@ -1217,7 +1219,7 @@ export function importBindingTail(ref: UnresolvedRef, context: ResolutionContext
   const mappings = context.getImportMappings(ref.filePath, ref.language);
   const binding = mappings.find((m) => m.localName === name) ??
     (receiver && ref.referenceKind === 'calls' ? localTypeBinding(typeHead, mappings) : undefined);
-  if (!binding || (!receiver && !binding.isDefault && !binding.isNamespace && binding.exportedName === binding.localName)) return undefined;
+  if (!binding) return undefined;
   // The importing file passes its nearest tsconfig aliases (`#/views/…` in a monorepo app).
   if (isExternalImport(binding.source, ref.language, context, ref.filePath) &&
       // A module the app's `baseUrl` or catch-all `paths` reads (`layout/MainLayout`).
@@ -1225,7 +1227,14 @@ export function importBindingTail(ref: UnresolvedRef, context: ResolutionContext
   // `..` names a folder through the importing file's own location.
   const modulePath = binding.source.startsWith('.')
     ? path.posix.join(path.posix.dirname(ref.filePath), binding.source) : binding.source;
-  return moduleTail(modulePath) || undefined;
+  const tail = moduleTail(modulePath);
+  if (!tail) return undefined;
+  if (!receiver && !binding.isDefault && !binding.isNamespace && binding.exportedName === binding.localName) {
+    const moduleFile = resolveImportPath(binding.source, ref.filePath, ref.language, context);
+    if (!moduleFile || !(context.isIndexedFile?.(moduleFile) ?? true) || !moduleReferenceKeys(moduleFile).includes(tail)) return undefined;
+    if (context.resolveImport?.({ ...ref, referenceKind: 'references' })) return undefined;
+  }
+  return tail;
 }
 
 /**

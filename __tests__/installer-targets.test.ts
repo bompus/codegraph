@@ -21,7 +21,7 @@ import * as os from 'os';
 import { spawnSync } from 'child_process';
 import { parse as parseJsonc } from 'jsonc-parser';
 import { ALL_TARGETS, getTarget, resolveTargetFlag } from '../src/installer/targets/registry';
-import { uninstallTargets, refreshTargets } from '../src/installer';
+import { uninstallTargets, refreshTargets, offerWatchFallback } from '../src/installer';
 import { upsertTomlTable, removeTomlTable, buildTomlTable } from '../src/installer/targets/toml';
 import { cleanupLegacyHooks, writePromptHookEntry, removePromptHookEntry } from '../src/installer/targets/claude';
 
@@ -3136,5 +3136,33 @@ describe('Antigravity macOS command persistence (#1443)', () => {
   it.runIf(process.platform === 'darwin')('falls back to the bare command when lookup fails', () => {
     vi.stubEnv('PATH', tmpHome);
     expect(installCommand()).toBe('codegraph');
+  });
+});
+
+
+describe('watch fallback preserves non-shell git hooks', () => {
+  it('warns with manual sync guidance and leaves the existing hook unchanged', async () => {
+    const root = mkTmpDir('watch-hook');
+    const hookBody = '#!/usr/bin/env python3\nprint("existing hook")\n';
+    vi.stubEnv('CODEGRAPH_NO_WATCH', '1');
+    const clack = {
+      log: { warn: vi.fn(), info: vi.fn(), success: vi.fn() },
+    };
+    try {
+      const initialized = spawnSync('git', ['init', root], { encoding: 'utf8' });
+      expect(initialized.status).toBe(0);
+      const hook = path.join(root, '.git', 'hooks', 'post-commit');
+      fs.writeFileSync(hook, hookBody);
+      await offerWatchFallback(clack as unknown as typeof import('@clack/prompts'), root, { yes: true });
+      expect(fs.readFileSync(hook, 'utf8')).toBe(hookBody);
+      expect(clack.log.warn.mock.calls.map(([message]) => message).join('\n')).toContain('post-commit hook unchanged');
+      expect(clack.log.warn.mock.calls.map(([message]) => message).join('\n')).toContain(`codegraph sync ${root}`);
+      const once = fs.readFileSync(hook, 'utf8');
+      await offerWatchFallback(clack as unknown as typeof import('@clack/prompts'), root, { yes: true });
+      expect(fs.readFileSync(hook, 'utf8')).toBe(once);
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

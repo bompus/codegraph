@@ -341,6 +341,6 @@ suite(() => {
     const file = graph!.getNodesByKind('file')[0]!;
     const calls = graph!.getOutgoingEdges(file.id).filter(e => e.kind === 'calls')
       .map(e => `${e.line}:${graph!.getNode(e.target)!.qualifiedName}`).sort();
-    expect(calls).toEqual(['12:loadTyped', '13:Leaf::label', '8:load']);
+    expect(calls).toEqual(['11:suite', '12:loadTyped', '13:Leaf::label', '7:suite', '8:load']);
   });
 });

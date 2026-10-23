@@ -167,32 +167,13 @@ impl KernelResolver {
         None
     }
 
-    /// resolveRelativeImport (import-resolver.ts), including the Python
-    /// dotted-relative translation.
+    /// Resolve a non-Python relative import; Python uses its source-root reader.
     pub(super) fn resolve_relative_import(
         &mut self,
         import_path: &str,
         from_dir: &str,
         language: &str,
     ) -> Res<Option<String>> {
-        let extensions = extension_resolution(language);
-        if language == "python" && import_path.starts_with('.') {
-            let dots = import_path.len() - import_path.trim_start_matches('.').len();
-            let up = "../".repeat(dots.saturating_sub(1));
-            let rest = import_path[dots..].replace('.', "/");
-            let py_base = pos_resolve(from_dir, &format!("{}{}", up, rest));
-            let py_rel = pos_relative(&self.root_abs, &py_base);
-            for ext in extensions {
-                let candidate = format!("{}{}", py_rel, ext);
-                if self.file_exists(&candidate) {
-                    return Ok(Some(candidate));
-                }
-            }
-            if !py_rel.is_empty() && self.file_exists(&py_rel) {
-                return Ok(Some(py_rel));
-            }
-            return Ok(None);
-        }
         let base_path = pos_resolve(from_dir, import_path);
         let relative_path = pos_relative(&self.root_abs, &base_path);
         Ok(self.probe_extensions(&relative_path, language))
@@ -394,6 +375,9 @@ impl KernelResolver {
         from_file: &str,
         language: &str,
     ) -> Res<Option<String>> {
+        if language == "python" {
+            return self.python_module_path(import_path, from_file);
+        }
         // A COBOL copybook member names a library member, not a path — ahead
         // of the external check, which would take a bare name for a package.
         if language == "cobol" {
@@ -417,58 +401,13 @@ impl KernelResolver {
         Ok(None)
     }
 
-    /// findPythonModuleFile (import-resolver.ts): `a.b.c` → `a/b/c.py` or
-    /// `a/b/c/__init__.py`, suffix-matched; root/`src/` prefixes win, then a
-    /// unique candidate.
+    /// Resolve a Python module only through the importing file's source roots.
     pub(super) fn find_python_module_file(
-        &mut self,
-        module: &str,
-        exclude_file: &str,
+        &mut self, module: &str, exclude_file: &str,
     ) -> Res<Option<Arc<KNode>>> {
-        if module.is_empty() || module.starts_with('.') {
-            return Ok(None);
-        }
-        let rel = module.replace('.', "/");
-        let last_seg = module.split('.').next_back().unwrap_or(module);
-        let mut candidates: Vec<Arc<KNode>> = Vec::new();
-        let want = format!("{}.py", rel);
-        for n in self.nodes_by_name(&format!("{}.py", last_seg))?.iter() {
-            if n.kind == "file" && n.file_path != exclude_file && is_path_or_tail(&n.file_path, &want) {
-                candidates.push(n.clone());
-            }
-        }
-        let inits = self.nodes_by_name("__init__.py")?;
-        let want = format!("{}/__init__.py", rel);
-        for n in inits.iter() {
-            if n.kind == "file" && n.file_path != exclude_file && is_path_or_tail(&n.file_path, &want) {
-                candidates.push(n.clone());
-            }
-        }
-        // An absolute import starts at a sys.path root, and a package
-        // directory (one with its own `__init__.py`) is not one: stdlib
-        // `import json` never names `src/flask/json/`.
-        let package_dirs: HashSet<&str> = inits
-            .iter()
-            .filter(|n| n.kind == "file")
-            .map(|n| n.file_path.strip_suffix("__init__.py").unwrap_or(""))
-            .collect();
-        candidates.retain(|n| {
-            let root = n
-                .file_path
-                .strip_suffix(&format!("{rel}/__init__.py"))
-                .or_else(|| n.file_path.strip_suffix(&format!("{rel}.py")))
-                .unwrap_or("");
-            root.is_empty() || !package_dirs.contains(root)
-        });
-        for root in ["", "src/"] {
-            for suffix in [format!("{}/__init__.py", rel), format!("{}.py", rel)] {
-                let want = format!("{}{}", root, suffix);
-                if let Some(hit) = candidates.iter().find(|n| n.file_path == want) {
-                    return Ok(Some(hit.clone()));
-                }
-            }
-        }
-        Ok(if candidates.len() == 1 { candidates.pop() } else { None })
+        let Some(file) = self.python_module_path(module, exclude_file)? else { return Ok(None); };
+        if file == exclude_file { return Ok(None); }
+        Ok(self.nodes_in_file(&file)?.iter().find(|n| n.kind == "file").cloned())
     }
 
     /// resolveModuleImportToFile (import-resolver.ts): a whole-module import
@@ -644,6 +583,7 @@ impl KernelResolver {
                 continue;
             }
             let (source, language, file) = (imp.source.clone(), r.language.clone(), r.file_path.clone());
+            if self.ts_ambient_lookup(&source, &imp.exported_name, imp.is_default, r)?.is_some() { return Ok(false); }
             return Ok(self.is_external_import(&source, &language, &file)
                 && self.resolve_import_path(&source, &file, &language)?.is_none());
         }
@@ -792,7 +732,8 @@ impl KernelResolver {
                     }
                     Rc::new(self.import_mappings_from_bindings(&selected))
                 }
-                _ => self.import_mappings(&r.file_path)?,
+                Some(_) => return Ok(None),
+                None => self.import_mappings(&r.file_path)?,
             }
         } else {
             self.import_mappings(&r.file_path)?
@@ -829,6 +770,13 @@ impl KernelResolver {
             }
         }
         if r.language == "python" {
+            for imp in imports.iter().filter(|m| !m.is_namespace && m.local_name == r.reference_name) {
+                if let Some(file) = self.python_module_path(&imp.source, &r.file_path)? {
+                    if let Some(node) = self.python_module_symbol(&file, &imp.exported_name, 0, &mut HashSet::new())? {
+                        return Ok(Some(KCand { node, confidence: 0.9, resolved_by: "import" }));
+                    }
+                }
+            }
             if let Some(c) = self.resolve_python_module_member(r, &imports)? {
                 return Ok(Some(c));
             }
@@ -891,13 +839,23 @@ impl KernelResolver {
                 },
             };
             let mut visited = HashSet::new();
-            let target = self.find_exported_symbol(
-                &resolved_path,
-                &want,
-                &r.language,
-                &mut visited,
-                0,
-            )?;
+            let mut target = None;
+            if r.reference_kind == "calls" && is_js_family(&r.language) {
+                let alternatives: &[&str] = if resolved_path.ends_with(".d.mts") { &[".mts", ".mjs"] }
+                    else if resolved_path.ends_with(".d.cts") { &[".cts", ".cjs"] }
+                    else { &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"] };
+                if let Some(stem) = [".d.ts", ".d.mts", ".d.cts"].iter().find_map(|suffix| resolved_path.strip_suffix(suffix)) {
+                    for extension in alternatives {
+                        let implementation = format!("{stem}{extension}");
+                        if !self.file_exists(&implementation) { continue; }
+                        target = self.find_exported_symbol(&implementation, &want, &r.language, &mut HashSet::new(), 0)?;
+                        if target.is_some() { break; }
+                    }
+                }
+            }
+            if target.is_none() {
+                target = self.find_exported_symbol(&resolved_path, &want, &r.language, &mut visited, 0)?;
+            }
             let target = if target.is_none() && r.language == "python" { self.python_module_symbol(&resolved_path,want.member_name.as_deref().unwrap_or(&want.exported_name),0,&mut HashSet::new())? } else { target };
             let Some(target) = target
             else {
@@ -1529,7 +1487,7 @@ impl KernelResolver {
             } else {
                 imp.exported_name.clone()
             };
-            let module_path = if imp.is_namespace {
+            let mut module_path = if imp.is_namespace {
                 imp.source.clone()
             } else if imp.source.ends_with('.') {
                 format!("{}{}", imp.source, module_name)
@@ -1548,10 +1506,11 @@ impl KernelResolver {
                 }
                 remaining = remaining[suffix.len()..].to_vec();
             }
-            if remaining.len() != 1 {
-                continue;
+            if remaining.is_empty() { continue; }
+            if remaining.len() > 1 {
+                module_path = format!("{}.{}", module_path, remaining[..remaining.len() - 1].join("."));
             }
-            let member = remaining[0];
+            let member = remaining[remaining.len() - 1];
             let mut resolved_path =
                 self.resolve_import_path(&module_path, &r.file_path, &r.language)?;
             if resolved_path.is_none() {

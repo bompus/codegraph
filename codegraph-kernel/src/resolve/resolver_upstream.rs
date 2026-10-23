@@ -433,6 +433,30 @@ impl KernelResolver {
         Ok(kind.may_match(line, name) && kind.holds(line, name))
     }
 
+    fn python_star_allows(&mut self, file: &str, name: &str) -> bool {
+        let Some(source) = self.read_file(file) else { return !name.starts_with('_') };
+        let site = ResolveRefIn { row_id: None, from_node_id: String::new(), reference_name: String::new(),
+            reference_kind: "imports".to_string(), line: 1, column: 0, candidates: None,
+            file_path: file.to_string(), language: "python".to_string(), failure_reason: None };
+        let Some(tree) = self.parsed_tree(&source, &site) else { return !name.starts_with('_') };
+        let mut names = HashSet::new();
+        let mut literal = true;
+        let mut explicit_all = false;
+        for statement in super::iteration::named_children(tree.root_node()) {
+            let node = if statement.kind() == "expression_statement" { statement.named_child(0).unwrap_or(statement) } else { statement };
+            let Some(left) = node.child_by_field_name("left") else { continue };
+            if &source.text()[left.byte_range()] != "__all__" { continue; }
+            explicit_all = true;
+            let Some(right) = node.child_by_field_name("right").filter(|n| matches!(n.kind(), "list" | "tuple")) else { literal = false; break };
+            for item in super::iteration::named_children(right) {
+                let value = source.text()[item.byte_range()].trim_matches(['\'', '"']);
+                if item.kind() != "string" || !re!(r"^[A-Za-z_]\w*$").is_match(value) { literal = false; break; }
+                names.insert(value.to_string());
+            }
+        }
+        if literal && explicit_all { names.contains(name) } else { !name.starts_with('_') }
+    }
+
     pub(super) fn python_module_symbol(
         &mut self,
         file: &str,
@@ -469,19 +493,17 @@ impl KernelResolver {
             .import_mappings(file)?
             .iter()
             .filter(|m| !m.is_namespace && m.local_name == name && top_sources.contains(&m.source))
-            .map(|m| (m.source.clone(), m.exported_name.clone()))
+            .map(|m| (m.source.clone(), m.exported_name.clone(), false))
             .collect();
         if let Some(lines) = self.read_file(file) {
             for m in re!(r"(?m)^from\s+([\w.]+)\s+import\s+\*").captures_iter(lines.text()) {
-                sources.push((m[1].to_string(), name.to_string()));
+                sources.push((m[1].to_string(), name.to_string(), true));
             }
         }
-        for (source, exported) in sources {
-            let path = self.resolve_import_path(&source, file, "python")?.or(self
-                .find_python_module_file(&source, file)?
-                .map(|n| n.file_path.clone()));
+        for (source, exported, star) in sources {
+            let path = self.python_module_path(&source, file)?;
             if let Some(path) = path {
-                if path != file {
+                if path != file && (!star || self.python_star_allows(&path, &exported)) {
                     if let Some(n) =
                         self.python_module_symbol(&path, &exported, depth + 1, visited)?
                     {
@@ -496,6 +518,7 @@ impl KernelResolver {
 
 impl KernelResolver {
     pub(super) fn outside_js_local(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        if matches!(n.kind.as_str(), "type_alias" | "interface" | "class") && self.ts_reference_is_type_position(r) { return Ok(false); }
         if !is_js_family(&r.language) || !re!(r"^[A-Za-z_$][\w$]*$").is_match(&r.reference_name) {
             return Ok(false);
         }
@@ -533,6 +556,10 @@ impl KernelResolver {
         }
         if let Some((root, _)) = r.reference_name.split_once('.') {
             if !re!(r"^[A-Za-z_]\w*$").is_match(root) || self.is_shadowed_import(root, r)? { return Ok(None); }
+            if !self.import_mappings(&r.file_path)?.iter().any(|m| m.local_name == root)
+                && self.nodes_by_name(root)?.iter().any(|n| n.language == "go"
+                    && matches!(n.kind.as_str(), "struct" | "interface" | "type_alias")
+                    && pos_dirname(&n.file_path) == pos_dirname(&r.file_path)) { return Ok(None); }
             return Ok(Some(root.to_string()));
         }
         let name = r.reference_name.rsplit('.').next().unwrap_or(&r.reference_name);

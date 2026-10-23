@@ -12,7 +12,7 @@ const MAX_SOURCE_FILE_SIZE_BYTES: u64 = 1024 * 1024;
 /// UTF-8 decodes the way extraction's `bytes.toString('utf8')` does, one
 /// U+FFFD per bad sequence, so a Latin-1 comment keeps every line and the
 /// UTF-16 columns extraction recorded.
-fn read_source(path: impl AsRef<std::path::Path>) -> Option<String> {
+pub(super) fn read_source(path: impl AsRef<std::path::Path>) -> Option<String> {
     let meta = std::fs::metadata(&path).ok()?;
     if !meta.is_file() || meta.len() > MAX_SOURCE_FILE_SIZE_BYTES {
         return None;
@@ -402,6 +402,10 @@ impl KernelResolver {
             return Ok(None);
         }
 
+        if language == "python" {
+            let name = want.member_name.as_deref().unwrap_or(&want.exported_name);
+            return self.python_module_symbol(file_path, name, depth, &mut HashSet::new());
+        }
         let export_index = self.file_export_index(file_path)?;
         // 1. Direct hit.
         if want.is_default {
@@ -417,66 +421,6 @@ impl KernelResolver {
             }
         } else if let Some(d) = export_index.by_name.get(&want.exported_name) {
             return self.memo_symbol_opt(memo_key, Some(d.clone()));
-        }
-
-        // Python module-level imports are public bindings — same walk.
-        if language == "python" {
-            let name = if want.is_namespace {
-                want.member_name.clone()
-            } else {
-                Some(want.exported_name.clone())
-            };
-            if let Some(name) = name {
-                let rows = self.bindings(file_path)?;
-                let file_nodes = self.nodes_in_file(file_path)?;
-                let matching: Vec<&KBinding> = rows
-                    .iter()
-                    .filter(|row| {
-                        row.name == name
-                            && row.scope_start == 1
-                            && !file_nodes.iter().any(|node| {
-                                matches!(node.kind.as_str(), "function" | "method" | "class")
-                                    && node.start_line <= row.line
-                                    && node.end_line >= row.line
-                            })
-                    })
-                    .collect();
-                if matching.len() == 1 {
-                    let binding = matching[0];
-                    if binding.kind == "import"
-                        && binding.target_spec.is_some()
-                        && binding.target_name.as_deref() != Some("*")
-                    {
-                        let spec = binding.target_spec.clone().unwrap();
-                        let mut next = self.resolve_import_path(&spec, file_path, language)?;
-                        if next.is_none() {
-                            next = self
-                                .find_python_module_file(&spec, file_path)?
-                                .map(|n| n.file_path.clone());
-                        }
-                        if let Some(next) = next {
-                            let chained = self.find_exported_symbol(
-                                &next,
-                                &ExportWant {
-                                    is_default: false,
-                                    is_namespace: false,
-                                    exported_name: binding
-                                        .target_name
-                                        .clone()
-                                        .unwrap_or_else(|| binding.name.clone()),
-                                    member_name: None,
-                                },
-                                language,
-                                visited,
-                                depth + 1,
-                            )?;
-                            if chained.is_some() {
-                                return self.memo_symbol_opt(memo_key, chained);
-                            }
-                        }
-                    }
-                }
-            }
         }
 
         // 2. Named re-exports.

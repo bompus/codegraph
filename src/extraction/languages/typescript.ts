@@ -94,8 +94,25 @@ function hasExportDeclaration(block: SyntaxNode): boolean {
   return false;
 }
 
+export function isAmbientFunctionSignature(node: SyntaxNode, filePath: string): boolean {
+  if (node.type !== 'function_signature') return false;
+  const declarationFile = /\.d\.[cm]?ts$/i.test(filePath);
+  let ambient = false;
+  for (let current = node.parent; current; current = current.parent) {
+    if (current.type === 'internal_module') return false;
+    if (current.type === 'module') {
+      // `declare module 'x'`; `module Foo {}` is a namespace.
+      if (getChildByField(current, 'name')?.type !== 'string') return false;
+      return declarationFile;
+    }
+    if (current.type === 'ambient_declaration') ambient = true;
+  }
+  return ambient || declarationFile;
+}
+
 export const typescriptExtractor: LanguageExtractor = {
   preParse: blankFlowSyntax,
+  isAmbientFunction: isAmbientFunctionSignature,
   functionTypes: ['function_declaration', 'generator_function_declaration', 'arrow_function', 'function_expression', 'generator_function'],
   classTypes: ['class_declaration', 'abstract_class_declaration'],
   // `method_signature` is the interface/type-literal form of a method; without it

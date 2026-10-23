@@ -103,7 +103,7 @@ function findDeclaratorQualifiedId(declarator: SyntaxNode): SyntaxNode | undefin
       const child = current.namedChild(i);
       // Don't descend into parameters or the trailing return type — their types
       // (`const std::string&`, `-> std::string`) aren't the function name.
-      if (child && child.type !== 'parameter_list' && child.type !== 'trailing_return_type') {
+      if (child && !['parameter_list', 'trailing_return_type', 'noexcept', 'throw_specifier', 'requires_clause'].includes(child.type)) {
         queue.push(child);
       }
     }
@@ -1295,7 +1295,7 @@ export function blankLoneMacroLines(source: string, rules: LoneMacroRules = C_LO
     // head (`template<typename T, typename... Args>`) before a declaration
     // continues nothing either.
     const prevCode = prev >= 0 ? (codeLines[prev] ?? '').trim() : '';
-    const directiveEnds = rules.directivesEnd && prevCode.startsWith('#') && !prevCode.endsWith('\\');
+    const directiveEnds = prevCode.startsWith('#') && !prevCode.endsWith('\\');
     if (prevCode !== '' && !directiveEnds && !/^template\s*</.test(prevCode) && LONE_MACRO_CONTINUATION_END_RE.test(prevCode)) continue;
     const first = firstCodeCharAfter(lines, i + 1);
     if (first !== undefined && !rules.nextCode.test(first)) continue;

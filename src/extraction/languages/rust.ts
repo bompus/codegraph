@@ -71,6 +71,30 @@ export function rustImplTypeName(typeNode: SyntaxNode | null, source: string): s
   }
 }
 
+export function rustImplItemOwner(node: SyntaxNode, source: string): string | undefined {
+  const item = node.type === 'identifier' ? node.parent : node;
+  const list = item?.parent;
+  const impl = list?.type === 'declaration_list' ? list.parent : null;
+  if (impl?.type !== 'impl_item') return undefined;
+  let type = getChildByField(impl, 'type');
+  while (type?.type === 'reference_type') type = getChildByField(type, 'type');
+  return rustImplTypeName(type, source) ?? (type ? getNodeText(type, source).trim().replace(/\s+/g, ' ') : undefined);
+}
+
+export function stripRustTurbofish(text: string): string {
+  let out = '';
+  for (let i = 0; i < text.length; i++) {
+    if (text.startsWith('::<', i)) {
+      let depth = 0;
+      for (i += 2; i < text.length; i++) {
+        if (text[i] === '<') depth++;
+        else if (text[i] === '>' && text[i - 1] !== '-' && --depth === 0) break;
+      }
+    } else out += text[i];
+  }
+  return out;
+}
+
 export const rustExtractor: LanguageExtractor = {
   // `function_signature_item` is a trait method DECLARATION (`fn render(&self);`,
   // no body). Extracting it makes a trait's method set first-class, which

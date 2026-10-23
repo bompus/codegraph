@@ -272,6 +272,9 @@ impl KernelResolver {
         if !rust_item_visible_from(candidate, r) {
             return false;
         }
+        if let Some(visible) = self.rust_precise_name_scope(candidate, r) {
+            return visible;
+        }
         if r.language == "rust" && r.reference_kind == "references" {
             if let Some(lines) = self.read_file(&r.file_path) {
                 if let Some(line) = lines.get((r.line - 1).max(0) as usize) {

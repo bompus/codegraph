@@ -20,10 +20,50 @@ impl<'t> Walker<'t> {
         cur.kind() == "identifier"
     }
 
+    fn callee_name_of(&self, func: Node<'t>) -> Option<(String, Node<'t>)> {
+        let mut cur = peel_receiver(func);
+        while cur.kind() == "instantiation_expression" {
+            let inner = cur.child_by_field_name("function").or_else(|| cur.named_child(0))?;
+            cur = peel_receiver(inner);
+        }
+        match cur.kind() {
+            "identifier" | "super" | "import" => Some((self.text(cur).to_string(), cur)),
+            "member_expression" => {
+                let chain: String = self.text(cur).chars().filter(|c| !c.is_whitespace()).collect();
+                util::dotted_chain().is_match(&chain).then_some((chain, cur))
+            }
+            _ => None,
+        }
+    }
+
+    fn peel_await_callee(&self, node: Node<'t>) -> Node<'t> {
+        if !self.variant.is_ts() {
+            return node;
+        }
+        let mut cur = node;
+        loop {
+            let inner = match cur.kind() {
+                "unary_expression" => cur.child_by_field_name("argument"),
+                "await_expression" => {
+                    let mut walker = cur.walk();
+                    let found = cur.named_children(&mut walker).find(|c| c.kind() != "comment");
+                    found
+                }
+                _ => break,
+            };
+            let Some(inner) = inner else { break };
+            cur = inner;
+        }
+        cur
+    }
+
     pub(super) fn extract_call(&mut self, node: Node<'t>) {
-        let func = node
-            .child_by_field_name("function")
-            .or_else(|| node.named_child(0));
+        let raw = node.child_by_field_name("function").or_else(|| node.named_child(0));
+        let func = raw.map(|f| self.peel_await_callee(f));
+        let mut at = match (raw, func) {
+            (Some(r), Some(f)) if r.id() != f.id() => f,
+            _ => node,
+        };
         // Dynamic `import('x')`: the specifier is an import boundary, not a
         // callee — emit it as an `imports` ref like a static `import … from
         // 'x'` so lazy edges (`load: () => import('./x')`, React.lazy, split
@@ -110,7 +150,15 @@ impl<'t> Walker<'t> {
                     }
                 }
             } else {
-                callee_name = self.text(func).to_string();
+                // A callee that names nothing (a call, a function, a
+                // subscript) is no reference. Mirrors tsJsCalleeName.
+                match self.callee_name_of(func) {
+                    Some((name, name_at)) => {
+                        callee_name = name;
+                        at = name_at;
+                    }
+                    None => return,
+                }
             }
         }
 
@@ -122,7 +170,7 @@ impl<'t> Walker<'t> {
         }
 
         if !callee_name.is_empty() {
-            self.push_call_ref(&callee_name, node);
+            self.push_call_ref(&callee_name, at);
         }
     }
 
@@ -145,7 +193,7 @@ impl<'t> Walker<'t> {
     /// The callee of a call-expression receiver when it is a plain identifier
     /// or member chain (`make`, `d.setdefault`), whitespace stripped (#1683).
     pub(super) fn plain_inner_callee(&self, call: Node<'t>) -> Option<String> {
-        let inner = call.child_by_field_name("function")?;
+        let inner = self.peel_await_callee(call.child_by_field_name("function")?);
         Self::plain_member_name(self.text(inner))
     }
 
@@ -266,6 +314,22 @@ impl<'t> Walker<'t> {
                     for iface in named_kids(child) {
                         let name = self.text(iface).to_string();
                         self.push_ref(class_row, &name, implements_kind, iface);
+                    }
+                }
+                // TS `interface Repo<T> extends Base, ns.Shape, Store<T>` — each
+                // supertype is a `type` of the clause; a `generic_type` is named
+                // by its `name` field (`Store`, never `Store<T>`).
+                "extends_type_clause" => {
+                    let mut cursor = child.walk();
+                    let targets: Vec<Node<'t>> = child.children_by_field_name("type", &mut cursor).collect();
+                    for target in targets {
+                        let named = if target.kind() == "generic_type" {
+                            target.child_by_field_name("name").unwrap_or(target)
+                        } else {
+                            target
+                        };
+                        let name = self.text(named).to_string();
+                        self.push_ref(class_row, &name, extends_kind, target);
                     }
                 }
                 // JS `class Foo extends Bar` — class_heritage holds a bare

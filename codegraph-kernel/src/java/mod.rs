@@ -356,12 +356,12 @@ impl<'t> Walker<'t> {
             self.extract_enum(node);
             skip_children = true;
         } else if kind == "field_declaration" && self.inside_class_like() {
-            self.extract_field(node);
-            self.scan_fn_ref_subtree(node, 0);
+            let walked = self.extract_field(node);
+            self.scan_fn_ref_subtree(node, 0, &walked);
             skip_children = true;
         } else if kind == "local_variable_declaration" && !self.inside_class_like() {
             self.extract_variable(node);
-            self.scan_fn_ref_subtree(node, 0);
+            self.scan_fn_ref_subtree(node, 0, &[]);
             skip_children = true;
         } else if kind == "import_declaration" {
             self.extract_import(node);
@@ -573,8 +573,9 @@ impl<'t> Walker<'t> {
     }
 
     /// extractField — each declarator becomes a field/constant node.
-    fn extract_field(&mut self, node: Node<'t>) {
+    fn extract_field(&mut self, node: Node<'t>) -> Vec<usize> {
         stack_guard!();
+        let mut walked = Vec::new();
         let docstring = preceding_docstring(node, self.src);
         let visibility = self.visibility_of(node);
         let is_static = Some(self.is_static(node));
@@ -630,6 +631,7 @@ impl<'t> Walker<'t> {
                         self.stack.push(Scope { row, kind: field_kind, name: name.clone() });
                         self.visit_for_calls_and_structure(value);
                         self.stack.pop();
+                        walked.push(value.id());
                     }
                 }
             }
@@ -651,6 +653,7 @@ impl<'t> Walker<'t> {
                 }
             }
         }
+        walked
     }
 
     /// extractVariable's generic fallback (top-level locals — rare in Java).

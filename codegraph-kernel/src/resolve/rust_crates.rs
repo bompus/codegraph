@@ -97,14 +97,14 @@ pub(super) fn rust_manifest_dependencies(text: &str) -> Vec<ManifestDep> {
 
 pub(super) struct RustCrate {
     /// Its package name as code writes it (`tokio_test`).
-    name: String,
+    pub(super) name: String,
     /// Each dependency of any kind that is a project crate: the name code writes → that crate's directory.
-    keys: HashMap<String, String>,
+    pub(super) keys: HashMap<String, String>,
 }
 
 pub(super) struct RustCrateGraph {
     /// The project's crates by directory: the root package's is "".
-    crates: HashMap<String, RustCrate>,
+    pub(super) crates: HashMap<String, RustCrate>,
     /// A crate's directory → itself and every project crate it depends on, transitively.
     reach: HashMap<String, HashSet<String>>,
 }
@@ -184,7 +184,7 @@ impl KernelResolver {
     /// dependencies they name — and which of them each depends on. A dependency is found by its
     /// `path` (its own or, for `workspace = true`, the workspace's), so a renamed key or a crate
     /// outside the members still lands; without one, by its package name.
-    fn rust_crate_graph(&mut self) -> Res<Rc<RustCrateGraph>> {
+    pub(super) fn rust_crate_graph(&mut self) -> Res<Rc<RustCrateGraph>> {
         if let Some(hit) = &self.rust_crate_graph_memo {
             return Ok(hit.clone());
         }

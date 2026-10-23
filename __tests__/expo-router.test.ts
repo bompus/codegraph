@@ -611,9 +611,9 @@ describe('expo-router: end-to-end', () => {
  *
  * The shape, from a real Expo app: `/capture` renders `ARCapturePage`, which
  * renders `memo(CaptureComponent)`; the `router.push` lives in an inline
- * listener inside `CaptureComponent`. Nothing points at `CaptureComponent`
- * except Swift emitters — the walk skips `file` nodes, and `memo(x)` leaves no
- * edge from the memo to the function — so before the guard the walk escaped
+ * listener inside `CaptureComponent`. The graph follows the local memo wrapper
+ * to that function. Before wrapper extraction, only Swift emitters pointed at
+ * it, so before the native-bridge guard the walk escaped
  * through `rn-event-channel`, came back down into `ReviewScreen` (which had
  * called the native module), and filed four of `/capture`'s navigations under
  * `/capture/review`, whose only remaining feed was itself. It also carried the
@@ -741,8 +741,8 @@ export default function ReviewScreen() {
 
     // One transition into /capture/review, and it comes from /capture.
     expect(links.map((l) => screens.screens.find((s) => s.id === l.from)?.path)).toEqual(['/capture']);
-    // Written right there: no chain, and no Swift guard smuggled in.
-    expect(links[0]!.via).toEqual([]);
+    // The local render chain carries no Swift guard into this navigation.
+    expect(links[0]!.via.map((node) => node.name)).toEqual(['MemoizedCaptureComponent', 'CaptureComponent']);
     expect(links[0]!.when).toBe('!isRetakeBatchActive');
     expect(links[0]!.sites[0]!.file).toBe('src/app/capture/index.tsx');
     // …and /capture/review is not left feeding only itself.

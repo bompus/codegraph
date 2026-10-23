@@ -738,7 +738,34 @@ impl KernelResolver {
     /// (googletest's `ParamGenerator<T>::iterator`), which the specialization decides. A
     /// `const_iterator`'s element is const (`const Slice`); a pointer element stays as it is.
     pub(super) fn cpp_iterator_target(&mut self, iterator: CppWritten, r: &ResolveRefIn) -> Res<Option<CppWritten>> {
-        let Some(container) = iterator_container(&iterator.text) else { return Ok(None) };
+        let Some(container) = iterator_container(&iterator.text) else {
+            let mut current = iterator;
+            let mut seen = HashSet::new();
+            for depth in 0..8 {
+                if !seen.insert((current.text.clone(), current.site.file_path.clone())) { return Ok(None); }
+                if let Some(text) = cpp_pointee(&current.text) {
+                    return Ok((depth > 0).then_some(CppWritten { text, site: current.site }));
+                }
+                let Some(cls) = self.cpp_written_class(&current, r)? else { return Ok(None) };
+                let mut methods = self.cpp_methods_named(&cls, "operator->", r)?;
+                let arrow = !methods.is_empty();
+                if !arrow { methods = self.cpp_methods_named(&cls, "operator*", r)?; }
+                let Some(mut result) = self.cpp_return_type_of(&methods, r)? else { return Ok(None) };
+                let parameters = self.cpp_own_template_parameters(&cls, r)?;
+                let arguments = template_arguments(&current.text).unwrap_or_default();
+                for (parameter, argument) in parameters.iter().zip(&arguments) {
+                    if parameter.is_empty() { continue; }
+                    let pattern = Self::cached_regex(&format!(r"\b{}\b", regex::escape(parameter)))?;
+                    if pattern.is_match(&result.text) {
+                        result.text = pattern.replace_all(&result.text, argument.as_str()).into_owned();
+                        result.site = current.site.clone();
+                    }
+                }
+                if !arrow { result.text = result.text.trim_end_matches('&').trim().to_string(); return Ok(Some(result)); }
+                current = result;
+            }
+            return Ok(None);
+        };
         let Some(element) = self.cpp_range_element_of(CppWritten { text: container, site: iterator.site.clone() }, r, 1)? else { return Ok(None) };
         if element.site.from_node_id != iterator.site.from_node_id && self.cpp_written_template_parameter(&element)? { return Ok(None); }
         let constant = re!(r"::\s*const_(?:reverse_)?iterator\s*$").is_match(&without_type_keywords(&iterator.text));

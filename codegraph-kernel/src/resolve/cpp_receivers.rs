@@ -3,18 +3,107 @@ use super::*;
 use super::iteration::{descendant_for_position, named_children};
 
 impl KernelResolver {
+    fn cpp_macro_declares_alias(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
+        let Some(source) = self.read_file(&r.file_path) else { return Ok(false) };
+        let before = source.iter().take(r.line.max(0) as usize).cloned().collect::<Vec<_>>().join("\n");
+        let alias = Self::cached_regex(&format!(r"\b(?:using\s+{}\s*=|typedef\s+[^;]*\b{}\s*;)", regex::escape(name), regex::escape(name)))?;
+        for file in self.namespace_visible_files(&r.file_path, "cpp")? {
+            let Some(text) = self.read_file(&file) else { continue };
+            let code = text.text().replace("\\\r\n", " ").replace("\\\n", " ");
+            for definition in re!(r"(?m)^\s*#\s*define\s+(\w+)\([^\n]*?\)\s+([^\n]*)").captures_iter(&code) {
+                if alias.is_match(&definition[2]) && Self::cached_regex(&format!(r"\b{}\s*\(", regex::escape(&definition[1])))?.is_match(&before) { return Ok(true); }
+            }
+        }
+        Ok(false)
+    }
+
     /// Plain receivers use lexical AST declarations before any backward text scan.
     pub(super) fn cpp_plain_call(&mut self, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
         if r.language != "cpp" || r.reference_kind != "calls" { return Ok(None); }
         // `a->b()->c()`: the class `b` is declared to return, not a namesake of it.
         if r.reference_name.contains("()") { return self.cpp_chain_on_written_type(r); }
-        let method = r.reference_name.rsplit(['.', '>']).next().unwrap_or(&r.reference_name);
+        let method = r.reference_name.rsplit(['.', '>', ':']).next().unwrap_or(&r.reference_name);
         if !re!(r"^[A-Za-z_]\w*$").is_match(method) { return Ok(None); }
         let Some(source) = self.read_file(&r.file_path) else { return Ok(None) };
         let Some(tree) = self.parsed_tree(&source, r) else { return Ok(None) };
         let mut at = descendant_for_position(tree.root_node(), source.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
         while at.kind() != "call_expression" {
             let Some(parent) = at.parent() else { return Ok(None) }; at = parent;
+        }
+        if let Some(function) = at.child_by_field_name("function").filter(|n| n.kind() == "qualified_identifier") {
+            let raw = source.text()[function.byte_range()].trim();
+            let spelling = super::cpp_implicit_this::strip_template_arguments(raw).split_whitespace().collect::<String>();
+            if let Some((owner, name)) = spelling.rsplit_once("::") {
+                let visible = self.namespace_visible_files(&r.file_path, "cpp")?;
+                if let Some(hit) = self.match_by_qualified_name(&r.clone().naming(&spelling, "calls"))? {
+                    if self.cpp_reference_argument_mismatch(&hit.node, name, r)? { return Ok(Some(None)); }
+                    return Ok(Some(Some(hit)));
+                }
+                if let Some(hit) = self.match_cpp_macro_namespaced(&r.clone().naming(&spelling, "calls"))? {
+                    return Ok(Some(Some(hit)));
+                }
+                let written = super::cpp_range_for::CppWritten { text: owner.to_string(), site: r.clone() };
+                if let Some(cls) = self.cpp_written_class(&written, r)? {
+                    let methods = self.cpp_methods_named(&cls, name, r)?;
+                    let methods = self.cpp_specialization_pool(methods, r);
+                    if let Some(node) = methods.into_iter().next() {
+                        if !node.qualified_name.starts_with(&format!("{}::", cls.qualified_name)) { return Ok(None); }
+                        return Ok(Some(Some(KCand { node, confidence: 0.95, resolved_by: "qualified-name" })));
+                    }
+                    return Ok(Some(None));
+                }
+                // Missing owners never authorize a word-based guess. Exact qualified
+                // definitions may still be indexed when a generated header is absent.
+                let mut scope = self.node_by_id(&r.from_node_id)?.map(|n| n.qualified_name.clone()).unwrap_or_default();
+                loop {
+                    let qualified = if scope.is_empty() { spelling.trim_start_matches("::").to_string() } else { format!("{scope}::{spelling}") };
+                    let named: Vec<_> = self.nodes_by_qualified_name(&qualified)?.iter()
+                        .filter(|n| (!re!(r"(?i)\.(?:h|hh|hpp|hxx)$").is_match(&n.file_path) || visible.contains(&n.file_path)) && matches!(n.language.as_str(), "c" | "cpp") && matches!(n.kind.as_str(), "function" | "method" | "type_alias" | "class" | "struct"))
+                        .cloned().collect();
+                    let named = self.cpp_specialization_pool(named, r);
+                    if let Some(node) = named.into_iter().next() {
+                        return Ok(Some(Some(KCand { node, confidence: 0.95, resolved_by: "qualified-name" })));
+                    }
+                    if raw.starts_with("::") || scope.is_empty() { break; }
+                    scope = scope.rsplit_once("::").map_or(String::new(), |(s, _)| s.to_string());
+                }
+                if let Some(caller) = self.node_by_id(&r.from_node_id)? {
+                    if self.cpp_template_parameter(&caller, owner, r)? { return Ok(None); }
+                }
+                if self.cpp_macro_declares_alias(owner, r)? { return Ok(None); }
+                if self.cpp_type_alias_names(r, &r.file_path, r.line, owner).iter().any(|name| name != owner)
+                    || (owner == "TestFixture" && source.text().contains("TYPED_TEST")) {
+                    return Ok(None);
+                }
+                let methods: Vec<_> = self.nodes_by_name(name)?.iter().filter(|n| n.language == "cpp" && n.kind == "method").cloned().collect();
+                if owner.chars().next().is_some_and(|c| c.is_ascii_uppercase()) && methods.len() == 1 { return Ok(None); }
+                // A full specialization may have no class name in the index.
+                for node in methods {
+                    if let Some(prefix) = node.qualified_name.strip_suffix(&format!("::<anonymous>::{name}")) {
+                        if (prefix == owner || prefix.ends_with(&format!("::{owner}")))
+                            && self.read_file(&node.file_path).is_some_and(|text| text.text().contains(&format!("struct {name}<"))) {
+                                return Ok(Some(Some(KCand { node, confidence: 0.9, resolved_by: "qualified-name" })));
+                        }
+                    }
+                }
+                return Ok(Some(None));
+            }
+        }
+        if let Some(function) = at.child_by_field_name("function").filter(|n| n.kind() == "identifier") {
+            let name = &source.text()[function.byte_range()];
+            if name == r.reference_name {
+                let mut scope = at;
+                while let Some(parent) = scope.parent() {
+                    if cpp_binding_type(parent, scope, name, &source).is_some_and(|ty| !ty.is_empty()) {
+                        return Ok(Some(None));
+                    }
+                    if parent.kind() == "for_range_loop" && parent.child_by_field_name("declarator")
+                        .is_some_and(|d| cpp_declarator_name(d, &source) == name) {
+                        return Ok(Some(None));
+                    }
+                    scope = parent;
+                }
+            }
         }
         let Some(function) = at.child_by_field_name("function").filter(|n| n.kind() == "field_expression") else { return Ok(None) };
         let Some(field) = function.child_by_field_name("field") else { return Ok(None) };
@@ -432,7 +521,23 @@ impl KernelResolver {
         let mut name = node.child_by_field_name("name");
         while let Some(qualified) = name.filter(|n| n.kind() == "qualified_identifier") { name = qualified.child_by_field_name("name"); }
         if name.is_some_and(|name| source.text()[name.start_byte()..name.end_byte()] == owner.name) {
-            if let Some(body) = node.child_by_field_name("body") { declarations.extend(named_children(body).into_iter().filter(|n| n.kind() == "field_declaration")); }
+            if let Some(body) = node.child_by_field_name("body") {
+                let mut pending = named_children(body);
+                while let Some(member) = pending.pop() {
+                    if member.kind() == "field_declaration" {
+                        declarations.push(member);
+                        let mut cursor = member.walk();
+                        let has_declarator = member.children_by_field_name("declarator", &mut cursor).next().is_some();
+                        if !has_declarator {
+                            if let Some(ty) = member.child_by_field_name("type").filter(|t| t.kind() == "union_specifier" && t.child_by_field_name("name").is_none()) {
+                                if let Some(body) = ty.child_by_field_name("body") { pending.extend(named_children(body)); }
+                            }
+                        }
+                    } else if member.kind() == "union_specifier" && member.child_by_field_name("name").is_none() {
+                        if let Some(body) = member.child_by_field_name("body") { pending.extend(named_children(body)); }
+                    }
+                }
+            }
         }
         let mut types = Vec::new();
         for declaration in declarations {

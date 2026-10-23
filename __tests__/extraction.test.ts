@@ -7463,14 +7463,14 @@ describe('Cross-language type/import gate (RN name collisions)', () => {
     if (fs.existsSync(tempDir)) fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('a TS PascalCase type ref lands on the TS type, never a same-named native class', async () => {
+  it('an unimported TS type never borrows a same-named TS module type or native class', async () => {
     // react-native-async-storage's example app has a TS `type TestRunner` AND a
     // Kotlin `class TestRunner`. The React PascalCase resolver name-matched the
     // Kotlin `class` (its COMPONENT_KINDS includes `class`) with no language
     // check at confidence 0.8, outranking the (cross-language-penalized 0.5)
-    // TS name-match — so a TS ref to `TestRunner` crossed web→jvm. The ref here
-    // is intentionally NOT imported: a clean relative import would mask the bug
-    // by resolving via the import map before the framework strategy can win.
+    // TS name-match, so a TS ref to `TestRunner` crossed web to JVM. The ref
+    // stays unimported to expose that bug. Type scope also rules out borrowing
+    // the exported TS type from a different module without an import.
     fs.writeFileSync(
       path.join(tempDir, 'package.json'),
       JSON.stringify({ dependencies: { 'react-native': '*' } })
@@ -7502,7 +7502,7 @@ describe('Cross-language type/import gate (RN name collisions)', () => {
     const tsRunner = cg.getNodesByKind('type_alias').find((n) => n.name === 'TestRunner');
     expect(tsRunner, 'TS TestRunner type_alias').toBeDefined();
     const tsDeps = [...cg.getImpactRadius(tsRunner!.id, 2).nodes.values()].map((n) => n.filePath ?? '');
-    expect(tsDeps.some((p) => p.endsWith('basic.tsx')), 'TS type captured the ref (re-pointed)').toBe(true);
+    expect(tsDeps.some((p) => p.endsWith('basic.tsx')), 'unimported TS module type has no dependent').toBe(false);
   });
 
   it('gates a cross-family import name collision but keeps same-family imports', async () => {

@@ -317,8 +317,8 @@ impl<'t> Walker<'t> {
             self.extract_class(node);
             skip_children = true;
         } else if kind == "assignment" && !self.inside_class_like() {
-            self.extract_variable(node);
-            self.scan_fn_ref_subtree(node, 0);
+            let walked = self.extract_variable(node);
+            self.scan_fn_ref_subtree(node, 0, &walked);
             skip_children = true;
         } else if kind == "import_statement" || kind == "import_from_statement" {
             self.extract_import(node);
@@ -454,7 +454,8 @@ impl<'t> Walker<'t> {
     markdown_refs_impl!();
 
     /// extractVariable's python branch: `left = right` at module scope.
-    fn extract_variable(&mut self, node: Node<'t>) {
+    fn extract_variable(&mut self, node: Node<'t>) -> Vec<usize> {
+        let mut walked = Vec::new();
         let docstring = preceding_docstring(node, self.src);
         let left = node.child_by_field_name("left").or_else(|| node.named_child(0));
         let right = node.child_by_field_name("right").or_else(|| node.named_child(1));
@@ -485,10 +486,12 @@ impl<'t> Walker<'t> {
                     self.stack.push(Scope { row, kind: "variable", name });
                     self.visit_for_calls_and_structure(right);
                     self.stack.pop();
+                    walked.push(right.id());
                 }
                 None => self.visit_for_calls_and_structure(right),
             }
         }
+        walked
     }
 
     fn extract_import(&mut self, node: Node<'t>) {
@@ -738,6 +741,30 @@ impl<'t> Walker<'t> {
                         // TreeSitterExtractor.extractCall.
                         let Some(inner) = self.plain_inner_callee(r) else { return };
                         callee_name = format!("{inner}().{method_name}");
+                    } else if let Some(r) = receiver {
+                        // Any receiver shape the arms above do not claim — attribute
+                        // chain (`self.data.append`) and subscript (`d[k].append`).
+                        // The call-chain shape (`rows.setdefault(k, []).append(x)`)
+                        // is taken by the `<inner>().<method>` arm above (#1748),
+                        // which is matched first.
+                        // These used to fall through to a BARE method_name. A bare name
+                        // matching a common list/dict/str method (`append`, `get`,
+                        // `update`, ...) exact-matches an unrelated top-level project
+                        // function sharing that name, fabricating a call edge (#66,
+                        // same class as #1230/#1276). Keep the receiver's source text
+                        // as a qualifier so the ref can only resolve through
+                        // import/module-member resolution, never the bare-name
+                        // fallback; an unresolvable qualifier is a silent miss, never
+                        // a wrong edge. Mirrors TreeSitterExtractor.extractCall's
+                        // python branch — the whitespace collapse is JS `\s`
+                        // semantics, not `char::is_whitespace`, so both arms emit the
+                        // same bytes for the parity sweep.
+                        let receiver_text = collapse_js_whitespace(self.text(r));
+                        callee_name = if receiver_text.is_empty() {
+                            method_name.to_string()
+                        } else {
+                            format!("{receiver_text}.{method_name}")
+                        };
                     } else {
                         callee_name = method_name.to_string();
                     }
@@ -902,9 +929,9 @@ impl<'t> Walker<'t> {
         }
     }
 
-    fn scan_fn_ref_subtree(&mut self, node: Node<'t>, depth: u32) {
+    fn scan_fn_ref_subtree(&mut self, node: Node<'t>, depth: u32, walked: &[usize]) {
         stack_guard!();
-        if depth > 12 {
+        if walked.contains(&node.id()) || depth > 12 {
             return;
         }
         // Halts at functionTypes ∪ the fixed arrow/lambda list — python's
@@ -920,7 +947,7 @@ impl<'t> Walker<'t> {
         }
         self.maybe_capture_fn_refs(node);
         for c in named_kids(node) {
-            self.scan_fn_ref_subtree(c, depth + 1);
+            self.scan_fn_ref_subtree(c, depth + 1, walked);
         }
     }
 
@@ -992,4 +1019,34 @@ impl<'t> Walker<'t> {
 }
 
 
+
+
+/// `s.replace(/\s+/g, ' ').trim()` with JavaScript's `\s` class, so a receiver
+/// qualifier is byte-identical to the one TreeSitterExtractor emits. Rust's
+/// `char::is_whitespace` is NOT the same set: it counts U+0085 (NEL), which JS
+/// `\s` does not, and omits U+FEFF (ZWNBSP), which JS `\s` includes.
+fn collapse_js_whitespace(s: &str) -> String {
+    fn is_js_space(c: char) -> bool {
+        matches!(
+            c,
+            '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{feff}'
+                | '\u{2028}' | '\u{2029}'
+                | '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}'
+        )
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut in_space = false;
+    for c in s.chars() {
+        if is_js_space(c) {
+            in_space = true;
+        } else {
+            if in_space && !out.is_empty() {
+                out.push(' ');
+            }
+            in_space = false;
+            out.push(c);
+        }
+    }
+    out
+}
 

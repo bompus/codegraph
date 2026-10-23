@@ -438,6 +438,11 @@ impl<'t> Walker<'t> {
             // (the isInsideClassLike + methodTypes overlap is Python/Ruby-only)
             self.extract_function(node, None);
             skip_children = true;
+        } else if kind == "function_signature" && self.variant.is_ts() && is_ambient_function_signature(node, self.file_path) {
+            // A bodiless function that no implementation follows: a
+            // `declare function`, a function in a `declare module` body or a `.d.ts`.
+            self.extract_function(node, None);
+            skip_children = true;
         } else if is_class_type(self.variant, kind) {
             self.extract_class(node);
             skip_children = true;
@@ -446,12 +451,16 @@ impl<'t> Walker<'t> {
         {
             if classify_ts_class_member(node) == Member::Property {
                 let prop = self.extract_property(node);
+                // The initializer walked under the property took its own
+                // candidates; the scan covers the rest of the field.
+                let mut walked: Option<HashSet<usize>> = None;
                 if let (Some((row, name)), Some(value)) = (prop, node.child_by_field_name("value")) {
                     self.stack.push(Scope { row, kind: "property", name });
                     self.visit_for_calls_and_structure(value);
                     self.stack.pop();
+                    walked = Some(HashSet::from([value.id()]));
                 }
-                self.scan_fn_ref_subtree(node, 0);
+                self.scan_fn_ref_subtree(node, 0, walked.as_ref());
             } else {
                 self.extract_method(node);
             }
@@ -465,8 +474,11 @@ impl<'t> Walker<'t> {
         } else if self.variant.is_ts() && kind == "type_alias_declaration" {
             skip_children = self.extract_type_alias(node);
         } else if is_variable_type(kind) && !self.inside_class_like() {
-            self.extract_variable(node);
-            self.scan_fn_ref_subtree(node, 0);
+            // An initializer extract_variable walked under the symbol it
+            // declares (a constant's, a component wrapper's) captured its own
+            // candidates; the scan skips it.
+            let walked = self.extract_variable(node);
+            self.scan_fn_ref_subtree(node, 0, walked.as_ref());
             skip_children = true;
         } else if kind == "import_statement" {
             self.extract_import(node);
@@ -504,7 +516,7 @@ impl<'t> Walker<'t> {
             // says which member wants the type, where `Api → PageId` only said
             // the file did.
             self.extract_property(node);
-            self.scan_fn_ref_subtree(node, 0);
+            self.scan_fn_ref_subtree(node, 0, None);
             skip_children = true;
         }
 
@@ -951,6 +963,37 @@ fn is_ambient_export(node: Node) -> bool {
         cur = p.parent();
     }
     false
+}
+
+/// isAmbientFunctionSignature (languages/typescript.ts): a bodiless
+/// `function_signature` that is a function's declaration, not an overload of
+/// an implementation that follows it — a `declare function`, one in a
+/// `declare global` body, a declaration file's (`.d.ts`, `.d.mts`, `.d.cts`)
+/// own, and one a declaration file's `declare module 'x'` body declares.
+/// Never a namespace's (`declare namespace`, `module Foo {}`), nor one in an
+/// ordinary module file's `declare module` body, an augmentation.
+fn is_ambient_function_signature(node: Node, file_path: &str) -> bool {
+    if node.kind() != "function_signature" {
+        return false;
+    }
+    let lower = file_path.to_ascii_lowercase();
+    let declaration_file = lower.ends_with(".d.ts") || lower.ends_with(".d.mts") || lower.ends_with(".d.cts");
+    let mut ambient = false;
+    let mut cur = node.parent();
+    while let Some(p) = cur {
+        match p.kind() {
+            "internal_module" => return false,
+            // `declare module 'x'`; `module Foo {}` is a namespace.
+            "module" => {
+                return declaration_file
+                    && p.child_by_field_name("name").is_some_and(|n| n.kind() == "string");
+            }
+            "ambient_declaration" => ambient = true,
+            _ => {}
+        }
+        cur = p.parent();
+    }
+    ambient || declaration_file
 }
 
 /// hasExportDeclaration: a statement that exports by name or by assignment

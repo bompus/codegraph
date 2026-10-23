@@ -23,6 +23,7 @@ re!(styled_callee, r"^styled(?-u:\b)");
 re!(pascal_case, r"^[A-Z]");
 // extractCall parenthesized-conversion normalization
 re!(paren_conversion, r"^\(\s*\*?\s*([A-Za-z_][0-9A-Za-z_.]*)\s*\)$");
+re!(dotted_chain, r"^[A-Za-z_$][0-9A-Za-z_$]*(?:\.[A-Za-z_$][0-9A-Za-z_$]*)+$");
 // flushFnRefCandidates SIMPLE_NAME
 re!(simple_name, r"^[A-Za-z_$][A-Za-z0-9_$]*$");
 // flushFnRefCandidates QUALIFIED_IMPORT

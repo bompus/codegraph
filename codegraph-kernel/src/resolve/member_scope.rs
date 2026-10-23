@@ -48,6 +48,7 @@ pub(super) enum ObjcShape {
     /// C call syntax (`completionBlock()`): a function, block or function
     /// pointer, never a method or property.
     CCall,
+    OtherSend,
     /// A message to `self` / `super` / `[self class]`, whose receiver the
     /// extractor drops.
     SelfSend,
@@ -110,11 +111,11 @@ impl KernelResolver {
         let csharp_bare = r.language == "csharp"
             && matches!(r.reference_kind.as_str(), "calls" | "references")
             && re!(r"^[A-Za-z_][A-Za-z0-9_]*$").is_match(&r.reference_name);
-        let objc_shape = (r.language == "objc"
+        let objc_shape = if r.language == "objc" && r.reference_name.contains('.') { Some(ObjcShape::OtherSend) } else { (r.language == "objc"
             && r.reference_kind == "calls"
             && re!(r"^[A-Za-z_][A-Za-z0-9_]*:*(?:[A-Za-z0-9_]+:)*$").is_match(&r.reference_name))
         .then(|| self.objc_call_shape(r))
-        .flatten();
+        .flatten() };
         let vb_unqualified = r.language == "vbnet" && word && vb_receiver.is_none() && matches!(r.reference_kind.as_str(), "calls" | "instantiates");
         let vb_scoped = r.language == "vbnet" && r.reference_kind == "calls" && word && (vb_receiver.is_none() || vb_receiver.as_ref().is_some_and(|v| re!(r"(?i)^(Me|MyClass|MyBase)$").is_match(v)));
         MemberSite { vb_receiver, vb_type_arg, vb_scoped, vb_unqualified, csharp_bare, objc_shape }
@@ -134,6 +135,16 @@ impl KernelResolver {
         if site.vb_unqualified && !self.vb_nested_in_scope(n, r)? { return Ok(false); }
         if site.csharp_bare && !self.is_csharp_member_in_scope(n, r)? {
             return Ok(false);
+        }
+        if r.language == "objc" && is_objc_member_kind(&n.kind) {
+            if let Some((receiver, _)) = r.reference_name.rsplit_once('.') {
+                let local = self.infer_local_receiver_type(receiver, r, true)?;
+                let ty = match local { Some(ty) => Some(ty), None => self.objc_member_receiver_type(receiver, r)? };
+                if let Some(ty) = ty {
+                    let owner = n.qualified_name.rsplit_once("::").map(|(o, _)| o).unwrap_or("");
+                    return Ok(self.objc_type_closure(vec![ty], 40)?.contains(owner));
+                }
+            }
         }
         match site.objc_shape {
             Some(ObjcShape::CCall) if is_objc_member_kind(&n.kind) => Ok(false),
@@ -649,4 +660,141 @@ fn is_vb_member_reachable(n: &KNode, receiver: &str) -> bool {
         return true;
     }
     !last.is_empty() && last == owner.to_ascii_lowercase()
+}
+
+#[derive(Default)]
+struct ObjcMembers {
+    ivars: HashMap<String, String>,
+    own_ivars: HashMap<String, String>,
+    properties: HashMap<String, (String, bool)>,
+    synthesized: HashMap<String, String>,
+}
+
+fn objc_file_members(text: &str) -> HashMap<String, ObjcMembers> {
+    let mut tables: HashMap<String, ObjcMembers> = HashMap::new();
+    let ivar = re!(r"^\s*(?:(?:__strong|__weak|__unsafe_unretained|__block|const|volatile|IBOutlet|IBInspectable)\s+)*([A-Z]\w*)\s*(?:<[^;{}]*?>\s*|[A-Z][A-Z0-9_]*\s*\([^;{}]*?\)\s*)?\*\s*((?:(?:_Nullable|_Nonnull|const)\s+)*\w+(?:\s*,\s*\*\s*(?:(?:_Nullable|_Nonnull|const)\s+)*\w+)*)\s*;");
+    let property_re = re!(r"^\s*@property\b\s*(?:[A-Z][A-Z0-9_]+\s*)*(?:\([^)]*\)\s*)?(?:(?:nullable|nonnull|null_unspecified|__kindof)\s+)*(?:(?:__strong|__weak|__unsafe_unretained|__block|const|volatile|IBOutlet|IBInspectable)\s+)*([A-Z]\w*)\s*(?:<[^;{}]*?>\s*|[A-Z][A-Z0-9_]*\s*\([^;{}]*?\)\s*)?\*\s*(?:(?:_Nullable|_Nonnull|const)\s+)*(\w+)");
+    let mut cls = None;
+    let mut interface = false;
+    let mut category = None;
+    let mut state = 2;
+    let mut open = 0i32;
+    let mut depth = 0i32;
+    let mut property: Option<String> = None;
+    for raw in text.lines() {
+        let mut line = raw.split("//").next().unwrap_or("").to_string();
+        let head = re!(r"^\s*(?:[A-Z][A-Z0-9_]*(?:\([^)]*\))?\s+)*@(interface|implementation)\s+(\w+)\s*(?:<[^>]*>\s*|[A-Z][A-Z0-9_]*\([^)]*\)\s*)?(?:\(\s*(\w*)\s*\))?").captures(&line);
+        let has_head = head.is_some();
+        if let Some(h) = head {
+            cls = Some(h[2].to_string());
+            interface = &h[1] == "interface";
+            category = h.get(3).map(|m| m.as_str().to_string());
+            state = 0;
+            open = 0;
+            property = None;
+            line = line[h.get(0).unwrap().end()..].to_string();
+        } else if re!(r"^\s*@end\b").is_match(&line) {
+            cls = None;
+            continue;
+        }
+        let Some(cls) = &cls else { continue };
+        let members = tables.entry(cls.clone()).or_default();
+        if state == 0 {
+            let in_head = has_head || open > 0 || re!(r"^\s*[<:]").is_match(&line);
+            open += line.chars().filter(|c| matches!(c, '<' | '(')).count() as i32 - line.chars().filter(|c| matches!(c, '>' | ')')).count() as i32;
+            if let Some(brace) = line.find('{') {
+                state = 1;
+                depth = 0;
+                line = line[brace..].to_string();
+            } else if in_head || open > 0 || re!(r"^\s*(?:$|/\*|\*|#)").is_match(&line) {
+                continue;
+            } else { state = 2; }
+        }
+        if state == 1 {
+            depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
+            if depth <= 0 { state = 2; }
+            let line = re!(r"^[^{]*\{").replace(&line, "");
+            let line = line.split('}').next().unwrap_or("");
+            if let Some(i) = ivar.captures(line) {
+                let into = if interface && category.is_none() { &mut members.ivars } else { &mut members.own_ivars };
+                for name in i[2].split(',') {
+                    let bare = re!(r"\*|_Nullable|_Nonnull|\bconst\b").replace_all(name, "").trim().to_string();
+                    if re!(r"^\w+$").is_match(&bare) { into.entry(bare).or_insert_with(|| i[1].to_string()); }
+                }
+            }
+            continue;
+        }
+        if !interface {
+            if let Some(s) = re!(r"^\s*@synthesize\s+([^;]+);").captures(&line) {
+                for item in s[1].split(',') {
+                    let mut parts = item.split('=').map(str::trim);
+                    let name = parts.next().unwrap_or("");
+                    let ivar = parts.next().unwrap_or(name);
+                    if !name.is_empty() && re!(r"^\w+$").is_match(ivar) { members.synthesized.insert(ivar.to_string(), name.to_string()); }
+                }
+            }
+            continue;
+        }
+        if property.is_none() && !re!(r"^\s*@property\b").is_match(&line) { continue; }
+        let accumulated = property.get_or_insert_with(String::new);
+        accumulated.push(' ');
+        accumulated.push_str(&line);
+        if !accumulated.contains(';') && accumulated.len() < 400 { continue; }
+        if let Some(p) = property_re.captures(accumulated) {
+            members.properties.entry(p[2].to_string()).or_insert_with(|| (p[1].to_string(), category.as_ref().is_some_and(|c| !c.is_empty())));
+        }
+        property = None;
+    }
+    tables
+}
+
+impl KernelResolver {
+    pub(super) fn objc_member_receiver_type(&mut self, receiver: &str, r: &ResolveRefIn) -> Res<Option<String>> {
+        let via_self = receiver.starts_with("self.");
+        let name = receiver.strip_prefix("self.").unwrap_or(receiver);
+        if !re!(r"^[A-Za-z_]\w*$").is_match(name) || matches!(name, "self" | "super") || (!via_self && name.starts_with(|c: char| c.is_ascii_uppercase())) { return Ok(None); }
+        if via_self && !self.nodes_by_name(name)?.iter().any(|n| n.kind == "property" && n.language == "objc") { return Ok(None); }
+        let Some(sender) = self.objc_sender_at(r)? else { return Ok(None) };
+        let mut queue = VecDeque::from([sender]);
+        let mut seen = HashSet::new();
+        let mut levels = Vec::new();
+        while let Some(cls) = queue.pop_front() {
+            if !seen.insert(cls.clone()) { continue; }
+            if seen.len() > 30 { break; }
+            queue.extend(self.objc_supertypes_at(&cls, r)?);
+            let decls = self.nodes_by_name(&cls)?;
+            let mut files: Vec<_> = decls.iter().filter(|n| n.kind == "class" && n.language == "objc").map(|n| n.file_path.clone()).collect();
+            files.sort(); files.dedup();
+            let own = Self::cached_regex(&format!(r"@interface\s+{}\b\s*([^\n]*)", regex::escape(&cls)))?;
+            let primary = files.iter().filter(|file| self.read_file(file).is_some_and(|s| own.captures_iter(s.text()).any(|m| !m[1].trim_start().starts_with('(')))).count();
+            if primary > 1 {
+                let dir = r.file_path.rsplit_once('/').map_or("", |(d, _)| d);
+                files.retain(|f| f.rsplit_once('/').map_or("", |(d, _)| d) == dir);
+            }
+            files.sort_by_key(|f| f != &r.file_path);
+            let mut level = Vec::new();
+            for file in files {
+                if let Some(source) = self.read_file(&file) {
+                    if let Some(members) = objc_file_members(source.text()).remove(&cls) { level.push(members); }
+                }
+            }
+            levels.push(level);
+        }
+        let property_type = |key: &str, own: bool| levels.iter().take(if own { 1 } else { levels.len() })
+            .flat_map(|l| l.iter()).find_map(|m| m.properties.get(key).filter(|(_, category)| !own || !category).map(|(t, _)| t.clone()));
+        if via_self { return Ok(property_type(name, false)); }
+        for (i, level) in levels.iter().enumerate() {
+            for m in level {
+                if let Some(ty) = m.ivars.get(name).or_else(|| (i == 0).then(|| m.own_ivars.get(name)).flatten()) { return Ok(Some(ty.clone())); }
+            }
+            if i == 0 {
+                if let Some(property) = level.iter().find_map(|m| m.synthesized.get(name)) {
+                    if let Some(ty) = property_type(property, false) { return Ok(Some(ty)); }
+                } else if let Some(property) = name.strip_prefix('_') {
+                    if let Some(ty) = property_type(property, true) { return Ok(Some(ty)); }
+                }
+            }
+        }
+        Ok(None)
+    }
 }

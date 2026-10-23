@@ -48,6 +48,13 @@ impl KernelResolver {
     /// leaf symbol in it. `import` @0.9 — the analog of
     /// resolvePythonModuleMember for Rust module paths.
     pub(super) fn match_rust_path_reference(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        let path: Vec<String> = r.reference_name.split("::").filter(|s| !s.is_empty()).map(str::to_string).collect();
+        if path.len() >= 2 {
+            let from = self.rust_module_at(&r.file_path, r.line, r.column);
+            if let Some(items) = self.rust_path_items(&path, &from, false, &mut HashSet::new())? {
+                return Ok(items.into_iter().next().map(|node| KCand { node, confidence: 0.9, resolved_by: "import" }));
+            }
+        }
         let segments: Vec<&str> = r
             .reference_name
             .split("::")
@@ -68,6 +75,7 @@ impl KernelResolver {
         let file_nodes = self.nodes_in_file(&file)?;
         let target = file_nodes.iter().find(|n| {
             n.name == leaf
+                && !n.qualified_name.ends_with(&format!("::{}", n.name))
                 && matches!(
                     n.kind.as_str(),
                     "function"
@@ -293,3 +301,6 @@ impl KernelResolver {
         Ok(lines.iter().any(|l| MOD_DECL.is_match(&strip_line_comments(l), stem)))
     }
 }
+
+#[path = "rust_paths.rs"]
+pub(super) mod rust_paths;
