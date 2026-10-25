@@ -37,7 +37,7 @@ These stay here because breaking them is silent. The full procedures are in `cod
 
 An agent falls back to Read/Grep the instant a codegraph answer is insufficient. A flow question should resolve in 1 codegraph call on small repos and 3–5 on large ones, with Read/Grep at 0; judge every change by wall-clock time and tool-call count.
 
-- Don't try to change the agent's tool choice through instructions or new tools. Make `codegraph_explore` answer better from the input it already gets.
+- Don't try to change the agent's tool choice through instructions or new tools. Make `codegraph_explore` answer better from the input it already gets. The one exception is the query-first sentence in the installer's instructions block (`CODEGRAPH_QUERY_FIRST_SENTENCE`), kept on measured evidence; see `codegraph-installer`.
 - Reserve `isError` for security refusals and real malfunctions. Recoverable conditions (not indexed, symbol not found, file not in the index) return success-shaped guidance, and the tools stay exposed at an un-indexed root.
 - Explore output never tells the agent to "use Read". Keep `getExploreBudget` and `getExploreOutputBudget` monotonic with indexed file count.
 - Partial coverage is worse than none: bridge a dynamic-dispatch flow end to end and re-measure, or don't ship it. Synthesized edges are `provenance:'heuristic'` with `metadata.synthesizedBy` and `registeredAt`.
