@@ -22,12 +22,25 @@
  *
  * Keep this block SHORT. The main agent reads it every turn on top of the
  * server instructions — the #529 duplication-cost argument still bounds
- * its size. Command names and the two surfaces, nothing more.
+ * its size. Command names, the two surfaces and the one query-first
+ * instruction below, nothing more.
  */
 
 /** Markers used by the marker-based section write/removal. */
 export const CODEGRAPH_SECTION_START = '<!-- CODEGRAPH_START -->';
 export const CODEGRAPH_SECTION_END = '<!-- CODEGRAPH_END -->';
+
+/**
+ * The query-first instruction inside the block. Without it, agents that
+ * have the block still reach for Grep and Read first; as text in the
+ * instructions file it cut tool calls on Opus 5.5, Astra 6 and Sol about as
+ * much as the same sentence in a system prompt. It sits ahead of the
+ * "no \`.codegraph/\` directory" line so that line still scopes it to
+ * indexed repositories. Keep the wording stable: the measured text is this
+ * sentence.
+ */
+export const CODEGRAPH_QUERY_FIRST_SENTENCE =
+  'Query the codegraph MCP tools first for every repo question — symbols, files, call paths, and documentation alike — before any Grep, Glob, or Read. Use Grep or Read only to verify a result or when the index returns nothing relevant.';
 
 /**
  * The full block, markers included, exactly as written to disk.
@@ -46,6 +59,8 @@ In repositories indexed by CodeGraph (a \`.codegraph/\` directory exists at the 
 
 - **MCP tool** (when available): \`codegraph_explore\` answers most code questions in one call — the relevant symbols' verbatim source plus the call paths between them, including dynamic-dispatch hops grep can't follow. Name a file or symbol in the query to read its current line-numbered source. If it's listed but deferred, load it by name via tool search.
 - **Shell** (always works): \`codegraph explore "<symbol names or question>"\` prints the same output.
+
+${CODEGRAPH_QUERY_FIRST_SENTENCE}
 
 If there is no \`.codegraph/\` directory, skip CodeGraph entirely — indexing is the user's decision.
 ${CODEGRAPH_SECTION_END}`;

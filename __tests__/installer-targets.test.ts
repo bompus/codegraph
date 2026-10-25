@@ -24,6 +24,12 @@ import { ALL_TARGETS, getTarget, resolveTargetFlag } from '../src/installer/targ
 import { uninstallTargets, refreshTargets, offerWatchFallback } from '../src/installer';
 import { upsertTomlTable, removeTomlTable, buildTomlTable } from '../src/installer/targets/toml';
 import { cleanupLegacyHooks, writePromptHookEntry, removePromptHookEntry } from '../src/installer/targets/claude';
+import {
+  CODEGRAPH_INSTRUCTIONS_BLOCK,
+  CODEGRAPH_QUERY_FIRST_SENTENCE,
+  CODEGRAPH_SECTION_END,
+  CODEGRAPH_SECTION_START,
+} from '../src/installer/instructions-template';
 
 function mkTmpDir(label: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `cg-targets-${label}-`));
@@ -229,6 +235,68 @@ describe('Installer targets — contract', () => {
       }
     });
   }
+});
+
+describe('Installer targets — query-first sentence in the instructions block', () => {
+  let tmpHome: string;
+  let tmpCwd: string;
+  let origCwd: string;
+  let homeRestore: { restore: () => void };
+
+  beforeEach(() => {
+    tmpHome = mkTmpDir('home');
+    tmpCwd = mkTmpDir('cwd');
+    origCwd = process.cwd();
+    process.chdir(tmpCwd);
+    homeRestore = setHome(tmpHome);
+  });
+
+  afterEach(() => {
+    homeRestore.restore();
+    process.chdir(origCwd);
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    fs.rmSync(tmpCwd, { recursive: true, force: true });
+  });
+
+  it('uses the measured wording', () => {
+    expect(CODEGRAPH_QUERY_FIRST_SENTENCE).toBe(
+      'Query the codegraph MCP tools first for every repo question — symbols, files, call paths, and documentation alike — before any Grep, Glob, or Read. Use Grep or Read only to verify a result or when the index returns nothing relevant.',
+    );
+  });
+
+  it.each(['claude', 'codex', 'opencode', 'gemini', 'devin'])(
+    '%s: writes the query-first sentence inside the markers, ahead of the unindexed-repo line',
+    (id) => {
+      const target = getTarget(id)!;
+      const result = target.install('global', { autoAllow: true });
+      const instructions = result.files.find((f) => /(CLAUDE|AGENTS|GEMINI)\.md$/.test(f.path))!;
+      const body = fs.readFileSync(instructions.path, 'utf-8');
+      const start = body.indexOf(CODEGRAPH_SECTION_START);
+      const end = body.indexOf(CODEGRAPH_SECTION_END);
+      const sentence = body.indexOf(CODEGRAPH_QUERY_FIRST_SENTENCE);
+      const unindexed = body.indexOf('If there is no `.codegraph/` directory');
+      expect(body.split(CODEGRAPH_QUERY_FIRST_SENTENCE)).toHaveLength(2);
+      expect(start).toBeLessThan(sentence);
+      expect(sentence).toBeLessThan(unindexed);
+      expect(unindexed).toBeLessThan(end);
+    },
+  );
+
+  it('re-install rewrites the previous short block to the current one, keeping user content', () => {
+    const claude = getTarget('claude')!;
+    const claudeMd = path.join(tmpHome, '.claude', 'CLAUDE.md');
+    fs.mkdirSync(path.dirname(claudeMd), { recursive: true });
+    const previousBlock = CODEGRAPH_INSTRUCTIONS_BLOCK.replace(`${CODEGRAPH_QUERY_FIRST_SENTENCE}\n\n`, '');
+    expect(previousBlock).not.toContain(CODEGRAPH_QUERY_FIRST_SENTENCE);
+    fs.writeFileSync(claudeMd, `# Mine\n\nAlways respond in pirate.\n\n${previousBlock}\n`);
+
+    claude.install('global', { autoAllow: true });
+
+    const body = fs.readFileSync(claudeMd, 'utf-8');
+    expect(body).toContain('Always respond in pirate.');
+    expect(body.split(CODEGRAPH_QUERY_FIRST_SENTENCE)).toHaveLength(2);
+    expect(body.split(CODEGRAPH_SECTION_START)).toHaveLength(2);
+  });
 });
 
 describe('Installer targets — partial-state idempotency', () => {
