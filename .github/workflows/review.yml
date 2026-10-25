@@ -1,4 +1,4 @@
-name: pr-reviewer
+name: shadow-review
 # Shadow mode: the review step cannot fail the job. The reviewer code runs from the
 # host's configured checkout ($PR_REVIEWER_HOME), never from the pull request.
 on:
@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   review:
+    name: shadow review
     # Same-repository pull requests only. A pull request runs its own copy of this file,
     # so this check is a second layer: the enforced guard is the repository setting that
     # keeps fork pull requests from running workflows without maintainer approval.
@@ -23,7 +24,7 @@ jobs:
        startsWith(github.event.label.name, 'author:'))
     # On the job, not the workflow, so a skipped run (an unrelated label) cancels nothing.
     concurrency:
-      group: pr-reviewer-${{ github.event.pull_request.number }}
+      group: shadow-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     runs-on: [self-hosted, private-reviewer]
     timeout-minutes: 45
