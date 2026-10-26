@@ -12,8 +12,10 @@ import {
   extractCodeTokens,
   hasStructuralKeyword,
   isAgentMessage,
-  isHostNotification,
+  isCrossSessionMessage,
+  isTaskNotification,
   planFrontload,
+  stripSystemReminders,
   type FrontloadPlan,
 } from '../directory';
 import { extractProseCandidates } from '../search/identifier-segments';
@@ -77,10 +79,13 @@ export function promptHookDisabled(): boolean {
 export function gatePromptHook(raw: string): PromptHookInput | null {
   let input: { prompt?: string; cwd?: string } = {};
   try { input = JSON.parse(raw); } catch { return null; }
-  const prompt = String(input.prompt || '');
+  // The desktop app's <system-reminder> blocks are host status, not what the
+  // user typed: gate on the rest (#2635).
+  const prompt = stripSystemReminders(String(input.prompt || ''));
 
-  // Host notifications and subagent hand-backs (#2184) are not user prompts.
-  if (isHostNotification(prompt) || isAgentMessage(prompt)) { recordPromptHookGate('noop-notification'); return null; }
+  // Host notifications, subagent hand-backs (#2184) and messages from other
+  // sessions (#2635) are not user prompts, and neither is nothing.
+  if (!prompt || isTaskNotification(prompt) || isAgentMessage(prompt) || isCrossSessionMessage(prompt)) { recordPromptHookGate('noop-notification'); return null; }
   const keyworded = hasStructuralKeyword(prompt);
   // "review my changes", `main..HEAD`: explore answers these from the diff,
   // so a confirmed change question gets the full injection like a keyword.

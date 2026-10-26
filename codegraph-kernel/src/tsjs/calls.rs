@@ -132,6 +132,12 @@ impl<'t> Walker<'t> {
                         // resolver can read its declared type (#1496). Mirrors
                         // TreeSitterExtractor.extractCall.
                         callee_name = format!("this.{field}.{method_name}");
+                    } else if let Some(element) = receiver.and_then(|r| self.this_subscript_of(r)) {
+                        // `this.<field>[k].<method>()` — an element of the
+                        // field, typed by the resolver from the field's
+                        // declaration; `this['svc']` is the field itself.
+                        // Mirrors TreeSitterExtractor.extractCall.
+                        callee_name = format!("{element}.{method_name}");
                     } else if let Some(r) = receiver.filter(|r| r.kind() == "call_expression") {
                         // Call receiver — `make().run()` (#1683): keep the inner
                         // callee as `<inner>().<method>`, or emit nothing when it
@@ -139,6 +145,27 @@ impl<'t> Walker<'t> {
                         // TreeSitterExtractor.extractCall.
                         let Some(inner) = self.plain_inner_callee(r) else { return };
                         callee_name = format!("{inner}().{method_name}");
+                    } else if let Some(r) = receiver.filter(|r| r.kind() == "new_expression") {
+                        // Constructor receiver — `new Runner().run()`: keep the
+                        // class as `new <Class>().<method>` so the resolver
+                        // resolves the method on it or nowhere; emit nothing for
+                        // a constructor that is not a plain name / member chain.
+                        // Mirrors TreeSitterExtractor.extractCall.
+                        let Some(ctor) = r
+                            .child_by_field_name("constructor")
+                            .and_then(|c| Self::plain_member_name(self.text(c)))
+                        else {
+                            return;
+                        };
+                        // `new this.constructor().copy(this)`, a static
+                        // `new this().init()`: an instance of the enclosing
+                        // class keeps the bare method name, as a call on
+                        // `this` does.
+                        callee_name = if ctor == "this" || ctor == "this.constructor" {
+                            method_name.to_string()
+                        } else {
+                            format!("new {ctor}().{method_name}")
+                        };
                     } else if receiver.is_some_and(|r| !keeps_bare_receiver(r, self.src)) {
                         // An expression receiver with no static type
                         // (`(a ?? b).map()`, `f().list.map()`): emit nothing
@@ -172,6 +199,36 @@ impl<'t> Walker<'t> {
         if !callee_name.is_empty() {
             self.push_call_ref(&callee_name, at);
         }
+    }
+
+    /// A receiver subscripting the enclosing class's object: `this.<field>[k]`
+    /// → `this.<field>[]`, `this['svc']` → `this.svc`; None for any other
+    /// subscript. Mirrors tsThisSubscriptReceiver.
+    pub(super) fn this_subscript_of(&self, receiver: Node<'t>) -> Option<String> {
+        if receiver.kind() != "subscript_expression" {
+            return None;
+        }
+        let object = peel_receiver(receiver.child_by_field_name("object")?);
+        if object.kind() == "this" {
+            let index = receiver.child_by_field_name("index")?;
+            if index.kind() != "string" {
+                return None;
+            }
+            let text = self.text(index);
+            let quoted = text.len() >= 2
+                && (text.starts_with('\'') || text.starts_with('"'))
+                && text.ends_with(&text[..1]);
+            let key = if quoted { &text[1..text.len() - 1] } else { return None };
+            let mut chars = key.chars();
+            let first = chars.next()?;
+            if !(first.is_ascii_alphabetic() || first == '_' || first == '$')
+                || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+            {
+                return None;
+            }
+            return Some(format!("this.{key}"));
+        }
+        self.this_field_of(object).map(|field| format!("this.{field}[]"))
     }
 
     /// `this.<field>` as a member_expression receiver → Some(field) (#1496, #1987).
@@ -211,6 +268,9 @@ impl<'t> Walker<'t> {
     }
 
     pub(super) fn extract_instantiation(&mut self, node: Node<'t>) {
+        if self.stack.is_empty() {
+            return;
+        }
         let ctor = node
             .child_by_field_name("constructor")
             .or_else(|| node.child_by_field_name("type"))
@@ -306,13 +366,13 @@ impl<'t> Walker<'t> {
                 // TS `extends_clause` (the other spellings are other grammars').
                 "extends_clause" | "superclass" | "base_clause" | "extends_interfaces" => {
                     if let Some(target) = child.named_child(0) {
-                        let name = self.text(target).to_string();
+                        let name = self.supertype_name(target);
                         self.push_ref(class_row, &name, extends_kind, target);
                     }
                 }
                 "implements_clause" | "class_interface_clause" | "super_interfaces" | "interfaces" => {
                     for iface in named_kids(child) {
-                        let name = self.text(iface).to_string();
+                        let name = self.supertype_name(iface);
                         self.push_ref(class_row, &name, implements_kind, iface);
                     }
                 }
@@ -345,6 +405,20 @@ impl<'t> Walker<'t> {
                 _ => {}
             }
         }
+    }
+
+    /// supertypeName — a parameterized supertype (`generic_type`) by the name
+    /// before its type arguments: `Store` for `implements Store<string>`.
+    fn supertype_name(&self, node: Node<'t>) -> String {
+        if node.kind() == "generic_type" {
+            let named = (0..node.named_child_count())
+                .filter_map(|j| node.named_child(j))
+                .find(|c| c.kind() != "type_arguments");
+            if let Some(named) = named {
+                return self.text(named).to_string();
+            }
+        }
+        self.text(node).to_string()
     }
 
     pub(super) fn extract_type_annotations(&mut self, node: Node<'t>, from_row: u32) {
@@ -427,12 +501,15 @@ fn peel_receiver(node: Node<'_>) -> Node<'_> {
     cur
 }
 
-/// `this` / `super`, a member chain rooted at either or at `window`, or
-/// `new C()` still collapse to the bare method name (mirrors
-/// keepsBareTsJsReceiver).
+/// `this` / `super`, or a member chain rooted at either or at `window`, still
+/// collapse to the bare method name; a subscript anywhere in the chain does
+/// not (mirrors keepsBareTsJsReceiver).
 fn keeps_bare_receiver(node: Node<'_>, src: &str) -> bool {
     let mut cur = node;
     while matches!(cur.kind(), "member_expression" | "subscript_expression") {
+        if cur.kind() == "subscript_expression" {
+            return false;
+        }
         match cur.child_by_field_name("object") {
             Some(object) => cur = peel_receiver(object),
             None => return false,
@@ -441,7 +518,6 @@ fn keeps_bare_receiver(node: Node<'_>, src: &str) -> bool {
     match cur.kind() {
         "this" | "super" => true,
         "identifier" => &src[cur.byte_range()] == "window",
-        "new_expression" => cur.id() == node.id(),
         _ => false,
     }
 }

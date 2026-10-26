@@ -1540,7 +1540,9 @@ impl KernelResolver {
         &mut self,
         r: &ResolveRefIn,
     ) -> Res<Option<KCand>> {
-        if r.reference_kind != "imports" || !r.reference_name.contains('.') {
+        if r.reference_kind != "imports"
+            || (!r.reference_name.contains('.') && !self.is_python_from_import_module(r.clone()))
+        {
             return Ok(None);
         }
         Ok(self

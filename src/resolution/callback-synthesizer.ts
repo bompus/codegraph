@@ -27,6 +27,7 @@ import type { NodeScanFilter, QueryBuilder } from '../db/queries';
 import type { ResolutionContext } from './types';
 import { isGeneratedFile } from '../extraction/generated-detection';
 import { stripCommentsForRegex, withStripMemo } from './strip-comments';
+import { escapeRegExp } from '../utils';
 import { cFnPointerDispatchEdges } from './c-fnptr-synthesizer';
 import { goFuncFieldEdges } from './go-func-field-synthesizer';
 import { drupalHookEdges } from './drupal-hook-synthesizer';
@@ -43,9 +44,12 @@ import { crossTierEdges, endpointNodesFor, testRequestEdges } from './tier-synth
 import { enclosingFn, enclosingValue, makeLineAt, matchBalanced } from './synth-utils';
 import { rnModuleMethods } from './frameworks/react-native';
 import { resolveImportPath } from './import-resolver';
-import { isDistinctiveIdentifier } from '../search/query-utils';
+import { isDistinctiveIdentifier, isManualMockHiddenFrom, isManualMockPath, isTestPath } from '../search/query-utils';
 import { crossesCodeBoundary, innermostBinding } from './gates';
 import { cppSpecializationArguments } from './cpp-specializations';
+import { goRefQualification } from './go-type-visibility';
+import { goStdlibMethods } from './go-stdlib-methods';
+import { overrideFilter } from './override-parameters';
 import { declaredComponent, exportedComponent, wrappedComponentName } from './frameworks/react';
 import { jsxCode } from './jsx-code';
 import { goPackageReader, type GoPackageOf } from '../graph/go-package';
@@ -252,7 +256,7 @@ async function fieldChannelEdges(queries: QueryBuilder, ctx: ResolutionContext, 
       (d) => d.node.filePath === reg.node.filePath && d.field === reg.field
     );
     if (chDispatchers.length === 0) continue;
-    const argRe = new RegExp(`${reg.node.name}\\s*\\(\\s*(this\\.\\w+|\\w+)\\s*(?=[,)])`);
+    const argRe = new RegExp(`${escapeRegExp(reg.node.name)}\\s*\\(\\s*(this\\.\\w+|\\w+)\\s*(?=[,)])`);
     let added = 0;
     for (const e of queries.getIncomingEdges(reg.node.id, ['calls'])) {
       if (added >= MAX_CALLBACKS_PER_CHANNEL) break;
@@ -419,7 +423,9 @@ async function eventEmitterEdges(ctx: ResolutionContext, onYield: MaybeYield): P
       while ((m = ON_RE.exec(content))) {
         const handlerName = m[2] || m[3];
         if (!handlerName) continue;
-        const handler = ctx.getNodesByName(handlerName).find((n) => n.kind === 'function' || n.kind === 'method');
+        // A manual mock's function is a handler only test code registers (#2455).
+        const handler = ctx.getNodesByName(handlerName).find((n) =>
+          (n.kind === 'function' || n.kind === 'method') && !isManualMockHiddenFrom(n.filePath, file));
         if (!handler) continue;
         const map = handlersByEvent.get(m[1]!) ?? new Map<string, string>();
         map.set(handler.id, `${file}:${lineOf(m.index)}`); handlersByEvent.set(m[1]!, map);
@@ -1095,7 +1101,9 @@ async function cppOverrideEdges(queries: QueryBuilder, ctx: ResolutionContext, o
  * interface method. Bridge it like cpp-override: for each class that
  * `implements` an interface (or `extends` an abstract base), link each
  * base/interface method → the class's same-name method (the override) so
- * trace/callees reach the implementation. Over-approximation accepted
+ * trace/callees reach the implementation. Of an overloaded name, an overload
+ * links the methods with its parameters where the language makes an override
+ * repeat them (./override-parameters, #2663). Over-approximation accepted
  * (reachability-correct); capped per class, gated to JVM languages.
  */
 // Languages whose static `implements`/`extends` edges should bridge an
@@ -1104,14 +1112,22 @@ async function cppOverrideEdges(queries: QueryBuilder, ctx: ResolutionContext, o
 // kind that holds methods" — i.e. the shape this loop expects. Swift and
 // Scala fit shape-wise (Swift `protocol`/`class`, Scala `trait`/`class`)
 // and are added below; their concrete-side nodes can be a `struct` (Swift)
-// or an `object` (Scala) so the loop also iterates those kinds.
+// or an `object` (Scala) so the loop also iterates those kinds. A `.tsx` or
+// `.jsx` class is a TypeScript or JavaScript class, and its base or interface
+// is often in a `.ts` file, or the other way round.
 const IFACE_OVERRIDE_LANGS = new Set([
-  'java', 'kotlin', 'csharp', 'typescript', 'javascript', 'swift', 'scala', 'go', 'rust',
+  'java', 'kotlin', 'csharp', 'typescript', 'tsx', 'javascript', 'jsx', 'swift', 'scala', 'go', 'rust',
   'arkts',
 ]);
 /** Depth cap for transitive-supertype BFS in interfaceOverrideEdges — real
  *  extends/implements chains are ≤~6; the cap is a graph-corruption backstop. */
 const MAX_SUPERTYPE_DEPTH = 8;
+/**
+ * Languages whose static and instance methods override only their own kind:
+ * a JS/TS class's statics are inherited and overridden by the subclass's
+ * statics, its instance methods by instance methods (#2761).
+ */
+const STATIC_SPLIT_LANGS: ReadonlySet<string> = new Set(['typescript', 'tsx', 'javascript', 'jsx']);
 /**
  * Whether a supertype edge out of a Go type is one of its embeddings (#2397):
  * declared, never synthesized (go-implements writes those), into a struct, an
@@ -1137,6 +1153,25 @@ function goMethodKey(m: Node, packageOf: GoPackageOf): string {
   if (GO_EXPORTED_NAME.test(m.name)) return m.name;
   const file = m.filePath.replace(/\\/g, '/');
   return `${file.slice(0, Math.max(file.lastIndexOf('/'), 0))}\0${packageOf(m.filePath) ?? m.filePath}\0${m.name}`;
+}
+/**
+ * {@link goMethodKey} for a method of a standard-library type: its name, and
+ * for an unexported one (`testing.TB`'s `private`) the declaring package,
+ * spelled so it is no directory of the project's.
+ */
+function goStdlibMethodKey(importPath: string | null, name: string): string {
+  return GO_EXPORTED_NAME.test(name) ? name : `std:${importPath ?? ''}\0${name}`;
+}
+/** What a Go type has, or an interface asks for. */
+interface GoMethodNames {
+  /**
+   * Its methods by {@link goMethodKey}: its own, the project types' it
+   * embeds, and those the standard-library types it embeds bring
+   * (./go-stdlib-methods), `error`'s included.
+   */
+  readonly methods: Set<string>;
+  /** Embedded types from outside the index whose methods nothing names, by package and name. */
+  readonly opaque: ReadonlySet<string>;
 }
 /**
  * The top-level items of the Go bracketed list opening at `text[open]` — the
@@ -1253,8 +1288,18 @@ function goGrpcServerArity(signature: string | undefined): string | null {
  * has the methods promoted from the structs, interfaces and defined types it
  * embeds, at any depth: counting embedded interfaces alone would drop every
  * struct that satisfies one through promoted methods. Synthesized edges are
- * never followed (this pass writes them), and an embedding that resolved to
- * nothing (`io.Closer`) adds nothing.
+ * never followed (this pass writes them).
+ *
+ * A type embedded from outside the index leaves only the resolver's failed
+ * `extends` row. The methods of a standard-library type, and of `error`, are
+ * known (./go-stdlib-methods), with their counts: prometheus's `TBRun` is all
+ * of `testing.TB` plus `Run`, not any struct with a `Run`, and a struct
+ * embedding `sync.Mutex` is hugo's `Locker` but not etcd's gRPC `LockClient`,
+ * whose `Lock` takes a context and a request. Any other outside type's
+ * methods are unknown, so a struct embedding the same type has them, and
+ * otherwise only the one type with every method the interface does name is
+ * taken to implement it — kapacitor's `Diagnostic` (a third-party `Logger`
+ * plus `Log`) has no more claim on every struct with a `Log` than on none.
  *
  * Methods match by name, and an unexported name by its package too
  * ({@link goMethodKey}). prometheus has a `refresher { refresh(…) }` in each of
@@ -1268,10 +1313,12 @@ function goGrpcServerArity(signature: string | undefined): string | null {
  * Each wanted method also needs a declaration with its parameter and result
  * counts, read off the stored signatures: Go wants the signatures identical,
  * and the counts are what the text settles for certain — a cache's `Get(ctx,
- * key, opts ...OpOption)` is no `Get(id types.ID) Peer`. A signature that
- * doesn't read rules nothing out. A gRPC client interface also takes the
- * structs serving its service (see `wantedArities`), the bridge a client's
- * call crosses to reach its handler.
+ * key, opts ...OpOption)` is no `Get(id types.ID) Peer`. A standard-library
+ * method carries its counts in the table, so an `io.Writer`'s `Write` asks for
+ * one parameter and two results. A signature that doesn't read rules nothing
+ * out. A gRPC client interface also takes the structs serving its service
+ * (see `wantedArities`), the bridge a client's call crosses to reach its
+ * handler.
  *
  * Types are not compared, and a promoted name counts even where Go finds it
  * ambiguous or hidden by a field — over-approximation accepted, in line with
@@ -1279,7 +1326,7 @@ function goGrpcServerArity(signature: string | undefined): string | null {
  * (`any`) are skipped so they don't match every type, and a struct that
  * embeds the interface keeps the edge its embedding already is.
  */
-async function goImplementsEdges(queries: QueryBuilder, onYield: MaybeYield, packageOf: GoPackageOf): Promise<Edge[]> {
+async function goImplementsEdges(queries: QueryBuilder, ctx: ResolutionContext, onYield: MaybeYield, packageOf: GoPackageOf): Promise<Edge[]> {
   const methodKey = (m: Node): string => goMethodKey(m, packageOf);
   let scanned255 = 0;
   const edges: Edge[] = [];
@@ -1369,13 +1416,42 @@ async function goImplementsEdges(queries: QueryBuilder, onYield: MaybeYield, pac
     return [...reached];
   };
 
-  // Own methods plus every embedded type's.
-  const methodSet = (id: string): Set<string> => {
+  // The types each one embeds from outside the index, as the resolver's failed
+  // `extends` rows: the methods of a standard-library type or of `error`, by
+  // key with their arities, or else the embedded type itself, named by the
+  // package it is written through so that the same embedding elsewhere is
+  // recognized.
+  const outside = new Map<string, { stdlib: ReadonlyMap<string, string>[]; opaque: string[] }>();
+  for (const ref of queries.getUnresolvedReferencesFromNodes(typeIds, ['extends'])) {
+    if (ref.language !== 'go' || !ref.filePath) continue;
+    const name = ref.referenceName;
+    const { written, imported } = goRefQualification({ ...ref, filePath: ref.filePath, language: 'go' }, ctx);
+    const importPath = imported?.source ?? null;
+    const known = imported ? goStdlibMethods(importPath, name) : written ? undefined : goStdlibMethods(null, name);
+    let found = outside.get(ref.fromNodeId);
+    if (!found) outside.set(ref.fromNodeId, (found = { stdlib: [], opaque: [] }));
+    if (known) found.stdlib.push(new Map([...known].map(([m, arity]) => [goStdlibMethodKey(importPath, m), arity])));
+    else if (imported) found.opaque.push(`${imported.source}.${name}`);
+    else if (written) found.opaque.push(`${written}.${name}`);
+    else found.opaque.push(`${ref.filePath.replace(/\\/g, '/').replace(/\/?[^/]*$/, '')}#${name}`);
+  }
+  await onYield();
+
+  // Own methods plus every embedded type's, a standard-library one's too.
+  const NONE_OPAQUE: ReadonlySet<string> = new Set();
+  const methodNames = (id: string): GoMethodNames => {
     const types = embedClosure(id);
-    if (types.length === 1) return ownMethods(id);
-    const names = new Set<string>();
-    for (const t of types) for (const m of ownMethods(t)) names.add(m);
-    return names;
+    if (types.length === 1 && !outside.has(id)) return { methods: ownMethods(id), opaque: NONE_OPAQUE };
+    const methods = new Set<string>();
+    const opaque = new Set<string>();
+    for (const t of types) {
+      for (const m of ownMethods(t)) methods.add(m);
+      const out = outside.get(t);
+      if (!out) continue;
+      for (const known of out.stdlib) for (const key of known.keys()) methods.add(key);
+      for (const type of out.opaque) opaque.add(type);
+    }
+    return { methods, opaque };
   };
 
   const covers = (have: Set<string>, want: Set<string>): boolean => {
@@ -1385,11 +1461,18 @@ async function goImplementsEdges(queries: QueryBuilder, onYield: MaybeYield, pac
     }
     return true;
   };
+  const coversOpaque = (have: GoMethodNames, want: GoMethodNames): boolean => {
+    for (const type of want.opaque) {
+      if (!have.opaque.has(type)) return false;
+    }
+    return true;
+  };
 
   // Each method in a type's method set, by its goMethodKey, → the arities
   // (`params/results`) its declarations there have, or null when one of their
-  // signatures doesn't read (then the name rules nothing out). Built only for
-  // the pairs whose names already match.
+  // signatures doesn't read (then the name rules nothing out). A method a
+  // standard-library embedding brings has the table's. Built only for the
+  // pairs whose names already match.
   const arityMemo = new Map<string, Map<string, Set<string> | null>>();
   const methodArities = (id: string): Map<string, Set<string> | null> => {
     let arities = arityMemo.get(id);
@@ -1407,6 +1490,14 @@ async function goImplementsEdges(queries: QueryBuilder, onYield: MaybeYield, pac
             arities.set(name, null);
             break;
           }
+          known.add(arity);
+        }
+      }
+      for (const methods of outside.get(t)?.stdlib ?? []) {
+        for (const [name, arity] of methods) {
+          let known = arities.get(name);
+          if (known === null) continue;
+          if (!known) arities.set(name, (known = new Set()));
           known.add(arity);
         }
       }
@@ -1433,6 +1524,8 @@ async function goImplementsEdges(queries: QueryBuilder, onYield: MaybeYield, pac
         }
       }
     }
+    // What only a standard-library embedding asks for keeps the table's arity.
+    for (const [name, arities] of own) if (!wanted.has(name)) wanted.set(name, arities);
     return wanted;
   };
 
@@ -1457,21 +1550,22 @@ async function goImplementsEdges(queries: QueryBuilder, onYield: MaybeYield, pac
     return true;
   };
 
-  // A type without a method satisfies no interface this pass looks at.
+  // A type without a method, or an embedded type nothing describes, satisfies
+  // no interface this pass looks at.
   const candidates: Node[] = [];
-  const candidateMethods = new Map<string, Set<string>>();
+  const candidateMethods = new Map<string, GoMethodNames>();
   for (const s of goImplementers) {
     if ((++scanned255 & 63) === 0) await onYield();
-    const have = methodSet(s.id);
-    if (have.size === 0) continue;
+    const have = methodNames(s.id);
+    if (have.methods.size + have.opaque.size === 0) continue;
     candidates.push(s);
     candidateMethods.set(s.id, have);
   }
 
   for (const iface of goInterfaces) {
     if ((++scanned255 & 63) === 0) await onYield();
-    const want = methodSet(iface.id);
-    if (want.size === 0) continue; // empty interface (`any`) — would match everything
+    const want = methodNames(iface.id);
+    if (want.methods.size + want.opaque.size === 0) continue; // empty interface (`any`) — would match everything
     let added = 0;
     const link = (s: Node): void => {
       const key = `${s.id}>${iface.id}`;
@@ -1491,20 +1585,30 @@ async function goImplementsEdges(queries: QueryBuilder, onYield: MaybeYield, pac
     // of them, every defined type among them: under the cap, those are what
     // the interface-dispatch bridge links a call through the interface to. A
     // namesake it declares of an unexported method from another package is
-    // not one of them: the method it needs is promoted.
+    // not one of them: the method it needs is promoted. One that lacks only
+    // the embedded types nothing names the methods of counts when no other
+    // type has the rest.
     const throughEmbedding: Node[] = [];
     let wanted: Map<string, Set<string> | null> | undefined;
+    let covering = 0;
+    let sole: Node | undefined;
     for (const s of candidates) {
       if (added >= MAX_CALLBACKS_PER_CHANNEL) break;
       const have = candidateMethods.get(s.id)!;
-      if (!covers(have, want)) continue;
-      if (embeds(s.id).includes(iface.id)) continue; // declared by embedding it
+      if (!covers(have.methods, want.methods)) continue;
       if (!wanted) wanted = wantedArities(iface);
       if (!aritiesFit(s.id, wanted)) continue;
+      covering++;
+      if (embeds(s.id).includes(iface.id)) continue; // declared by embedding it
+      if (!coversOpaque(have, want)) {
+        if (covering === 1) sole = s;
+        continue;
+      }
       const own = ownMethods(s.id);
-      if (own !== have && !covers(own, want)) throughEmbedding.push(s);
+      if (want.opaque.size > 0 || (own !== have.methods && !covers(own, want.methods))) throughEmbedding.push(s);
       else link(s);
     }
+    if (sole && covering === 1 && want.methods.size > 0) throughEmbedding.push(sole);
     for (const s of throughEmbedding) {
       if (added >= MAX_CALLBACKS_PER_CHANNEL) break;
       link(s);
@@ -1770,7 +1874,7 @@ function goPromotions(
   };
 }
 
-async function interfaceOverrideEdges(queries: QueryBuilder, onYield: MaybeYield, packageOf: GoPackageOf): Promise<Edge[]> {
+async function interfaceOverrideEdges(queries: QueryBuilder, ctx: ResolutionContext, onYield: MaybeYield, packageOf: GoPackageOf): Promise<Edge[]> {
   const goKey = (m: Node): string => goMethodKey(m, packageOf);
   let scanned255 = 0;
   const edges: Edge[] = [];
@@ -1808,6 +1912,21 @@ async function interfaceOverrideEdges(queries: QueryBuilder, onYield: MaybeYield
     protocolMemo.set(base.id, methods);
     return methods;
   };
+  // Of a class's same-named methods, the ones that can override one of a
+  // base's overloads (#2663): Java, Kotlin, C# and Scala make an override
+  // repeat the parameters of what it overrides. Asked only for a name that
+  // is overloaded on either side.
+  const overridesOf = overrideFilter(ctx);
+  const nameCounts = new Map<string, Map<string, number>>();
+  const declaredNamed = (base: Node, name: string): number => {
+    let counts = nameCounts.get(base.id);
+    if (!counts) {
+      counts = new Map();
+      for (const m of baseMethodsOf(base)) counts.set(m.name, (counts.get(m.name) ?? 0) + 1);
+      nameCounts.set(base.id, counts);
+    }
+    return counts.get(name) ?? 0;
+  };
   // A Go struct also satisfies an interface with the methods its embedded
   // types promote into it (goImplementsEdges counts them), and a call through
   // the interface then runs the embedded type's method. Those links are made
@@ -1838,8 +1957,11 @@ async function interfaceOverrideEdges(queries: QueryBuilder, onYield: MaybeYield
       IFACE_OVERRIDE_LANGS.has(n.language) &&
       !(['javascript', 'typescript'].includes(n.language) && n.name === 'constructor')
     );
+    // A Go struct that satisfies an interface (a synthesized edge) may do so
+    // with promoted methods alone. Its declared `implements` edges are the
+    // interfaces it embeds, which provide whatever it lacks themselves.
     const goStruct = cls.language === 'go' && (cls.kind === 'struct' || cls.kind === 'type_alias');
-    if (implMethods.length === 0 && !goStruct) continue;
+    if (implMethods.length === 0 && !(goStruct && sups.some((s) => s.provenance === 'heuristic'))) continue;
     // Group impl methods by name to handle OVERLOADS: an interface `list()` and
     // `list(params)` are distinct nodes and a call may resolve to either, so
     // link every base overload → every same-name impl overload (keying by name
@@ -1884,9 +2006,15 @@ async function interfaceOverrideEdges(queries: QueryBuilder, onYield: MaybeYield
           if (promotes) unmatched.push(bm);
           continue;
         }
-        for (const m of impls) {
+        const overloaded = impls.length > 1 || declaredNamed(base, bm.name) > 1;
+        for (const m of overloaded ? overridesOf(bm, impls) : impls) {
           if (added >= MAX_CALLBACKS_PER_CHANNEL) break;
           if (bm.id === m.id) continue;
+          // A JS/TS static method overrides only a static one, and an
+          // instance method only an instance one (#2761): B's `s()` and the
+          // `static s()` of `class A extends B` are unrelated, and a call to
+          // one never runs the other.
+          if (STATIC_SPLIT_LANGS.has(m.language) && (bm.isStatic === true) !== (m.isStatic === true)) continue;
           const key = `${bm.id}>${m.id}`;
           if (seen.has(key)) continue;
           seen.add(key);
@@ -2196,7 +2324,9 @@ function jsxChild(
 ): Node | undefined {
   const own = ownValueOf(name);
   if (own) return own.component ?? own.declaration;
-  const candidates = ctx.getNodesByName(name).filter((n) => JSX_CHILD_KINDS.has(n.kind));
+  // A manual mock's component renders only in a test (#2455): production
+  // code's `<Chart />` never means `__mocks__/…`'s `Chart`.
+  const candidates = ctx.getNodesByName(name).filter((n) => JSX_CHILD_KINDS.has(n.kind) && !isManualMockHiddenFrom(n.filePath, file));
   const local = candidates.find((n) => n.filePath === file);
   if (local) return local;
   if (importedFromPackage(ctx, name, file)) return undefined;
@@ -2301,7 +2431,7 @@ function writtenBare(src: string, name: string): boolean {
  * a parameter or local of a function elsewhere in the file binds nothing here.
  */
 function ownLinesBind(name: string, src: string): boolean {
-  const n = name.replace(/\$/g, '\\$');
+  const n = escapeRegExp(name);
   return new RegExp(`\\b(?:const|let|var)\\s+${n}\\b(?!\\s*[,\\]}])`).test(src);
 }
 
@@ -2931,7 +3061,7 @@ async function vueTemplateEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
     // the package's: no other project symbol, nor a Nuxt auto-imported
     // component (`fallback`), is what it renders or calls.
     const resolve = (name: string, kinds: Set<string>, fallback?: Node): Node | undefined => {
-      const matches = ctx.getNodesByName(name).filter((n) => kinds.has(n.kind));
+      const matches = ctx.getNodesByName(name).filter((n) => kinds.has(n.kind) && !isManualMockHiddenFrom(n.filePath, file));
       const local = matches.find((n) => n.filePath === file);
       if (local || importedFromPackage(ctx, name, file)) return local;
       return matches[0] ?? fallback;
@@ -3143,7 +3273,7 @@ function constantEventName(expr: string, file: string, ctx: ResolutionContext, m
       const from = importedFile(owner);
       decls = from
         ? declaredIn(from)
-        : ctx.getNodesByName(name).filter((n) => CONSTANT_KINDS.has(n.kind) && new RegExp(`(?:^|[.:])${owner}(?:[.:]|$)`).test(n.qualifiedName.slice(0, n.qualifiedName.lastIndexOf(name))));
+        : ctx.getNodesByName(name).filter((n) => CONSTANT_KINDS.has(n.kind) && new RegExp(`(?:^|[.:])${escapeRegExp(owner)}(?:[.:]|$)`).test(n.qualifiedName.slice(0, n.qualifiedName.lastIndexOf(name))));
     }
     const values = new Set(decls.map(read).filter((v): v is string => v !== null));
     value = values.size === 1 ? [...values][0]! : null;
@@ -7023,7 +7153,7 @@ export const SYNTH_PASSES: SynthPassDef[] = [
   {
     name: 'ifaceEdges',
     gate: (has) => has('java', 'kotlin', 'csharp', 'swift', 'scala', 'go', 'rust', 'arkts', ...JS_FAMILY),
-    run: (q, c, y) => interfaceOverrideEdges(q, y, goPackageReader(c.getProjectRoot())),
+    run: (q, c, y) => interfaceOverrideEdges(q, c, y, goPackageReader(c.getProjectRoot())),
   },
   { name: 'kotlinExpectActual', gate: (has) => has('kotlin'), run: (q, _c, y) => kotlinExpectActualEdges(q, y) },
   { name: 'goGrpcEdges', gate: (has) => has('go'), run: (q, _c, y) => goGrpcStubImplEdges(q, y) },
@@ -7150,6 +7280,15 @@ function withRunCache(ctx: ResolutionContext): ResolutionContext {
   };
 }
 
+/** The ids of every node a Jest or Vitest manual mock (`__mocks__/`) declares. */
+function manualMockNodeIds(ctx: ResolutionContext): Set<string> {
+  const ids = new Set<string>();
+  for (const file of ctx.getAllFiles()) {
+    if (!isManualMockPath(file)) continue;
+    for (const n of ctx.getNodesInFile(file)) ids.add(n.id);
+  }
+  return ids;
+}
 export async function synthesizeCallbackEdges(
   queries: QueryBuilder,
   ctx: ResolutionContext,
@@ -7271,7 +7410,7 @@ async function synthesizeWith(
   // interface-dispatch bridge below reads `implements` edges from the DB, and
   // Go has none statically. (Other languages already have static implements
   // edges from extraction, so they don't need this pre-pass.)
-  const goImpl = has('go') ? await goImplementsEdges(queries, yieldToLoop, goPackageReader(ctx.getProjectRoot())) : NONE;
+  const goImpl = has('go') ? await goImplementsEdges(queries, ctx, yieldToLoop, goPackageReader(ctx.getProjectRoot())) : NONE;
   for (let i = 0; i < goImpl.length; i += 2000) {
     queries.insertEdges(goImpl.slice(i, i + 2000));
     await yieldToLoop();
@@ -7360,6 +7499,13 @@ async function synthesizeWith(
     }
   }
 
+  // A Jest or Vitest manual mock answers only for test code (#2455): whatever
+  // pass paired them, production code never links into a `__mocks__/` file.
+  const mockNodes = manualMockNodeIds(ctx);
+  const fromTestCode = (id: string): boolean => {
+    const source = ctx.getNodeById?.(id);
+    return !source || isTestPath(source.filePath);
+  };
   // The passes timed themselves (markPass); dedupe-merge times only the merge.
   markT.t = Date.now();
   const merged: Edge[] = [];
@@ -7368,6 +7514,7 @@ async function synthesizeWith(
     const key = `${e.source}>${e.target}>${e.kind}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    if (mockNodes.size > 0 && mockNodes.has(e.target) && !fromTestCode(e.source)) continue;
     merged.push(e);
   }
   __mark('dedupe-merge');

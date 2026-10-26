@@ -182,7 +182,14 @@ impl KernelResolver {
                 .import_mappings(&r.file_path)?
                 .iter()
                 .find(|i| i.local_name == head)
-                .map(|i| i.source.trim_start_matches('\\').to_string());
+                .map(|i| i.source.trim_start_matches('\\').to_string())
+                // PHP aliases resolve case-insensitively (`new field\X()`
+                // finds `use … as Field`), which the file scope's lowercased
+                // keys capture where the exact-name mapping misses.
+                .or_else(|| {
+                    self.read_file(&r.file_path)
+                        .and_then(|s| s.php_file_scope().uses.get(&head.to_lowercase()).cloned())
+                });
             match imported {
                 Some(source) => format!("{source}{}", &name[separator..]),
                 None => {
@@ -294,6 +301,9 @@ if super::lang_scope::is_dart_member_read(r) {
         let pre_pass = probe!(r, "pre-pass", is_nix_path_import_ref(r)
             || is_js_path_import_ref(r)
             || self.is_js_bare_module_ref(r)?
+            // `new C().m` names no node by its full text; the newReceiver arm
+            // decides it downstream.
+            || r.reference_name.starts_with("new ")
             || self.has_any_possible_match_in(existence, &r.language)
             || self.matches_any_import(r)?
             || self.framework_claims(&r.reference_name));
@@ -459,7 +469,7 @@ if super::lang_scope::is_dart_member_read(r) {
         // method's, so it skips the import arm and matchReference answers alone.
         if r.reference_kind == "calls"
             && chain_shape_re().is_match(&r.reference_name)
-            && is_store_chain_language(&r.language)
+            && (is_store_chain_language(&r.language) || r.reference_name.starts_with("new "))
         {
             return self.resolve_call_chain(r);
         }
@@ -512,7 +522,12 @@ if super::lang_scope::is_dart_member_read(r) {
         if let Some(erlang) = self.match_erlang_reference(r)? {
             return self.after_name_match(r, cands, erlang);
         }
-        let mut name_cand = self.match_by_file_path(r)?;
+        let mut name_cand = if r.language == "rust" && r.reference_kind == "calls" && call_chain_re().is_match(&r.reference_name) {
+            // A rust `inner().method` chain names no node by its full text;
+            // the chain arm types the inner call's return before the name
+            // strategies can bind the trailing member to a wrong owner.
+            self.match_call_chain(r)?
+        } else { self.match_by_file_path(r)? };
         if name_cand.is_none() {
             name_cand = self.match_by_qualified_name(r)?;
         }
@@ -1184,9 +1199,12 @@ if r.language == "dart" && r.reference_kind == "references"
         }
         if cand.is_none() {
             // Python's `super()` is the one inner call whose result the
-            // class around the call names.
+            // class around the call names; a `new C().m` receiver names the
+            // class it constructs (name-matcher's newReceiver arm).
             cand = if r.language == "python" && r.reference_name.starts_with("super().") {
                 self.python_super_method(r)?
+            } else if r.reference_name.starts_with("new ") {
+                self.match_new_receiver_call(r)?
             } else {
                 self.match_store_accessor_chain(r)?
             };

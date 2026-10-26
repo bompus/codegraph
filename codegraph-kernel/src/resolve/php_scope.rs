@@ -11,8 +11,8 @@ const PHP_ANCESTRY_CAP: usize = 80;
 /// alias → fully qualified name (phpFileScope).
 #[derive(Default)]
 pub(crate) struct PhpFileScope {
-    namespace: String,
-    uses: HashMap<String, String>,
+    pub(crate) namespace: String,
+    pub(crate) uses: HashMap<String, String>,
 }
 
 pub(super) fn collect_php_file_scope(text: &str) -> PhpFileScope {
@@ -45,7 +45,9 @@ pub(super) fn collect_php_file_scope(text: &str) -> PhpFileScope {
                 .get(2)
                 .map(|a| a.as_str().to_string())
                 .unwrap_or_else(|| fqn.rsplit('\\').next().unwrap_or("").to_string());
-            uses.insert(alias, fqn);
+            // PHP names resolve case-insensitively (`new field\X()` finds the
+            // `Field` alias), so the map keys the alias lowercased.
+            uses.insert(alias.to_lowercase(), fqn);
         }
     }
     PhpFileScope { namespace, uses }
@@ -109,7 +111,7 @@ impl KernelResolver {
         let scope = source.as_ref().map(|s| s.php_file_scope());
         let Some(scope) = scope else { return Ok(true); };
         let fqn = n.qualified_name.replace("::", "\\");
-        let expected = scope.uses.get(&r.reference_name).cloned().unwrap_or_else(|| if scope.namespace.is_empty() { r.reference_name.clone() } else { format!("{}\\{}",scope.namespace,r.reference_name) });
+        let expected = scope.uses.get(&r.reference_name.to_lowercase()).cloned().unwrap_or_else(|| if scope.namespace.is_empty() { r.reference_name.clone() } else { format!("{}\\{}",scope.namespace,r.reference_name) });
         Ok(fqn.eq_ignore_ascii_case(&expected))
     }
 
@@ -287,7 +289,7 @@ impl KernelResolver {
                 Some(at) => (&name[..at], &name[at..]),
                 None => (name, ""),
             };
-            if let Some(imported) = scope.and_then(|s| s.uses.get(head)) {
+            if let Some(imported) = scope.and_then(|s| s.uses.get(&head.to_lowercase())) {
                 format!("{imported}{rest}")
             } else if let Some(s) = scope.filter(|s| !s.namespace.is_empty()) {
                 format!("{}\\{name}", s.namespace)

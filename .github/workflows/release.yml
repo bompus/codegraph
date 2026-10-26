@@ -32,7 +32,7 @@ jobs:
   # Native extraction-kernel prebuilds (docs/design/rust-kernel-migration-plan.md).
   # The kernel is the ONLY parser (no wasm fallback since the kernel-only
   # extraction plan's Phase 5), so this matrix is REQUIRED: a failed kernel
-  # build blocks the release, and build-bundle.sh refuses to stage a bundle
+  # build blocks the release, and the bundle recipe refuses to stage a bundle
   # without a prebuild. (Formerly: per-file wasm fallback for erroring files and unsupported
   # platforms — but every published bundle must carry its .node. Note the
   # vendored-grammar-C languages (kotlin/lua/scala/dart) compile parser.c via

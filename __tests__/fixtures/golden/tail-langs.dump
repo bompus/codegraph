@@ -298,7 +298,7 @@
 {"source":"struct:00b863e6b6e7bd6569a36e94f72d3aaa","target":"property:81982deaee358e155a33af725d85bd97","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"struct:8050a2eb89168a19b5ac70b577047b96","target":"field:e2c04abad409b6092124d38ce58616bb","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"variable:62c285bb0e5c30272251db2b4966175f","target":"class:8da3dc4378a8ad4becad38a01a3d4d63","kind":"references","metadata":"{\"framework\":\"terraform\",\"confidence\":0.95,\"resolvedBy\":\"framework\",\"refName\":\"aws_instance.web\"}","line":14,"col":26,"provenance":null}
-== refs (55)
+== refs (57)
 {"from_node_id":"class:85e303095ea33303cdff1b72c25fb6db","reference_name":"IGreeter","reference_kind":"implements","line":1,"col":43,"candidates":null,"file_path":"cfml/Greeter.cfc","language":"cfml","status":"failed","name_tail":"IGreeter"}
 {"from_node_id":"class:8da3dc4378a8ad4becad38a01a3d4d63","reference_name":"module.network:output.subnet_id","reference_kind":"references","line":10,"col":18,"candidates":null,"file_path":"terraform/main.tf","language":"terraform","status":"failed","name_tail":"subnet_id"}
 {"from_node_id":"class:aa6851d523fe7c352fff4cc32fdcb79f","reference_name":"NSObject","reference_kind":"extends","line":5,"col":21,"candidates":null,"file_path":"objc/Greeter.h","language":"objc","status":"failed","name_tail":"NSObject"}
@@ -313,6 +313,8 @@
 {"from_node_id":"file:pascal/Greeter.pas","reference_name":"SysUtils","reference_kind":"imports","line":15,"col":5,"candidates":null,"file_path":"pascal/Greeter.pas","language":"pascal","status":"failed","name_tail":"SysUtils"}
 {"from_node_id":"file:pascal/main.dpr","reference_name":"G.Free","reference_kind":"calls","line":8,"col":2,"candidates":null,"file_path":"pascal/main.dpr","language":"pascal","status":"failed","name_tail":"Free"}
 {"from_node_id":"file:pascal/main.dpr","reference_name":"WriteLn","reference_kind":"calls","line":7,"col":2,"candidates":null,"file_path":"pascal/main.dpr","language":"pascal","status":"failed","name_tail":"WriteLn"}
+{"from_node_id":"file:pascal/main.dpr","reference_name":"{read}.DefaultGreeter","reference_kind":"references","line":6,"col":7,"candidates":null,"file_path":"pascal/main.dpr","language":"pascal","status":"failed","name_tail":"DefaultGreeter"}
+{"from_node_id":"file:pascal/main.dpr","reference_name":"{read}.G.Greet","reference_kind":"references","line":7,"col":10,"candidates":null,"file_path":"pascal/main.dpr","language":"pascal","status":"failed","name_tail":"Greet"}
 {"from_node_id":"function:1f2187b5d58f568196be3973acbe18c2","reference_name":"LOGGER","reference_kind":"calls","line":11,"col":16,"candidates":null,"file_path":"cobol/GREETER.cbl","language":"cobol","status":"failed","name_tail":"LOGGER"}
 {"from_node_id":"function:350ce1694f34c9f2f2c8efddf7517f65","reference_name":"s.capitalizedString","reference_kind":"calls","line":3,"col":50,"candidates":null,"file_path":"objc/Greeter.m","language":"objc","status":"failed","name_tail":"capitalizedString"}
 {"from_node_id":"function:49f50b6d8bdf46ee1cb052d9db54cb68","reference_name":"gen_server::cast/2","reference_kind":"calls","line":8,"col":46,"candidates":null,"file_path":"erlang/counter.erl","language":"erlang","status":"failed","name_tail":"cast"}

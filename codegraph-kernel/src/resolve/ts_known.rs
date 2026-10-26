@@ -403,7 +403,9 @@ impl KernelResolver {
         let Some(source) = self.read_file(&cls.file_path) else { return false };
         let from = (cls.start_line - 1).max(0) as usize;
         let head = source.get(from..(from + 3).min(source.len())).unwrap_or_default().join(" ");
-        let head = head.split('{').next().unwrap_or("");
+        // No `{`-cut: `class Shaped<Item extends { id: string }>` carries a
+        // brace inside its parameter list; the `>` scan below is depth-aware.
+        let head = head.as_str();
         let Ok(open) = Self::cached_regex(&format!(r"(?-u:\b){}\s*<", regex::escape(&cls.name))) else { return false };
         let Some(open) = open.find(head) else { return false };
         // The parameters between the `<` after the name and its own `>`, split

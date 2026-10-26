@@ -6,12 +6,12 @@
  */
 
 import { Node } from '../../types';
-import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
 import { detectLanguage } from '../../extraction/grammars';
 import { parseSourceTreeSync } from '../../extraction/parse-tree';
-import { httpHandlerReferences } from './http-routing';
+import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
 import { isJsPathImportRef, resolveImportPath } from '../import-resolver';
 import { dependsOn } from './package-deps';
+import { httpHandlerReferences } from './http-routing';
 import { pageComponentRef, resolvePageComponent } from './page-component';
 
 /** The languages a Vue app's scripts are written in. */
@@ -31,13 +31,15 @@ const VUE_COMPILER_MACROS = new Set([
 ]);
 
 /**
- * Nuxt auto-imported composables and utilities
+ * Nuxt auto-imported composables and utilities. `navigateTo` is not one of
+ * them here: `navigateTo('/x')` is a navigation, which Vue Router's resolver
+ * links to the page it opens, and Nuxt owns the call when it can't (see
+ * `nuxtResolver.ownsReference`, #2634).
  */
 const NUXT_AUTO_IMPORTS = new Set([
   // Routing
   'useRoute',
   'useRouter',
-  'navigateTo',
   'abortNavigation',
   // Data fetching
   'useFetch',
@@ -78,16 +80,19 @@ const NUXT_AUTO_IMPORTS = new Set([
 /**
  * Nuxt virtual module prefixes (auto-import namespaces)
  */
-const NUXT_VIRTUAL_MODULES = ['#imports', '#components', '#app', '#build', '#head'];
-
-/** Reference name prefix binding a Nuxt page route to its own file's component. */
+const NUXT_VIRTUAL_MODULES = [
+  '#imports',
+  '#components',
+  '#app',
+  '#build',
+  '#head',
+];
 
 /** The alias prefixes a Vue app's imports name `src/` by, as Vue CLI and Nuxt set them up. */
 const VUE_ALIAS_PREFIXES = ['@/', '~/'];
 
 export const vueResolver: FrameworkResolver = {
   name: 'vue',
-  claimsReference: (name) => name.startsWith('page-component:'),
 
   detect(context: ResolutionContext): boolean {
     // Check for vue or nuxt in package.json
@@ -213,13 +218,33 @@ export const nuxtResolver: FrameworkResolver = {
     return resolvePageComponent(ref, context);
   },
 
+  /**
+   * Nuxt's auto-imported `navigateTo` (#2634). Vue Router's resolver links a
+   * call to the page it opens; one it can't link — a computed destination, a
+   * path no page serves, an external URL — still calls Nuxt's, never a
+   * project function that shares the name, such as the `navigateTo` elk
+   * declares inside a plugin. A file that declares or imports a `navigateTo`
+   * calls that one, which the other strategies find (an import from `#app`
+   * links nothing, as any package's does).
+   */
+  ownsReference(ref: UnresolvedRef, context: ResolutionContext): boolean {
+    return (
+      ref.referenceKind === 'calls' &&
+      ref.referenceName === 'navigateTo' &&
+      VUE_SCRIPT_LANGUAGES.has(ref.language) &&
+      !declaresOwnFunction(ref, context) &&
+      !context.getImportMappings(ref.filePath, ref.language).some((m) => m.localName === ref.referenceName)
+    );
+  },
+
   extract(filePath: string, content: string) {
     const nodes: Node[] = [];
     const references: UnresolvedRef[] = [];
     const now = Date.now();
 
-    // Normalize to forward slashes
-    const normalized = '/' + filePath.replace(/\\/g, '/').replace(/^\/+/, '');
+    // Forward slashes, and a leading `/` so an app at the repository root
+    // (`pages/index.vue`) is found by the same `/pages/` search as a nested one.
+    const normalized = '/' + filePath.replace(/\\/g, '/');
 
     // Detect Nuxt page routes (pages/ directory)
     const pagesIndex = normalized.indexOf('/pages/');
@@ -366,7 +391,7 @@ function isPascalCase(str: string): boolean {
 function resolveComponent(
   name: string,
   fromFile: string,
-  context: ResolutionContext,
+  context: ResolutionContext
 ): string | null {
   // Collect ALL basename matches first. The previous version returned the
   // FIRST `Button.vue` found anywhere in the tree (its same-directory pass
@@ -413,12 +438,10 @@ function filePathToNuxtRoute(normalized: string, afterPagesStart: number): strin
     .join('/');
 
   // Convert Nuxt param syntax [param] to :param
-  let route =
-    '/' +
-    withoutIndex
-      .replace(/\[\.\.\.([^\]]+)\]/g, '*$1') // [...slug] -> *slug (catch-all)
-      .replace(/\[{2}([^\]]+)\]{2}/g, ':$1?') // [[optional]] -> :optional?
-      .replace(/\[([^\]]+)\]/g, ':$1'); // [param] -> :param
+  let route = '/' + withoutIndex
+    .replace(/\[\.\.\.([^\]]+)\]/g, '*$1')  // [...slug] -> *slug (catch-all)
+    .replace(/\[{2}([^\]]+)\]{2}/g, ':$1?') // [[optional]] -> :optional?
+    .replace(/\[([^\]]+)\]/g, ':$1');        // [param] -> :param
 
   if (route === '/') return '/';
   // Remove trailing slash

@@ -49,6 +49,7 @@ import {
 } from '../types';
 import { resolveImportPath } from '../import-resolver';
 import { stripCommentsForRegex } from '../strip-comments';
+import { escapeRegExp } from '../../utils';
 
 /**
  * Match `Function("name")`, `AsyncFunction("name")`, or `Property("name")`
@@ -279,7 +280,15 @@ function nativeBinding(name: string, ref: UnresolvedRef, context: ResolutionCont
   const key = `${file}\0${name}\0${binding.kind}\0${binding.line}`;
   if (memo.has(key)) return memo.get(key)!;
   let found: NativeBinding | null = null;
-  if (binding.kind === 'import') {
+  const own = context.readFile(file);
+  // A `param` binding at the ref's line is a definitive shadow — `function
+  // f(Haptics) { Haptics.x() }` — the file-wide const scan must not reach
+  // past it to the module-level `const Haptics = requireNativeModule(…)`.
+  if (binding.kind !== 'param' && own && own.includes('NativeModule')) {
+    const local = new RegExp(String.raw`\b(?:const|let|var)\s+${escapeRegExp(name)}\s*(?::[^=]+)?=\s*` + REQUIRE_NATIVE.source).exec(stripCommentsForRegex(own, 'typescript'));
+    if (local) found = { type: local[1] ?? null, module: local[2]!, file };
+  }
+  if (!found && binding.kind === 'import') {
     const source = binding.targetSpec ?? '';
     const exported = binding.targetName ?? name;
     const language = /\.tsx$/.test(file) ? 'tsx' : /\.[cm]?ts$/.test(file) ? 'typescript' : /\.jsx$/.test(file) ? 'jsx' : 'javascript';
@@ -295,7 +304,7 @@ function nativeBinding(name: string, ref: UnresolvedRef, context: ResolutionCont
       const m = pattern?.exec(safe);
       if (m) found = { type: m[1] ?? null, module: m[2]!, file: target };
     }
-  } else if (binding.nodeId) {
+  } else if (!found && binding.nodeId) {
     const node = context.getNodeById?.(binding.nodeId);
     const m = node ? new RegExp(String.raw`^=\s*` + REQUIRE_NATIVE.source).exec(node.signature ?? '') : null;
     if (m) found = { type: m[1] ?? null, module: m[2]!, file };
