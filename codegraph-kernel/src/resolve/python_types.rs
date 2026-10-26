@@ -5,7 +5,7 @@
 use super::*;
 use tree_sitter::Node as PyNode;
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct PythonAttributeResult {
     /// True for a proven type (including an outside/builtin type with no edge).
     /// False leaves the existing name strategies in charge.
@@ -691,10 +691,10 @@ impl KernelResolver {
         Ok(result)
     }
 }
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 impl KernelResolver {
     /// Used both by the native pipeline and sync's failed-attribute retry filter.
-    #[napi]
+    #[cfg_attr(feature = "addon", napi)]
     pub fn resolve_python_attribute(&mut self, r: ResolveRefIn) -> Result<PythonAttributeResult> {
         self.python_attribute_verdict(&r).map_err(Error::from)
     }

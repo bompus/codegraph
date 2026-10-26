@@ -78,10 +78,14 @@ if (cacheable && restoreKernel(platform, stamp, dest)) {
 
 console.log(`[kernel] building codegraph-kernel for ${platform}${target ? ` (target ${target})` : ''}${quick ? ' (quick profile)' : ''}`);
 const profile = quick ? ['--profile', 'quick'] : ['--release'];
+// The crate also builds as an rlib for the internal native probe. An rlib among
+// the crate types turns off the release profile's LTO, so the addon is built as
+// a cdylib alone.
+const ADDON_CRATE = ['--lib', '--crate-type', 'cdylib'];
 let outDir;
 if (target) {
   run('rustup', ['target', 'add', target], { allowFailure: true, quiet: true });
-  run('cargo', ['build', '--release', '--target', target]);
+  run('cargo', ['rustc', '--release', '--target', target, ...ADDON_CRATE]);
   outDir = path.join(targetDir, target, 'release');
 } else {
   // Lint gate: lib.rs denies clippy::all, so clippy must run where code is
@@ -93,7 +97,7 @@ if (target) {
   } else {
     console.error('[kernel] warning: clippy unavailable; lint gate skipped');
   }
-  run('cargo', ['build', ...profile]);
+  run('cargo', ['rustc', ...profile, ...ADDON_CRATE]);
   outDir = path.join(targetDir, quick ? 'quick' : 'release');
 }
 

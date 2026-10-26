@@ -268,12 +268,12 @@ describe('kernel cache', () => {
 
 describe.runIf(process.platform !== 'win32')('build-kernel with the kernel cache', () => {
   const lib = process.platform === 'darwin' ? 'libcodegraph_kernel.dylib' : 'libcodegraph_kernel.so';
-  // A fake cargo: `build` writes a library naming its profile and logs the call;
+  // A fake cargo: `rustc` (how the script builds the cdylib alone) writes a library naming its profile and logs the call;
   // FAKE_EDIT makes it change a kernel source while "compiling".
   const fakeCargo = () => {
     write('build-bin/cargo', `#!/bin/sh
 case "$1" in
-  build)
+  rustc)
     echo build >> "$CALLS"
     profile=release; [ "$2" = "--profile" ] && profile=$3
     dir=\${CARGO_TARGET_DIR:-target}/$profile

@@ -1014,7 +1014,7 @@ mod tests {
     /// the files under the directories in `CODEGRAPH_ORACLE_CORPUS`
     /// (colon-separated), and for the call search the eight lines from each
     /// line on, as `bare_call_receiver` reads them. Run with
-    /// `CODEGRAPH_ORACLE_CORPUS=<dirs> cargo test --release -- --ignored split_matchers_agree_on_corpus`.
+    /// `CODEGRAPH_ORACLE_CORPUS=<dirs> cargo test --release --features addon-tests -- --ignored split_matchers_agree_on_corpus`.
     #[test]
     #[ignore]
     fn split_matchers_agree_on_corpus() {

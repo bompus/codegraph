@@ -261,25 +261,25 @@ fn local_declaration_in<'a>(scope: TsNode<'a>, name: &str, site: usize, text: &s
     }
 }
 
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct GoLocalDeclaration { pub line: i64, pub column: i64, pub declared_type: Option<String> }
 
 /// Source-only lexical lookup. Synthesis must not attach to the live WAL.
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub struct GoSourceScope {
     source: String,
     tree: tree_sitter::Tree,
 }
 
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 impl GoSourceScope {
-    #[napi(constructor)]
+    #[cfg_attr(feature = "addon", napi(constructor))]
     pub fn new(source: String) -> Result<Self> {
         let tree = crate::tree::parse_with_cached_parser(&source, "go")?;
         Ok(Self { source, tree })
     }
 
-    #[napi]
+    #[cfg_attr(feature = "addon", napi)]
     pub fn declaration_at(&self, name: String, line: i64, column: i64) -> Option<GoLocalDeclaration> {
         local_at(&self.tree, &self.source, &name, line, column)
     }
