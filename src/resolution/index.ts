@@ -2522,6 +2522,22 @@ export class ReferenceResolver {
       const nextBatch = readNextBatch();
       lp('read', tLp);
 
+      // Fan the next batch out BEFORE settling this one when every guard is
+      // met, so its chunks sit in the workers' queues while this batch's
+      // straggler chunks finish — the workers never idle at the batch tail.
+      // Safe only under the pool + calls phase: workers resolve against the
+      // fixed kernel-reader snapshot, so nothing they read can be affected by
+      // this batch's unpersisted edges (the supertype ordering below is for
+      // the main-kernel path). The prerequisite→calls transition and any
+      // kernel-mode batch keep the old order: the snapshot refresh must land
+      // before the first calls batch fans out, and a main-kernel batch reads
+      // live edges at fan-out time. Admission still settles in batch order —
+      // only fan-out timing moves.
+      let nextInFlight: InFlight | null = null;
+      if (nextBatch.refs.length > 0 && pool && poolReady && !batch.prereq && !nextBatch.prereq) {
+        nextInFlight = await beginBatch(nextBatch);
+      }
+
       const tBatch = Date.now();
       const result = await settleBatch(inFlight, batch);
       if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[pool-timing] batch ${inFlight.mode}: ${batch.refs.length} refs in ${Date.now() - tBatch}ms`);
@@ -2562,7 +2578,17 @@ export class ReferenceResolver {
       // Skipped while a kernel conn is live — the valve is stopped then, and
       // a parked-barrier backfill is still an off-thread shm writer.
       const bp = kernel ? null : parallel?.backpressure?.();
-      if (bp) await bp;
+      if (bp) {
+        // Hold chunk dispatch while the valve checkpoints: in-flight reads
+        // drain and release their WAL marks, and no new ones start — a
+        // continuous reader stream would pin the checkpoint indefinitely.
+        pool?.pauseDispatch();
+        try {
+          await bp;
+        } finally {
+          pool?.resumeDispatch();
+        }
+      }
       lp('backpressure', tLp);
 
       // Recycle the workers' read connections periodically at this same
@@ -2580,14 +2606,19 @@ export class ReferenceResolver {
       if (pool && poolReady && refsSinceRecycle >= RECYCLE_EVERY_REFS) {
         refsSinceRecycle = 0;
         tLp = Date.now();
-        try {
-          await pool.recycleWorkers();
-        } catch (err) {
+        // Fire WITHOUT awaiting: 'recycle' queues per-worker FIFO behind any
+        // in-flight and already-fanned chunks, so awaiting here drains the
+        // whole overlapped pipeline — measured ~4s parked on pretix once the
+        // next batch fans out early. Ordering still holds (FIFO), and a
+        // failure still downgrades: the worker-side error sets pool.failed,
+        // rejecting the next fan-out, and the ack-timeout path lands here.
+        const p = pool;
+        p.recycleWorkers().catch((err) => {
           logDebug('Worker connection recycle failed; resolving on the main thread', {
             error: err instanceof Error ? err.message : String(err),
           });
-          await destroyPool();
-        }
+          if (pool === p) void destroyPool();
+        });
         lp('recycle', tLp);
       }
 
@@ -2640,7 +2671,10 @@ export class ReferenceResolver {
       // the sequential baseline would, while the main thread spends the
       // REST of the persist (all other edges + ref deletes + failed parking
       // below) overlapped with their resolution — the double-buffer.
-      const nextInFlight = nextBatch.refs.length > 0 ? await beginBatch(nextBatch) : null;
+      // Under the pool+calls fast path it already fanned out above.
+      if (!nextInFlight) {
+        nextInFlight = nextBatch.refs.length > 0 ? await beginBatch(nextBatch) : null;
+      }
 
       tLp = Date.now();
       const otherEdges = this.createEdges(otherRefs);
