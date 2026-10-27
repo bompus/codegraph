@@ -1411,6 +1411,15 @@ if inferred.is_none() && r.language == "dart" {
                 let own = found.qualified_name == format!("{}::{method}", c.qualified_name);
                 return Ok(Some(KCand { node: found, confidence: if own { 0.85 } else { 0.8 }, resolved_by }));
             }
+            // A call on a Ruby class or module constant takes the class
+            // method (`def self.m`) when it and `def m` share the qualified
+            // name, then the owner's Ruby ancestry (#2834).
+            if c.language == "ruby" {
+                if let Some((found, own)) = self.ruby_method_of(&c.qualified_name, method, r)? {
+                    return Ok(Some(KCand { node: found, confidence: if own { confidence } else { 0.8 }, resolved_by }));
+                }
+                continue;
+            }
             let in_file = self.nodes_in_file(&c.file_path)?;
             if let Some(mn) = in_file
                 .iter()

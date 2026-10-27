@@ -470,7 +470,20 @@ impl KernelResolver {
             } else {
                 self.node_by_id(&r.from_node_id)?.and_then(|n|n.qualified_name.rsplit_once("::").map(|(owner,_)|owner.to_string())).unwrap_or_default()
             }
-        } else if let Some(ty)=self.infer_local_receiver_type(root,r,true)? {ty}
+        } else if let Some(ty)=self.infer_local_receiver_type(root,r,true)? {
+            // `<root>.<field>.<…>` — the bound-member walk below can't see
+            // rust struct fields, so a receiver with deeper links resolves
+            // as the standalone call it already is: `db.table.get` is
+            // `Table::get`, whose return type owns the outer method.
+            if links.clone().nth(1).is_some() {
+                if let Some(inner)=self.match_method_call_free(&r.clone().naming(receiver,"calls"))? {
+                    let Some(ret)=inner.node.return_type.as_deref() else {return Ok(None)};
+                    site=r.clone().at(&inner.node);
+                    for _ in links.by_ref() {}
+                    rust_return_owner(ret,owner(&inner.node).unwrap_or(""))
+                } else {ty}
+            } else {ty}
+        }
         else {
             let reference=r.clone().naming(root,"calls");
             // A local function shadows an imported factory in its lexical scope.

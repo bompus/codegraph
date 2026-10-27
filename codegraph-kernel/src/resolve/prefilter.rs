@@ -61,11 +61,18 @@ impl KernelResolver {
                 return true;
             }
         }
-        // Pascal/Delphi built-ins and standard library units.
-        if r.language == "pascal"
-            && (PASCAL_UNIT_PREFIXES.iter().any(|p| name.starts_with(p)) || PASCAL_BUILT_INS.contains(name))
-        {
-            return true;
+        // Pascal/Delphi built-ins and standard library units. Pascal names
+        // ignore case: `writeln`, `WRITELN`, `system.TypeInfo` are the same
+        // built-in — the check is lowercased on both sides (upstream's
+        // `lower.startsWith('system.')` covers only the System unit).
+        if r.language == "pascal" {
+            let lower = name.to_lowercase();
+            if PASCAL_UNIT_PREFIXES.iter().any(|p| name.starts_with(p))
+                || lower.starts_with("system.")
+                || PASCAL_BUILT_INS.contains(lower.as_str())
+            {
+                return true;
+            }
         }
         if r.language == "c" || r.language == "cpp" {
             let name = name.strip_prefix("::").unwrap_or(name);

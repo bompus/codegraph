@@ -995,6 +995,33 @@ impl KernelResolver {
             let Some(body) = node.child_by_field_name("body") else {
                 continue;
             };
+            // `self.N` — a tuple struct's fields are unnamed; the Nth
+            // positional member's type is the field's type.
+            if let Ok(index) = field.parse::<usize>() {
+                if body.kind() == "ordered_field_declaration_list" {
+                    let members: Vec<_> = rust_children(body)
+                        .into_iter()
+                        .filter(|n| !matches!(n.kind(), "visibility_modifier" | "attribute_item"))
+                        .collect();
+                    if let Some(ty) = members.get(index).map(|n| {
+                        n.child_by_field_name("type").unwrap_or(*n)
+                    }) {
+                        let field_type = rust_text(ty, source.text()).into();
+                        return self.rust_instantiate_type(
+                            Written {
+                                text: field_type,
+                                file: decl.file_path.clone(),
+                                at: node.start_byte(),
+                            },
+                            Some(&w),
+                            node,
+                            source.text(),
+                            r,
+                            depth,
+                        );
+                    }
+                }
+            }
             let field_node = rust_children(body).into_iter().find(|n| {
                 n.child_by_field_name("name")
                     .is_some_and(|n| rust_text(n, source.text()) == field)
@@ -1696,6 +1723,14 @@ impl KernelResolver {
     ) -> Res<Option<Option<KCand>>> {
         if r.language != "rust" || r.reference_kind != "calls" {
             return Ok(None);
+        }
+        // `inner().method` — the ref's position anchors on the INNER call,
+        // so the source anchor below would answer for the wrong link; the
+        // chain arm types each link's return by name instead.
+        if call_chain_re().is_match(&r.reference_name) {
+            if let Some(hit) = self.match_call_chain(r)? {
+                return Ok(Some(Some(hit)));
+            }
         }
         let Some((source, tree)) = self.rust_tree_for(&r.file_path) else {
             return Ok(None);

@@ -13,6 +13,24 @@ pub(super) fn test_suite_path(path: &str) -> bool {
         || re!(r"(?:^|/)[A-Za-z0-9]*(?:Test|Tests|Spec)/").is_match(path)
 }
 
+/// isTestSuitePath (name-matcher.ts): a test path whose name or directory is
+/// shaped like a test suite — narrower than `test_suite_path`, which also
+/// names hooks and helpers (`useTests.ts`, `IndexSpecs`).
+pub(super) fn is_test_suite_path(path: &str) -> bool {
+    if !test_suite_path(path) {
+        return false;
+    }
+    let lower = path.to_ascii_lowercase();
+    let name = lower.rsplit('/').next().unwrap_or(&lower);
+    let original = path.rsplit('/').next().unwrap_or(path);
+    name.starts_with("test_")
+        || name == "conftest.py"
+        || re!(r"[._-](?:test|tests|unittest|unittests)\.[a-z0-9]+$|[._](?:spec|specs)\.[a-z0-9]+$").is_match(name)
+        || re!(r"(?:Test|Tests|TestCase)\.(?:java|kt|kts|swift|cs|scala|groovy|m|mm|vb|fs)$").is_match(original)
+        || re!(r"(?:^|/)(?:tests?|__tests__|specs?|e2e|unittests|[\w.]+[-_]unittests?)/").is_match(&lower)
+        || re!(r"(?:^|/)[A-Za-z0-9]*(?:Test|Tests|Spec)/").is_match(path)
+}
+
 /// The binding patterns `python_binds_name` tests for a name.
 #[derive(Clone, Copy)]
 enum PyBinding {

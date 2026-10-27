@@ -282,6 +282,53 @@ if super::lang_scope::is_dart_member_read(r) {
                 None => Ok(ResolveOutcome::unresolved()),
             };
         }
+        if r.language == "cfml" || r.language == "cfscript" {
+            // The component a `createObject("component", "a.b.Batch")` makes,
+            // named by its component path as `extends` names one (#2652),
+            // and a call chained onto a construction —
+            // `createObject(…).init()`, `new a.b.Batch().init()` — a method
+            // of that component or of nothing: no name match guesses past it.
+            if r.reference_kind == "instantiates" && r.reference_name.contains('.') {
+                return match self.resolve_cfml_component_path(r)? {
+                    Some(c) => match self.gate_target_kind(c, r)? {
+                        Some(winner) => self.finish_pre_framework(r, winner),
+                        None => Ok(ResolveOutcome::unresolved()),
+                    },
+                    None => Ok(ResolveOutcome::unresolved()),
+                };
+            }
+            if r.reference_kind == "calls"
+                && re!(r"^([A-Za-z_$][\w$.-]*)\(\)\.([A-Za-z_$][\w$]*)$").is_match(&r.reference_name)
+            {
+                return match self.resolve_cfml_constructed_call(r)? {
+                    Some(c) => match self.gate_target_kind(c, r)? {
+                        Some(winner) => self.finish_pre_framework(r, winner),
+                        None => Ok(ResolveOutcome::unresolved()),
+                    },
+                    None => Ok(ResolveOutcome::unresolved()),
+                };
+            }
+            // A CFML include names a template by its path from the including
+            // file's directory, or from the web root (#2651). A path no file
+            // matches falls to file-name matching — a file only, never an
+            // import statement, never the including file itself.
+            if r.reference_kind == "imports" && imports::is_cfml_template_path(&r.reference_name) {
+                let included = match self.resolve_cfml_include_path(r)? {
+                    Some(c) => Some(c),
+                    None => self.match_by_file_path(r)?,
+                };
+                if included.as_ref().is_some_and(|c| c.node.file_path == r.file_path) {
+                    return Ok(ResolveOutcome::unresolved());
+                }
+                return match self.gate_language(included, r) {
+                    Some(c) => match self.gate_target_kind(c, r)? {
+                        Some(winner) => self.finish_pre_framework(r, winner),
+                        None => Ok(ResolveOutcome::unresolved()),
+                    },
+                    None => Ok(ResolveOutcome::unresolved()),
+                };
+            }
+        }
         // A PHP class written with a namespace in it answers ahead of the
         // prefilter, which would drop most of them (#2256).
         if let Some(outcome) = self.resolve_php_qualified_class(r)? {
@@ -410,7 +457,9 @@ if super::lang_scope::is_dart_member_read(r) {
             }
         }
 
-        // matchBoundReceiverCall — claimed refs are terminal either way.
+        // A rust `inner().method` chain types the inner call's return before
+        // the bound-receiver claim can bind the whole text to its first link.
+// matchBoundReceiverCall — claimed refs are terminal either way.
         let namespace_chain = is_unresolved_js_member_call(r)
             && self.import_mappings(&r.file_path)?.iter().any(|m| m.is_namespace
                 && m.local_name == r.reference_name.split('.').next().unwrap_or(""));
@@ -522,12 +571,7 @@ if super::lang_scope::is_dart_member_read(r) {
         if let Some(erlang) = self.match_erlang_reference(r)? {
             return self.after_name_match(r, cands, erlang);
         }
-        let mut name_cand = if r.language == "rust" && r.reference_kind == "calls" && call_chain_re().is_match(&r.reference_name) {
-            // A rust `inner().method` chain names no node by its full text;
-            // the chain arm types the inner call's return before the name
-            // strategies can bind the trailing member to a wrong owner.
-            self.match_call_chain(r)?
-        } else { self.match_by_file_path(r)? };
+        let mut name_cand = self.match_by_file_path(r)?;
         if name_cand.is_none() {
             name_cand = self.match_by_qualified_name(r)?;
         }
@@ -831,6 +875,28 @@ if super::lang_scope::is_dart_member_read(r) {
         } else { None };
         let answer = attribute.as_ref().map(|a| (a.claimed, a.target_node_id.clone()));
         let mut outcome = self.resolve_ref_inner(r, answer)?;
+        // A Pascal call to data runs only a routine the data holds, in
+        // scope, and one to a routine nested in another comes only from
+        // inside that one (gatePascalCall, resolveOne).
+        if r.language == "pascal" && r.reference_kind == "calls" && outcome.status == "resolved" {
+            outcome = self.gate_pascal_call(outcome, r)?;
+        }
+        // A Pascal call written with a bare name that resolves to a type is
+        // a typecast: `TButton(Sender).Caption`, `PInt64Rec(P)^.Lo`, `F :=
+        // TFoo(Obj)`. Delphi builds an object only through a constructor
+        // (`TFoo.Create`), so the code refers to the type and creates
+        // nothing (createEdges).
+        if r.language == "pascal" && r.reference_kind == "calls"
+            && outcome.status == "resolved" && !r.reference_name.contains('.')
+        {
+            if let Some(tid) = outcome.target_node_id.clone() {
+                if self.node_by_id(&tid)?.is_some_and(|t| {
+                    pascal_scope::CAST_TARGET_KINDS.contains(&t.kind.as_str())
+                }) {
+                    outcome.edge_kind = Some("references".to_string());
+                }
+            }
+        }
         if let Some(attribute) = attribute {
             if !attribute.type_from.is_empty() { outcome.type_from = Some(attribute.type_from); }
         }
@@ -896,6 +962,30 @@ if super::lang_scope::is_dart_member_read(r) {
         if self.python_receiver_uncertain(r)? { return Ok(ResolveOutcome::unresolved()); }
         if let Some(outcome) = self.resolve_dart_written(r)? { return Ok(outcome); }
         if let Some(outcome) = self.resolve_vb_explicit(r)? { return Ok(outcome); }
+        // A Pascal name written without parentheses (#2514) links only to
+        // a routine its scope reaches, or through a receiver to a method
+        // of the receiver's declared type; data of that name links nothing.
+        if let Some(outcome) = self.resolve_pascal_parenless(r)? { return Ok(outcome); }
+        // So does a Pascal call to a name the compiler or the System unit
+        // gives meaning to (`SizeOf`, `TypeInfo`, `length(S)`, `Pointer(P)`),
+        // whatever its case: only a declaration in the call's scope shadows
+        // it (#2803).
+        if self.is_pascal_system_call(r)? {
+            return self.match_pascal_system_call(r);
+        }
+        // A bare Pascal call to a routine nested where it is made
+        // (`Inner(1)` in the routine that declares `procedure Inner(N:
+        // Integer);`) is that one, and one made in a nested routine is what
+        // its scope declares first (#2810). Undefined when that scope holds
+        // no routine of the name, for the other strategies to resolve.
+        if let Some(outcome) = self.resolve_pascal_nested_call(r)? { return Ok(outcome); }
+        // A Ruby namespaced constant path (`Billing::ChargeCard`,
+        // `::Foo.call`) resolves only to a constant the project declares,
+        // looked up from the lexical namespace outward; a call on one
+        // resolves a class method of that class or module through its Ruby
+        // ancestry. An unknown path or method resolves to nothing rather
+        // than falling back to a same-name guess (#2827, fixing #2503).
+        if let Some(outcome) = self.resolve_ruby_constant_path_ref(r)? { return Ok(outcome); }
         // Rust pure-`::` path refs (`crate::m::Item`, `a::b::c`): TS
         // resolves them through resolveViaImport's module-file arm, which
         // needs no bindings rows — run it ahead of the eligibility gate.
@@ -935,6 +1025,16 @@ if super::lang_scope::is_dart_member_read(r) {
             };
         }
         if is_js_family(&r.language) && r.reference_kind == "calls" {
+            // matchJsSuperCall: `super.m()` binds to the nearest `extends`
+            // ancestor's method before any name strategy can guess (#2497).
+            if let Some(outcome) = self.match_js_super_call(r)? {
+                return Ok(outcome);
+            }
+            // `this.m()` inside a class member — the extractors strip the
+            // receiver so only a source-form check sees it.
+            if let Some(outcome) = self.match_js_this_call(r)? {
+                return Ok(outcome);
+            }
             if let Some(caller) = self.node_by_id(&r.from_node_id)? {
                 let name = r.reference_name.rsplit(['.', ':']).next().unwrap_or(&r.reference_name);
                 if caller.name == name && caller.kind == "method"

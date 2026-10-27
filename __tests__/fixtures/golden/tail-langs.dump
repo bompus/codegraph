@@ -133,7 +133,7 @@
 {"id":"variable:d66985bd46f73c589bf626a476ca4dd9","kind":"variable","name":"name","qualified_name":"name","file_path":"nix/module.nix","language":"nix","start_line":6,"end_line":6,"start_column":4,"end_column":61,"docstring":null,"signature":"= mkOption { type = types.str; default = \"world\"; }","visibility":null,"is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"variable:ec44d88622b9664503f7698cd63e9df9","kind":"variable","name":"options.services.greeter","qualified_name":"options.services.greeter","file_path":"nix/module.nix","language":"nix","start_line":4,"end_line":7,"start_column":2,"end_column":4,"docstring":null,"signature":"= {\n    enable = mkEnableOption \"greeter\";\n    name = mkOption { type = types.str; default = \"world\"; ...","visibility":null,"is_exported":1,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"variable:fc46c3957e062c09f1d7dfd0c4e39e68","kind":"variable","name":"WS-COUNT","qualified_name":"WS-COUNT","file_path":"cobol/GREETWS.cpy","language":"cobol","start_line":2,"end_line":2,"start_column":7,"end_column":50,"docstring":null,"signature":"01 WS-COUNT PIC 9(4) VALUE ZERO","visibility":null,"is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
-== edges (164)
+== edges (166)
 {"source":"class:1354e5dd108f836e76d61a4ecedb6262","target":"class:ef405d3eb35a6ee244944eec0c93b6d4","kind":"extends","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"Ownable\"}","line":5,"col":0,"provenance":null}
 {"source":"class:1354e5dd108f836e76d61a4ecedb6262","target":"field:084206ff4dcb8c3b848851b6f90bb652","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"class:1354e5dd108f836e76d61a4ecedb6262","target":"field:d5355ecdd0413fd3b56cdb0e7f75e0d5","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
@@ -219,7 +219,9 @@
 {"source":"file:pascal/Greeter.pas","target":"function:4deb563e7c698926a335c1bd62d36702","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:pascal/Greeter.pas","target":"import:97ab2e7e0faf1209335e0059099591b9","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:pascal/Greeter.pas","target":"module:4373f831559a99d192a077ddad372788","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
+{"source":"file:pascal/main.dpr","target":"function:4deb563e7c698926a335c1bd62d36702","kind":"calls","metadata":"{\"confidence\":0.85,\"resolvedBy\":\"import\",\"refName\":\"{read}.DefaultGreeter\",\"refKind\":\"references\"}","line":6,"col":7,"provenance":null}
 {"source":"file:pascal/main.dpr","target":"import:bf1c55023fbd4037a03eb2a4a0f99b21","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
+{"source":"file:pascal/main.dpr","target":"method:c8700c0a274e1839c7a6188810e73785","kind":"calls","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"instance-method\",\"refName\":\"{read}.G.Greet\",\"refKind\":\"references\"}","line":7,"col":10,"provenance":null}
 {"source":"file:pascal/main.dpr","target":"module:4373f831559a99d192a077ddad372788","kind":"imports","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"Greeter\"}","line":2,"col":5,"provenance":null}
 {"source":"file:pascal/main.dpr","target":"module:b30619687f740bd8ec10b79d8597d0f0","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:pascal/main.dpr","target":"variable:46d3da3b456b11561d84e577ba15c947","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
@@ -298,7 +300,7 @@
 {"source":"struct:00b863e6b6e7bd6569a36e94f72d3aaa","target":"property:81982deaee358e155a33af725d85bd97","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"struct:8050a2eb89168a19b5ac70b577047b96","target":"field:e2c04abad409b6092124d38ce58616bb","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"variable:62c285bb0e5c30272251db2b4966175f","target":"class:8da3dc4378a8ad4becad38a01a3d4d63","kind":"references","metadata":"{\"framework\":\"terraform\",\"confidence\":0.95,\"resolvedBy\":\"framework\",\"refName\":\"aws_instance.web\"}","line":14,"col":26,"provenance":null}
-== refs (57)
+== refs (55)
 {"from_node_id":"class:85e303095ea33303cdff1b72c25fb6db","reference_name":"IGreeter","reference_kind":"implements","line":1,"col":43,"candidates":null,"file_path":"cfml/Greeter.cfc","language":"cfml","status":"failed","name_tail":"IGreeter"}
 {"from_node_id":"class:8da3dc4378a8ad4becad38a01a3d4d63","reference_name":"module.network:output.subnet_id","reference_kind":"references","line":10,"col":18,"candidates":null,"file_path":"terraform/main.tf","language":"terraform","status":"failed","name_tail":"subnet_id"}
 {"from_node_id":"class:aa6851d523fe7c352fff4cc32fdcb79f","reference_name":"NSObject","reference_kind":"extends","line":5,"col":21,"candidates":null,"file_path":"objc/Greeter.h","language":"objc","status":"failed","name_tail":"NSObject"}
@@ -313,8 +315,6 @@
 {"from_node_id":"file:pascal/Greeter.pas","reference_name":"SysUtils","reference_kind":"imports","line":15,"col":5,"candidates":null,"file_path":"pascal/Greeter.pas","language":"pascal","status":"failed","name_tail":"SysUtils"}
 {"from_node_id":"file:pascal/main.dpr","reference_name":"G.Free","reference_kind":"calls","line":8,"col":2,"candidates":null,"file_path":"pascal/main.dpr","language":"pascal","status":"failed","name_tail":"Free"}
 {"from_node_id":"file:pascal/main.dpr","reference_name":"WriteLn","reference_kind":"calls","line":7,"col":2,"candidates":null,"file_path":"pascal/main.dpr","language":"pascal","status":"failed","name_tail":"WriteLn"}
-{"from_node_id":"file:pascal/main.dpr","reference_name":"{read}.DefaultGreeter","reference_kind":"references","line":6,"col":7,"candidates":null,"file_path":"pascal/main.dpr","language":"pascal","status":"failed","name_tail":"DefaultGreeter"}
-{"from_node_id":"file:pascal/main.dpr","reference_name":"{read}.G.Greet","reference_kind":"references","line":7,"col":10,"candidates":null,"file_path":"pascal/main.dpr","language":"pascal","status":"failed","name_tail":"Greet"}
 {"from_node_id":"function:1f2187b5d58f568196be3973acbe18c2","reference_name":"LOGGER","reference_kind":"calls","line":11,"col":16,"candidates":null,"file_path":"cobol/GREETER.cbl","language":"cobol","status":"failed","name_tail":"LOGGER"}
 {"from_node_id":"function:350ce1694f34c9f2f2c8efddf7517f65","reference_name":"s.capitalizedString","reference_kind":"calls","line":3,"col":50,"candidates":null,"file_path":"objc/Greeter.m","language":"objc","status":"failed","name_tail":"capitalizedString"}
 {"from_node_id":"function:49f50b6d8bdf46ee1cb052d9db54cb68","reference_name":"gen_server::cast/2","reference_kind":"calls","line":8,"col":46,"candidates":null,"file_path":"erlang/counter.erl","language":"erlang","status":"failed","name_tail":"cast"}

@@ -358,10 +358,11 @@ const PASCAL_SPEC: FnRefSpec = {
     ['assignment', { mode: 'rhs', field: 'rhs' }], // OnClick := Handler
   ]),
   unwrap: new Map<string, string | null>([['exprUnary', 'operand']]), // @Handler
-  // Upstream #2514 marks Pascal addressOfOnly because its pascal-scope
-  // resolution links a paren-less name in scope; the fork resolves these
-  // refs in the kernel, which has no pascal-scope port — keep emitting
-  // `OnClick := Handler` / `Register(Handler)` as function values.
+  // A bare name (`OnClick := Handler`, `Register(Handler)`) is a paren-less
+  // name the extractor records itself, linked by scope in the kernel's
+  // pascal_scope port (#2514); only the explicit `@Handler` is a function
+  // value here.
+  addressOfOnly: true,
 };
 
 /**

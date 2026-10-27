@@ -20,8 +20,13 @@ export function gateSuperSelfCall(result: ResolvedRef | null, ref: UnresolvedRef
   const line = (context.getFileLines?.(ref.filePath) ?? context.readFile(ref.filePath)?.split(/\r?\n/))?.[ref.line - 1];
   if (!line) return result;
   const escaped = name.replace(/\$/g, '\\$');
-  const viaSuper = new RegExp(
-    String.raw`(?:\b(?:super|base)\s*(?:\(\s*(?:[\w.]+\s*,\s*\w+)?\s*\))?\s*\??\.\s*|\[\s*super\s+|\bparent\s*::\s*)` + escaped + String.raw`\b`,
-  );
-  return viaSuper.test(line) ? null : result;
+  const receiver = String.raw`(?:\b(?:super|base)\s*(?:\(\s*(?:[\w.]+\s*,\s*\w+)?\s*\))?\s*\??\.|\[\s*super\s+|\bparent\s*::)\s*`;
+  const slice = line.slice(ref.column);
+  // The receiver is written where the ref starts: `super.name(…)` —
+  // another `super.name` LATER on the line belongs to a sibling call.
+  if (new RegExp('^' + receiver + escaped + String.raw`\b`).test(slice)) return null;
+  // The ref may instead sit on the callee name — `super.` (or `base.`/
+  // `parent::`/`[super `) then ends the slice before it.
+  if (slice.startsWith(name) && new RegExp(receiver + '$').test(line.slice(0, ref.column))) return null;
+  return result;
 }

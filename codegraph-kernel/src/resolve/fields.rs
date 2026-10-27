@@ -989,6 +989,23 @@ impl KernelResolver {
             };
             let start = (s.start_line - 1).max(0) as usize;
             let end = (s.end_line as usize).min(source.len());
+            if field.bytes().all(|b| b.is_ascii_digit()) {
+                // `self.N` — the Nth positional field of a tuple struct
+                // (`struct Wrap(pub Table)`), which the `name:` scan below
+                // cannot see.
+                let idx: usize = field.parse().unwrap_or(usize::MAX);
+                let head = source.get(start..end).unwrap_or_default().join("\n");
+                let Some(m) = re!(r"\bstruct\s+[A-Za-z_]\w*\s*(?:<[^>]*>)?\s*\(([^)]*)\)").captures(&head) else {
+                    continue;
+                };
+                let types: Vec<&str> = m[1].split(',').collect();
+                let Some(decl) = types.get(idx) else { return Ok(None) };
+                let decl = decl.trim().trim_start_matches("pub").trim().to_string();
+                let Some(field_type) = rust_field_type_name(&decl) else {
+                    return Ok(None);
+                };
+                return self.rust_field_method(&decl, &field_type, method, &s, r);
+            }
             for raw in source.get(start..end).unwrap_or_default() {
                 let line = strip_line_comments(raw);
                 let Some(declared) = RUST_FIELD_TYPE.capture(&line, field) else {

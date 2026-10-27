@@ -8,6 +8,7 @@
  */
 
 import type { ExtractionError, Language } from '../types';
+import { parseSourceTreeSync, type TreeNode } from './parse-tree';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -354,6 +355,19 @@ export async function initGrammars(): Promise<void> {}
 export async function loadGrammarsForLanguages(_languages: Language[]): Promise<void> {}
 
 export async function loadAllGrammars(): Promise<void> {}
+
+/**
+ * A parser handle for `language`, shaped as upstream's web-tree-sitter
+ * `Parser` ({ parse(source) → { rootNode } }). The kernel is the only
+ * parser on this fork — this is a shim over `parseSourceTreeSync`
+ * (parse-tree.ts), kept so upstream tests and callers that inspect a
+ * tree directly keep working. Returns null for a language with no
+ * tree-sitter grammar.
+ */
+export function getParser(language: Language): { parse(source: string): { rootNode: TreeNode; delete(): void } | null } | null {
+  if (!hasTreeSitterGrammar(language)) return null;
+  return { parse: (source: string) => parseSourceTreeSync(source, language) };
+}
 
 /**
  * Detect language from file extension.
