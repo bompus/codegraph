@@ -539,7 +539,7 @@ export class CodeGraph {
    * rebuilding them here (#1887): for a caller on a watched event loop, which
    * then awaits {@link recoverIndexes} before it relies on the project.
    */
-  static openSync(projectRoot: string, options: Pick<OpenOptions, 'readOnly'> & { deferIndexRecovery?: boolean } = {}): CodeGraph {
+  static openSync(projectRoot: string, options: Pick<OpenOptions, 'readOnly'> & { deferIndexRecovery?: boolean; compactConnection?: boolean } = {}): CodeGraph {
     const resolvedRoot = path.resolve(projectRoot);
 
     // Check if initialized
@@ -555,7 +555,7 @@ export class CodeGraph {
 
     // Open database
     const dbPath = getDatabasePath(resolvedRoot);
-    const db = DatabaseConnection.open(dbPath, { readOnly: options.readOnly, deferIndexRecovery: options.deferIndexRecovery });
+    const db = DatabaseConnection.open(dbPath, { readOnly: options.readOnly, deferIndexRecovery: options.deferIndexRecovery, compactConnection: options.compactConnection });
     const queries = new QueryBuilder(db.getDb());
 
     return new CodeGraph(db, queries, resolvedRoot);

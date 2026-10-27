@@ -3344,7 +3344,14 @@ export class ToolHandler {
       // main thread's current root explicitly; with no root or projectPath,
       // keep the main handler's workspace-specific not-indexed guidance.
       if (args.projectPath ?? this.cg) this.queryPool?.warm();
-      const pooled = !!(this.queryPool && this.queryPool.healthy && this.queryPool.ready);
+      // The first call can land while the eager worker's handshake is still in
+      // flight — wait out the remaining spawn (bounded grace inside) instead of
+      // paying a seconds-long lazy module load on this thread.
+      const pooled = !!(
+        this.queryPool &&
+        this.queryPool.healthy &&
+        (this.queryPool.ready || (await this.queryPool.awaitReady()))
+      );
       const projectPath = pooled ? args.projectPath ?? this.cg?.getProjectRoot() : undefined;
       const wasDegraded = project.isWatcherDegraded?.();
       const raw = (pooled && projectPath)

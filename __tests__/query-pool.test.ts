@@ -121,9 +121,34 @@ describe('QueryPool', () => {
     let created = 0;
     const pool = new QueryPool({ root: '/x', size: 8, createWorker: () => { created++; return new FakeWorker((m) => ({ result: ok(`r${m.id}`) })); } });
     await pool.run('codegraph_node', { symbol: 's' });
-    // One eager worker + at most the cold-start cap — never all 8.
-    expect(created).toBeLessThanOrEqual(2);
+    await sleep(10); // let the warm-floor trickle finish
+    // Warm-floor pre-warm brings the pool to 4 — never all 8.
+    expect(created).toBeLessThanOrEqual(4);
+    expect(created).toBeLessThan(8);
     await pool.destroy();
+  });
+
+  it('pre-warms to the floor ahead of demand so a burst finds idle workers', async () => {
+    let created = 0;
+    const pool = new QueryPool({ root: '/x', size: 8, createWorker: () => { created++; return new FakeWorker((m) => ({ result: ok(`r${m.id}`) })); } });
+    await sleep(10); // eager worker's ready → drain → warm() fills the floor
+    expect(created).toBe(4);
+    expect(pool.liveWorkers).toBe(4);
+    await pool.destroy();
+  });
+
+  it('honors a warmFloor override, including 0 for lazy-only growth', async () => {
+    let created = 0;
+    const lazy = new QueryPool({ root: '/x', size: 8, warmFloor: 0, createWorker: () => { created++; return new FakeWorker((m) => ({ result: ok(`r${m.id}`) })); } });
+    await lazy.run('codegraph_node', {});
+    await sleep(10);
+    expect(created).toBe(1); // the eager worker only
+    await lazy.destroy();
+
+    const capped = new QueryPool({ root: '/x', size: 2, warmFloor: 9, createWorker: () => new FakeWorker((m) => ({ result: ok(`r${m.id}`) })) });
+    await sleep(10);
+    expect(capped.liveWorkers).toBe(2); // floor is capped at pool size
+    await capped.destroy();
   });
 
   it('recovers from a worker crash: retries the in-flight call and respawns', async () => {
@@ -256,13 +281,31 @@ describe('QueryPool', () => {
     expect(pool.ready).toBe(false); // destroyed pool must not be selected
   });
 
+  it('awaitReady covers the cold-window race: true once a pending start lands, fast-false when nothing is coming', async () => {
+    // The eager spawn posts 'ready' on a macrotask; a call arriving in the gap
+    // must be able to wait it out rather than fall back to the in-process cold
+    // path (a multi-second lazy module load on the transport thread).
+    const pool = new QueryPool({ root: '/x', size: 1, createWorker: () => new FakeWorker((m) => ({ result: ok(`r:${m.toolName}`) })) });
+    expect(pool.ready).toBe(false);
+    await expect(pool.awaitReady()).resolves.toBe(true);
+    expect(pool.ready).toBe(true);
+    // Ready already: resolves without waiting again.
+    await expect(pool.awaitReady()).resolves.toBe(true);
+    await pool.destroy();
+    // Nothing pending (destroyed / project-less): answers false without hanging.
+    await expect(pool.awaitReady()).resolves.toBe(false);
+    const empty = new QueryPool({ root: null, size: 1, createWorker: () => new FakeWorker((m) => ({ result: ok('r') })) });
+    await expect(empty.awaitReady(20)).resolves.toBe(false);
+    await empty.destroy();
+  });
+
   it('a pool with no default project starts its first worker on warm()', async () => {
     let created = 0;
     const pool = new QueryPool({ root: null, size: 2, createWorker: () => { created++; return new FakeWorker((m) => ({ result: ok(`r:${m.toolName}`) })); } });
     expect(created).toBe(0);
     pool.warm();
-    pool.warm(); // one worker, however many calls ask
-    expect(created).toBe(1);
+    pool.warm(); // the floor is 2 however many calls ask
+    expect(created).toBe(2);
     await sleep(5);
     expect(pool.ready).toBe(true);
     await pool.destroy();
@@ -278,7 +321,7 @@ describe('QueryPool', () => {
 
     const rooted = make('/x');
     await sleep(5);
-    expect(rooted.pool.liveWorkers).toBe(1);
+    expect(rooted.pool.liveWorkers).toBe(2); // eager worker + warm-floor trickle
     retire(rooted.pool);
     expect(rooted.pool.liveWorkers).toBe(1); // stays warm for the default project
     await rooted.pool.destroy();
@@ -291,8 +334,8 @@ describe('QueryPool', () => {
     retire(rootless.pool);
     expect(rootless.pool.liveWorkers).toBe(0);
     expect(rootless.pool.ready).toBe(false); // calls run in-process again
-    rootless.pool.warm(); // the next call that names a project starts one again
-    expect(rootless.created()).toBe(2);
+    rootless.pool.warm(); // the next call that names a project starts them again
+    expect(rootless.created()).toBe(4);
     await sleep(5);
     expect(rootless.pool.ready).toBe(true);
     await rootless.pool.destroy();

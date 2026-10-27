@@ -10,9 +10,12 @@
  * connection) restores true multi-core parallelism and an idle main loop.
  *
  * Properties:
- *   - lazy growth: one warm worker on construct, grows to `size` on demand, so a
- *     single-agent session pays for one connection and a 10-subagent burst grows
- *     to the core budget.
+ *   - warm floor: one eager worker on construct, then paced background growth
+ *     to a small floor (see DEFAULT_WARM_FLOOR), so a burst of short calls
+ *     parallelizes instead of finishing serially before the first spawn could
+ *     help. Beyond the floor the pool still grows to `size` on demand, and
+ *     idle workers retire back down (see DEFAULT_IDLE_RETIRE_MS), so the floor
+ *     costs a few extra connections only while calls are flowing.
  *   - crash recovery: a dead worker is respawned and its in-flight call retried
  *     once; a poison call that keeps crashing fails gracefully (never wedges the
  *     pool). A crash budget trips a circuit breaker (`healthy` → false) so the
@@ -70,6 +73,34 @@ const CRASH_BUDGET = 12;
 const MAX_CONCURRENT_SPAWN = 2;
 
 /**
+ * Max workers cold-starting at once once the pool is warm. The 2-at-a-time cap
+ * protects the COLD daemon — its first call can arrive before the eager worker
+ * finishes starting, and a herd of full starts would stall the main loop. Once
+ * `everReady`, a burst is what the pool exists for and the daemon is already
+ * serving, so a burst may grow at twice that pace.
+ */
+const MAX_WARM_SPAWN = 4;
+
+/**
+ * How many workers the pool trickle-spawns ahead of demand. A burst of short
+ * calls (e.g. 8 explores at ~15ms) finishes before the on-demand ladder could
+ * spawn a second worker — the jobs then run serially anyway, plus IPC overhead,
+ * which is strictly worse than an in-process serial dispatch. Keeping a small
+ * floor of warm workers lets a real burst actually parallelize. The floor is
+ * filled by paced background growth bounded by the spawn caps — never by a
+ * thundering herd — on pool progress events and {@link warm} calls. `0`
+ * restores lazy-only growth.
+ */
+const DEFAULT_WARM_FLOOR = 4;
+
+function resolveWarmFloor(): number {
+  const raw = process.env.CODEGRAPH_QUERY_POOL_WARM;
+  if (raw === undefined || raw === '') return DEFAULT_WARM_FLOOR;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULT_WARM_FLOOR;
+}
+
+/**
  * A worker idle this long is retired, down to the one warm worker. Each holds a
  * V8 heap plus its own SQLite connection (page cache and memory map), so a
  * burst that grew the pool must not keep that memory for the daemon's
@@ -94,6 +125,17 @@ function resolveIdleRetireMs(): number {
  * few under heavy load; the cap only bounds a start that is wedged.
  */
 const WORKER_START_SETTLE_MS = 15_000;
+
+/**
+ * How long a read call may wait for the pool's first worker to finish cold-
+ * starting before falling back to in-process dispatch. The daemon's very
+ * first tool call can land while the eager worker's handshake is still in
+ * flight (a ~40 ms window even on a fast host); going in-process there pays a
+ * seconds-long lazy module load on the transport thread — far worse than
+ * waiting the remaining spawn latency out. Well under the in-process cold
+ * cost, so a genuinely wedged spawn still loses to the in-process path.
+ */
+const READY_GRACE_MS = 4_000;
 
 /** Shape of a message a worker posts back (ready handshake or a tool result). */
 interface WorkerMessage {
@@ -129,6 +171,11 @@ export interface QueryPoolOptions {
   idleRetireMs?: number;
   /** How long destroy() waits on a worker still starting up (tests shorten it). Default 15s. */
   startSettleMs?: number;
+  /**
+   * Workers trickle-spawned ahead of demand (see DEFAULT_WARM_FLOOR). Capped at
+   * `size`; 0 disables pre-warming. Default `CODEGRAPH_QUERY_POOL_WARM` or 4.
+   */
+  warmFloor?: number;
 }
 
 /**
@@ -197,6 +244,7 @@ export class QueryPool {
   private readonly idleRetireMs: number;
   private retireTimer?: ReturnType<typeof setInterval>;
   private readonly startSettleMs: number;
+  private readonly warmFloor: number;
 
   constructor(opts: QueryPoolOptions) {
     this.root = opts.root;
@@ -210,17 +258,28 @@ export class QueryPool {
       this.retireTimer.unref?.();
     }
     this.startSettleMs = opts.startSettleMs ?? WORKER_START_SETTLE_MS;
+    this.warmFloor = Math.min(opts.warmFloor ?? resolveWarmFloor(), this.maxSize);
     // One eager warm worker, ready for the first call. A pool with no default
     // project waits for its first call instead: most such sessions never query.
     if (this.root !== null) this.spawnOne();
   }
 
+  /** How many workers may be starting at once — stricter while the pool is cold. */
+  private spawnCap(): number {
+    return this.everReady ? MAX_WARM_SPAWN : MAX_CONCURRENT_SPAWN;
+  }
+
   /**
-   * Start a worker if none is running. Calls are served in-process until one is
-   * ready, so the call that triggers this does not wait for it.
+   * Grow toward the warm floor (and from zero when nothing is running). Called
+   * per dispatch and from {@link drain} on every worker progress event, so the
+   * floor fills in the background bounded by the spawn cap. Calls are served
+   * in-process until a worker is ready, so the call that triggers this does
+   * not wait for it.
    */
   warm(): void {
-    if (this.workers.size === 0 && this.healthy) this.spawnOne();
+    while (this.workers.size < this.warmFloor && this.pendingWorkers.size < this.spawnCap() && this.healthy) {
+      this.spawnOne();
+    }
   }
 
   /**
@@ -284,6 +343,29 @@ export class QueryPool {
     return this.everReady && !this.destroyed;
   }
   private everReady = false;
+
+  /**
+   * Wait for the pool's first worker to post its 'ready' handshake, up to
+   * {@link READY_GRACE_MS}. Returns whether the pool is ready afterward.
+   * Covers the cold-window race between the eager spawn and the first client
+   * call; resolves immediately once a worker is ready, or when nothing is on
+   * its way up (project-less pools, crashed-out spawns, destroyed pools).
+   */
+  async awaitReady(graceMs = READY_GRACE_MS): Promise<boolean> {
+    if (this.ready) return true;
+    if (this.destroyed || this.pendingWorkers.size === 0) return false;
+    const pending = [...this.pendingWorkers]
+      .map((w) => this.starts.get(w)?.settled)
+      .filter((p): p is Promise<void> => p !== undefined);
+    if (pending.length === 0) return false;
+    let cap: NodeJS.Timeout | undefined;
+    await Promise.race([
+      Promise.all(pending),
+      new Promise<void>((resolve) => { cap = setTimeout(resolve, graceMs); cap.unref?.(); }),
+    ]);
+    clearTimeout(cap);
+    return this.ready;
+  }
 
   private spawnOne(): void {
     if (this.destroyed || this.workers.size >= this.maxSize) return;
@@ -355,13 +437,16 @@ export class QueryPool {
   }
 
   private drain(): void {
+    // Refill toward the warm floor on every progress event, so a burst finds
+    // idle workers instead of paying the cold-start ladder serially.
+    this.warm();
     // Grow toward maxSize while queued work outstrips workers that are idle OR
     // already on their way up (pending) — so we never spawn the whole pool for a
     // single call whose eager worker just hasn't reported ready yet.
     while (
       this.queue.length > this.idle.length + this.pendingWorkers.size &&
       this.workers.size < this.maxSize &&
-      this.pendingWorkers.size < MAX_CONCURRENT_SPAWN &&
+      this.pendingWorkers.size < this.spawnCap() &&
       this.healthy
     ) {
       this.spawnOne();

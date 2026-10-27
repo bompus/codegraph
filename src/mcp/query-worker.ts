@@ -50,10 +50,14 @@ if (parentPort) {
   // opened lazily on first cross-project (projectPath) call by the ToolHandler's
   // own per-handler cache. openSync does not start a watcher — workers are pure
   // readers; the single watcher/writer stays on the daemon's main thread.
+  // `readOnly` skips the writer-side open work (migration/heal/WAL probes) that
+  // only the daemon's connection may run, and `compactConnection` keeps the
+  // per-worker page cache and mmap small so a grown pool's summed RSS stays
+  // near a single connection's.
   let handler: InstanceType<typeof import('./tools').ToolHandler> | null = null;
   let initError: string | null = null;
   try {
-    const cg = root ? loadCodeGraph().openSync(root) : null;
+    const cg = root ? loadCodeGraph().openSync(root, { readOnly: true, compactConnection: true }) : null;
     handler = new (loadToolHandler())(cg);
   } catch (err) {
     initError = err instanceof Error ? err.message : String(err);
