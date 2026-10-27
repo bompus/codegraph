@@ -46,7 +46,12 @@ interface PoolWorker {
 /** How long destroy() waits for a worker to exit on 'close' before terminating it. */
 const CLOSE_TIMEOUT_MS = 5000;
 
-const CHUNK_SIZE = 500;
+// 250 refs per chunk — measured on pretix's vendor-JS ref cluster: dense,
+// expensive refs sit contiguously in rowid order, so at 500 a single chunk
+// held ~2.3s of work and owned the batch tail; at 250 the cluster spreads
+// ~2x finer across the steal queue (7.9s→7.1s index wall). 125 bought ~1%
+// more for +300MB RSS.
+const CHUNK_SIZE = 250;
 
 /**
  * Minimum TOTAL pending refs before the pool is created at all. Pool boot
@@ -233,6 +238,7 @@ export class ResolverPool {
           pw.busy--;
           const waiter = this.waiters.get(msg.id);
           this.waiters.delete(msg.id);
+          this.pumpDispatch();
           waiter?.resolve({
             resolved: msg.resolved!,
             unresolved: msg.unresolved!,
@@ -252,6 +258,7 @@ export class ResolverPool {
           waiter?.();
         } else if (msg.type === 'error') {
           pw.busy--;
+          this.pumpDispatch();
           const err = new Error(`resolver worker: ${msg.message}`);
           if (msg.id !== undefined && this.waiters.has(msg.id)) {
             const waiter = this.waiters.get(msg.id)!;
@@ -285,6 +292,8 @@ export class ResolverPool {
     if (!this.failed) this.failed = err;
     for (const [, waiter] of this.waiters) waiter.reject(this.failed);
     this.waiters.clear();
+    for (const item of this.pendingChunks) item.reject(this.failed);
+    this.pendingChunks = [];
     for (const [, waiter] of this.synthWaiters) waiter.reject(this.failed);
     this.synthWaiters.clear();
     // Pending recycles resolve rather than reject: their per-call timeout
@@ -303,6 +312,39 @@ export class ResolverPool {
   }
 
   /**
+   * Chunks queued but not yet posted, shared across in-flight batches: the
+   * next batch fans out while the previous one is still resolving, and the
+   * workers pull from both in post order. Each entry carries its batch's
+   * reassembly slot.
+   */
+  private pendingChunks: Array<{
+    id: number;
+    refs: UnresolvedReference[];
+    resolve: (r: ChunkResult) => void;
+    reject: (e: Error) => void;
+  }> = [];
+
+  /** Post queued chunks while any worker is under its in-flight bound —
+   *  real work-stealing: a worker that drew a slow chunk traps only the few
+   *  queued chunks behind it instead of the deep pre-assigned queues the old
+   *  post-everything-up-front dispatch stacked up (~4s of parked work at a
+   *  12-worker, 500-ref-chunk scale on pretix's vendor-JS cluster). Called
+   *  from resolveBatch and after every result/error ack. */
+  private pumpDispatch(): void {
+    while (this.pendingChunks.length > 0) {
+      const pw = this.workers.reduce((a, b) => (b.busy < a.busy ? b : a));
+      // Depth 4 per worker: 2 starved the pool on ack turnaround (workers
+      // idle between a chunk's ack and the pump's refill — settle ~4.1s);
+      // 8 re-deepened queues and re-trapped chunks behind stragglers (8.3s).
+      if (pw.busy >= 4) return;
+      const item = this.pendingChunks.shift()!;
+      pw.busy++;
+      this.waiters.set(item.id, { resolve: item.resolve, reject: item.reject });
+      pw.worker.postMessage({ type: 'resolve', id: item.id, refs: item.refs });
+    }
+  }
+
+  /**
    * Resolve `refs` across the pool. Chunks preserve input order; the returned
    * arrays are the in-order concatenation of the chunk results.
    */
@@ -312,18 +354,16 @@ export class ResolverPool {
     for (let i = 0; i < refs.length; i += CHUNK_SIZE) {
       const chunk = refs.slice(i, i + CHUNK_SIZE);
       const id = this.nextId++;
-      // Least-busy dispatch keeps workers evenly loaded regardless of chunk
-      // cost variance; result order is fixed by the promise array, not by
-      // completion order.
-      const pw = this.workers.reduce((a, b) => (b.busy < a.busy ? b : a));
-      pw.busy++;
+      // Queue, don't blast: pumpDispatch keeps each worker under its
+      // in-flight bound and refills on each ack. Result order is fixed by
+      // the promise array, not by completion order.
       chunkPromises.push(
         new Promise<ChunkResult>((resolve, reject) => {
-          this.waiters.set(id, { resolve, reject });
-          pw.worker.postMessage({ type: 'resolve', id, refs: chunk });
+          this.pendingChunks.push({ id, refs: chunk, resolve, reject });
         })
       );
     }
+    this.pumpDispatch();
     const chunks = await Promise.all(chunkPromises);
     const out: ChunkResult = { resolved: [], unresolved: [], deferredChain: [], deferredThisMember: [], byMethod: {} };
     for (const c of chunks) {
@@ -409,6 +449,15 @@ export class ResolverPool {
    * booted, on a busy machine, can have a worker still loading its modules.
    */
   async destroy(closeTimeoutMs = CLOSE_TIMEOUT_MS): Promise<void> {
+    // Abandon pending recycles first: their acks can't arrive once the
+    // workers are closing, and the per-recycle timeout would otherwise hold
+    // the event loop for up to 10s after teardown. Completing the waiters
+    // clears those timers; callers of recycleWorkers see a resolved promise
+    // and check this.failed next round, as on a pool failure.
+    for (const [, done] of this.recycleWaiters) done();
+    this.recycleWaiters.clear();
+    for (const item of this.pendingChunks) item.reject(new Error('resolver pool destroyed'));
+    this.pendingChunks = [];
     await Promise.all(
       this.workers.map(
         (pw) =>
