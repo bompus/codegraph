@@ -2578,7 +2578,17 @@ export class ReferenceResolver {
       // Skipped while a kernel conn is live — the valve is stopped then, and
       // a parked-barrier backfill is still an off-thread shm writer.
       const bp = kernel ? null : parallel?.backpressure?.();
-      if (bp) await bp;
+      if (bp) {
+        // Hold chunk dispatch while the valve checkpoints: in-flight reads
+        // drain and release their WAL marks, and no new ones start — a
+        // continuous reader stream would pin the checkpoint indefinitely.
+        pool?.pauseDispatch();
+        try {
+          await bp;
+        } finally {
+          pool?.resumeDispatch();
+        }
+      }
       lp('backpressure', tLp);
 
       // Recycle the workers' read connections periodically at this same

@@ -108,7 +108,11 @@ export class ResolverPool {
   private nextId = 0;
   private waiters = new Map<number, { resolve: (r: ChunkResult) => void; reject: (e: Error) => void }>();
   private synthWaiters = new Map<number, { resolve: (r: SynthPassResult) => void; reject: (e: Error) => void }>();
-  private recycleWaiters = new Map<number, () => void>();
+  private recycleWaiters = new Map<number, { arm: () => void; done: () => void }>();
+  // Dispatch hold for the WAL backpressure window: in-flight chunks finish
+  // and release their read marks, no new ones start, so the valve's
+  // checkpoint isn't pinned by continuous pool reads.
+  private paused = false;
   private failed: Error | null = null;
 
   /**
@@ -252,10 +256,12 @@ export class ResolverPool {
           const waiter = this.synthWaiters.get(msg.id);
           this.synthWaiters.delete(msg.id);
           waiter?.resolve({ edges: msg.edges ?? [], ms: msg.ms ?? 0, skips: msg.skips });
+        } else if (msg.type === 'recycling' && msg.id !== undefined) {
+          this.recycleWaiters.get(msg.id)?.arm();
         } else if (msg.type === 'recycled' && msg.id !== undefined) {
           const waiter = this.recycleWaiters.get(msg.id);
           this.recycleWaiters.delete(msg.id);
-          waiter?.();
+          waiter?.done();
         } else if (msg.type === 'error') {
           pw.busy--;
           this.pumpDispatch();
@@ -298,8 +304,21 @@ export class ResolverPool {
     this.synthWaiters.clear();
     // Pending recycles resolve rather than reject: their per-call timeout
     // owns rejection, and the recycle caller checks this.failed next round.
-    for (const [, done] of this.recycleWaiters) done();
+    for (const [, w] of this.recycleWaiters) w.done();
     this.recycleWaiters.clear();
+  }
+
+  /**
+   * Stop the pump from posting new chunks (WAL backpressure window). Chunks
+   * already posted finish normally; queued chunks wait for resumeDispatch.
+   */
+  pauseDispatch(): void {
+    this.paused = true;
+  }
+
+  resumeDispatch(): void {
+    this.paused = false;
+    this.pumpDispatch();
   }
 
   /** Number of workers — how many passes the synthesis fan-out keeps in flight. */
@@ -331,6 +350,7 @@ export class ResolverPool {
    *  12-worker, 500-ref-chunk scale on pretix's vendor-JS cluster). Called
    *  from resolveBatch and after every result/error ack. */
   private pumpDispatch(): void {
+    if (this.paused) return;
     while (this.pendingChunks.length > 0) {
       const pw = this.workers.reduce((a, b) => (b.busy < a.busy ? b : a));
       // Depth 4 per worker: 2 starved the pool on ack turnaround (workers
@@ -425,16 +445,26 @@ export class ResolverPool {
         (pw) =>
           new Promise<void>((resolve, reject) => {
             const id = this.nextId++;
-            const t = setTimeout(() => {
-              if (this.recycleWaiters.delete(id)) {
-                const err = new Error('resolver worker recycle timed out');
-                this.fail(err);
-                reject(err);
-              }
-            }, 10_000);
-            this.recycleWaiters.set(id, () => {
-              clearTimeout(t);
-              resolve();
+            // Arm only once the worker dequeues the request and posts its
+            // 'recycling' ack — the request can sit behind posted chunks for
+            // longer than the timeout, so timing from post would fail a
+            // healthy pool. A worker that never dequeues is wedged on a
+            // chunk; its failure/exit paths settle the waiter instead.
+            let t: NodeJS.Timeout | undefined;
+            this.recycleWaiters.set(id, {
+              arm: () => {
+                t = setTimeout(() => {
+                  if (this.recycleWaiters.delete(id)) {
+                    const err = new Error('resolver worker recycle timed out');
+                    this.fail(err);
+                    reject(err);
+                  }
+                }, 10_000);
+              },
+              done: () => {
+                clearTimeout(t);
+                resolve();
+              },
             });
             pw.worker.postMessage({ type: 'recycle', id, kernel });
           })
@@ -454,7 +484,7 @@ export class ResolverPool {
     // the event loop for up to 10s after teardown. Completing the waiters
     // clears those timers; callers of recycleWorkers see a resolved promise
     // and check this.failed next round, as on a pool failure.
-    for (const [, done] of this.recycleWaiters) done();
+    for (const [, w] of this.recycleWaiters) w.done();
     this.recycleWaiters.clear();
     for (const item of this.pendingChunks) item.reject(new Error('resolver pool destroyed'));
     this.pendingChunks = [];

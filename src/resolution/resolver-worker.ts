@@ -92,6 +92,10 @@ port.on('message', (msg: InMessage) => {
         // lazily. Runs only at the pool-idle boundary, so no query is in
         // flight on this connection.
         if (!queries || !dbPath) throw new Error('resolver-worker: recycle before open');
+        // Acknowledge dequeue BEFORE the rebind: the request may have sat
+        // behind posted chunks for seconds, so the pool's timeout starts
+        // when the work can actually run, not when it was posted.
+        port.postMessage({ type: 'recycling', id: msg.id });
         try {
           db?.close();
         } catch { /* already closed */ }
