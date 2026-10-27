@@ -599,7 +599,12 @@ fn ts_tokenize(source: &str, visit: &mut impl FnMut(TsTok, &str, i64, i64, usize
                 if s == c || s == b'\n' { break; }
                 if s == b'\\' {
                     text.push_str(&source[from..j]);
-                    j += 2;
+                    j += 1;
+                    if j < n {
+                        if b[j] == b'\n' { line += 1; line_start = j + 1; }
+                        j += 1;
+                        while j < n && (b[j] & 0xC0) == 0x80 { j += 1; }
+                    }
                     from = j;
                     continue;
                 }
@@ -634,7 +639,7 @@ fn ts_tokenize(source: &str, visit: &mut impl FnMut(TsTok, &str, i64, i64, usize
                 continue;
             }
             depth = depth.saturating_sub(1);
-            visit(TsTok::Punct, "}", line, column as i64, i, depth);
+            visit(TsTok::Punct, "}", line, column as i64, i - 1, depth);
             regex_allowed = true;
             continue;
         }

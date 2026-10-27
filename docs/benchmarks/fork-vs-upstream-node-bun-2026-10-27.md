@@ -6,7 +6,7 @@ Upstream `main` at `69af19ac` against `fork/consolidated` at `c29349a3`, each on
 
 The scripts are in [`scripts/benchmarks/runtime/`](../../scripts/benchmarks/runtime/): `run-index-sync.sh`, `run-mcp.sh` and `run-cli.sh`, with the four arms below. `adapt-flat-output.mjs` stages the flat output for `render-charts.mjs`, which computes every table, the heatmap and the README card from the raw rows.
 
-- **Builds.** Upstream `main` at `69af19ac` — the commit the fork's default branch is reconciled through — and the fork at `bc27fdb4`. The fork contains every upstream commit through `69af19ac` plus its own work, including this run's one change vs `31e3ab04`: a memo on the per-file ambient-scope scan. Without it, the fork's supabase index never completed (see [The supabase resolution regression](#the-supabase-resolution-regression)). Each build was installed with `npm ci`, with the native kernel built from source, and built with `npm run build`.
+- **Builds.** Upstream `main` at `69af19ac` — the commit the fork's default branch is reconciled through — and the fork at `c29349a3` for index and sync, `bc27fdb4` for MCP, CLI and explore cells. The fork contains every upstream commit through `69af19ac` plus its own work. `bc27fdb4` carried a memo on the per-file ambient-scope scan (without it the fork's supabase index never completed — see [The supabase resolution regression](#the-supabase-resolution-regression)); `c29349a3` replaces the tree parse with the text-tokenizer port described there. Each build was installed with `npm ci`, with the native kernel built from source, and built with `npm run build`.
 - **Arms.**
 
   | Arm | Command |
@@ -31,7 +31,7 @@ This run is noisier than 2026-10-18's. The host shared work with other agent ses
 
 One MCP attempt on n8n was additionally contaminated by a second benchmark writer that had not exited; its rows are preserved in `mcp-contaminated.jsonl` and the published table comes from a clean re-run. The idle-CPU rows from the shared host are the least trustworthy measurements here and are only quoted when their spread supports it.
 
-On the pre-fix build, `fork-node` indexing supabase was killed at 10:53 wall by the liveness watchdog after ~46 CPU-minutes without finishing (exit 143; the row stays in `index-sync.tsv` as evidence). Resolution was re-parsing every `.d.ts` in the project for each out-of-repo import — about 69,000 tree parses in 40 seconds measured live — because the ambient-module scan introduced upstream's `declare module` lookup (upstream `553d5d10`/`214ef50e` era, merged in fork PR #548) with no per-file memo. `d364683a` adds the memo, which is the build every fork arm on this page runs. Details: [The supabase resolution regression](#the-supabase-resolution-regression).
+On the pre-fix build, `fork-node` indexing supabase was killed at 10:53 wall by the liveness watchdog after ~46 CPU-minutes without finishing (exit 143; the row stays in `index-sync.tsv` as evidence). Resolution was re-parsing every `.d.ts` in the project for each out-of-repo import — about 69,000 tree parses in 40 seconds measured live — because the ambient-module scan introduced upstream's `declare module` lookup (upstream `553d5d10`/`214ef50e` era, merged in fork PR #548) with no per-file memo. `d364683a` adds the memo, which shipped in `bc27fdb4`; the index and sync cells on this page were re-measured on `c29349a3`, which lands the remaining fix. Details: [The supabase resolution regression](#the-supabase-resolution-regression).
 
 ## Full index
 
