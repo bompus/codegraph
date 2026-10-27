@@ -1,6 +1,6 @@
 # Fork against upstream CodeGraph on Node.js and Bun, 2026-10-27
 
-Upstream `main` at `69af19ac` against `fork/consolidated` at `bc27fdb4` (the ambient-scope memo from [#554](https://github.com/bompus/codegraph/pull/554)), each on Node.js 24.22.1 and on Bun 1.4.4, over seven corpora, the MCP server and command-line startup. It repeats the [2026-10-18 run](fork-vs-upstream-node-bun-2026-10-18.md) with the same scripts and the same pinned corpora on the current builds. The README's "Measured results" quote this page.
+Upstream `main` at `69af19ac` against `fork/consolidated` at `c29349a3`, each on Node.js 24.22.1 and on Bun 1.4.4, over seven corpora, the MCP server and command-line startup. It repeats the [2026-10-18 run](fork-vs-upstream-node-bun-2026-10-18.md) with the same scripts and the same pinned corpora on the current builds. Index and sync figures were re-measured 2026-10-29 on the same host after the ambient-scan rework described in [The supabase resolution regression](#the-supabase-resolution-regression); MCP, CLI and explore cells are unchanged by a resolution-path change and carry the 2026-10-27 measurements at `bc27fdb4`. The README's "Measured results" quote this page.
 
 ## Method
 
@@ -39,13 +39,13 @@ Time and peak memory, median of two.
 
 | Corpus | Upstream, Node | Fork, Node | Fork, Bun | Upstream, Bun |
 | --- | --- | --- | --- | --- |
-| gin | 0.96 s, 558 MiB | 1.09 s, 392 MiB | 1.06 s, 296 MiB | 0.96 s, 618 MiB |
-| Alamofire | 1.35 s, 879 MiB | 1.62 s, 632 MiB | 0.99 s, 664 MiB | 1.35 s, 974 MiB |
-| pretix | 9.04 s, 3.29 GiB | 12.5 s, 2.71 GiB | 12.4 s, 2.42 GiB | 7.20 s, 2.89 GiB |
-| CPython | 55.0 s, 7.15 GiB | 33.8 s, 4.01 GiB | 33.5 s, 3.48 GiB | 51.0 s, 6.92 GiB |
-| discourse | 19.6 s, 4.07 GiB | 22.2 s, 2.82 GiB | 20.8 s, 2.40 GiB | 18.0 s, 4.25 GiB |
-| supabase | 18.2 s, 4.86 GiB | 41.5 s, 3.59 GiB | 40.6 s, 3.81 GiB | 16.4 s, 4.02 GiB |
-| n8n | 74.9 s, 12.39 GiB | 178.0 s, 6.30 GiB | 176.9 s, 6.41 GiB | 59.4 s, 9.23 GiB |
+| gin | 0.96 s, 558 MiB | 1.03 s, 396 MiB | 0.88 s, 296 MiB | 0.96 s, 618 MiB |
+| Alamofire | 1.35 s, 879 MiB | 1.60 s, 648 MiB | 0.94 s, 662 MiB | 1.35 s, 974 MiB |
+| pretix | 9.04 s, 3.29 GiB | 12.0 s, 2.71 GiB | 11.8 s, 2.44 GiB | 7.20 s, 2.89 GiB |
+| CPython | 55.0 s, 7.15 GiB | 33.4 s, 4.03 GiB | 33.3 s, 3.47 GiB | 51.0 s, 6.92 GiB |
+| discourse | 19.6 s, 4.07 GiB | 14.4 s, 2.91 GiB | 13.2 s, 2.40 GiB | 18.0 s, 4.25 GiB |
+| supabase | 18.2 s, 4.86 GiB | 19.6 s, 3.75 GiB | 18.7 s, 3.61 GiB | 16.4 s, 4.02 GiB |
+| n8n | 74.9 s, 12.39 GiB | 68.4 s, 6.18 GiB | 65.2 s, 6.61 GiB | 59.4 s, 9.23 GiB |
 
 Graph size. Node and edge counts match across runtimes for each build; database sizes are from the Node runs:
 
@@ -57,7 +57,7 @@ Graph size. Node and edge counts match across runtimes for each build; database 
 | CPython | 167,332 / 615,244 / 492 MiB | 167,923 / 603,861 / 573 MiB |
 | discourse | 163,411 / 309,678 / 389 MiB | 168,110 / 308,849 / 432 MiB |
 | supabase | 114,440 / 292,126 / 335 MiB | 152,274 / 327,838 / 460 MiB |
-| n8n | 315,422 / 1,239,920 / 1.43 GiB | 328,519 / 1,233,216 / 1.67 GiB |
+| n8n | 315,422 / 1,239,920 / 1.43 GiB | 328,519 / 1,233,163 / 1.67 GiB |
 
 The edge counts differ because the builds resolve differently: the fork adds Markdown, route and dispatch links, and declines call links it cannot confirm. The timings compare the cost of building each build's own graph, not the same graph.
 
@@ -67,13 +67,13 @@ Median of four (two syncs per run, two runs).
 
 | Corpus | Upstream, Node | Fork, Node | Fork, Bun | Upstream, Bun |
 | --- | --- | --- | --- | --- |
-| gin | 0.47 s | 0.42 s | 0.31 s | 0.29 s |
-| Alamofire | 0.48 s | 0.32 s | 0.20 s | 0.31 s |
-| pretix | 1.62 s | 1.07 s | 0.81 s | 1.13 s |
-| CPython | 5.35 s | 2.42 s | 1.70 s | 3.92 s |
-| discourse | 4.78 s | 2.31 s | 1.73 s | 3.22 s |
-| supabase | 4.58 s | 3.37 s | 2.34 s | 6.69 s |
-| n8n | 11.6 s | 4.18 s | 3.41 s | 8.68 s |
+| gin | 0.47 s | 0.40 s | 0.29 s | 0.29 s |
+| Alamofire | 0.48 s | 0.29 s | 0.18 s | 0.31 s |
+| pretix | 1.62 s | 1.55 s | 1.27 s | 1.13 s |
+| CPython | 5.35 s | 2.37 s | 1.62 s | 3.92 s |
+| discourse | 4.78 s | 2.28 s | 1.66 s | 3.22 s |
+| supabase | 4.58 s | 2.83 s | 1.90 s | 6.69 s |
+| n8n | 11.6 s | 8.90 s | 8.02 s | 8.68 s |
 
 
 Upstream's supabase sync, which failed with `FOREIGN KEY constraint failed` in every prior run, now completes ([colbymchenry/codegraph#2565](https://github.com/colbymchenry/codegraph/issues/2565) was fixed upstream on 2026-10-19). Its two passes differ widely on Node (1.05 s then 8.1 s); the 4.58 s figure is the median of the four, and against that spread the comparison counts as no clear change rather than a fork win.
@@ -86,7 +86,8 @@ Worth documenting because the README's earlier "ties on supabase" line hid a cli
 - Perf on a symbolized kernel showed ~65% of resolution cycles inside `ts_parser_parse`, and a `[tree-miss]` counter showed ~69,000 parses in 40 s: all `imports` refs, 417 distinct `.d.ts` files re-parsed ~2,440 times each.
 - Cause: `ts_ambient_lookup` (the port of upstream's ambient-module lookup) scans every `.d.ts` for each out-of-repo import and `ts_scope_scan` re-parsed each file on every call; the 32-entry FIFO tree cache cannot hold the working set. Upstream's equivalent is a tokenizer over source text (`scanAmbientModules` never parses a tree) and upstream memoizes the global-scope scan per file (`TS_GLOBAL_SCOPES`).
 - `d364683a` memoizes `ts_scope_scan` per file in the resolver (PR #554). supabase indexes in ~40–47 s, with 152,274 nodes / 327,838 edges (more edges than pre-#548's 323,321 — the ambient work does resolve).
-- The remaining ~2.3–2.5× gap vs upstream's ~17–19 s on this corpus is real: the fork still parses each `.d.ts` once per resolver worker where upstream scans text once per file. It is bounded work, not the quadratic, and it is the honest number this page reports.
+- The remaining ~2.3–2.5× gap vs upstream's ~17–19 s on this corpus is real: the fork still parses each `.d.ts` once per resolver worker where upstream scans text once per file. It is bounded work, not the quadratic.
+- **Closed on 2026-10-29** at `c29349a3`: `ts_scope_scan` is now a port of upstream's text tokenizer + `scanAmbientModules`/`scanNamespaceBlocks` state machines (one text pass per file, memoized), and `ts_ambient_lookup` consults a lazily built `specifier → files` index (upstream's `scanned.bySpecifier`) instead of walking every `.d.ts` per import. supabase went from 41.5 s to 19.6 s on Node (inside spread of upstream's 18.2 s), n8n from 178 s to 68.4 s (upstream 74.9 s — a fork win), discourse from 22.2 s to 14.4 s (upstream 19.6 s). The port kept the fork's `export type { A as B }` clause support and fixed three divergences found in review: `export as namespace` now marks a file as a module (upstream semantics), the namespace `global` flag means "the namespace itself is a global name" — not "members are bare globals" (bare globals come only from literal `declare global` blocks and script top level) — and nested namespaces no longer leak into ambient member matching. supabase's graph is bit-identical to the pre-tokenizer baseline; n8n's edges moved 1,233,216 → 1,233,163 from the corrected namespace-global admission. The residual index losses are pretix (+33% Node) and Alamofire (+18% Node) — not ambient-scan work — and the Bun arm of supabase (+14%), n8n (+10%) and pretix (+64%).
 
 ## MCP server
 
@@ -132,17 +133,15 @@ The fork-Node server's busy memory on n8n (4.54 GiB against upstream's 3.85) is 
 
 ## Every result at a glance
 
-![Heatmap of the fork's change against upstream for index time, peak memory and one-file sync on seven repositories, the MCP server on n8n and gin, and command-line startup, on Node and on Bun. Lower is better; cells inside the comparison's own run-to-run spread are marked no clear change.](fork-vs-upstream-heatmap-2026-10-27.svg?v=1)
+![Heatmap of the fork's change against upstream for index time, peak memory and one-file sync on seven repositories, the MCP server on n8n and gin, and command-line startup, on Node and on Bun. Lower is better; cells inside the comparison's own run-to-run spread are marked no clear change.](fork-vs-upstream-heatmap-2026-10-27.svg?v=2)
 
-Of 76 comparisons the fork is better in 56, shows no clear change in 5 and is worse in 15. The 15, generated from the same data as the heatmap:
+Of 76 comparisons the fork is better in 58, shows no clear change in 8 and is worse in 10. The 10, generated from the same data as the heatmap:
 
-- Indexing gin: 0.96 s → 1.09 s on Node (+14%)
-- Indexing Alamofire: 1.35 s → 1.62 s on Node (+20%)
-- Indexing pretix: 9.04 s → 12.5 s on Node (+38%), 7.20 s → 12.4 s on Bun (+72%)
-- Indexing discourse: 19.6 s → 22.2 s on Node (+13%), 18.0 s → 20.8 s on Bun (+15%)
-- Indexing supabase: 18.2 s → 41.5 s on Node (+128%), 16.4 s → 40.6 s on Bun (+147%)
-- Indexing n8n: 74.9 s → 178.0 s on Node (+138%), 59.4 s → 176.9 s on Bun (+198%)
-- Syncing one file in gin: 0.29 s → 0.32 s on Bun (+9%)
+- Indexing Alamofire: 1.35 s → 1.60 s on Node (+18%)
+- Indexing pretix: 9.04 s → 12.0 s on Node (+33%), 7.20 s → 11.8 s on Bun (+64%)
+- Indexing supabase: 16.4 s → 18.7 s on Bun (+14%)
+- Indexing n8n: 59.4 s → 65.2 s on Bun (+10%)
+- Syncing one file in pretix: 1.13 s → 1.27 s on Bun (+11%)
 - Memory busy on n8n (MCP server): 3.85 GiB → 4.54 GiB on Node (+18%)
 - 8 asks at once on gin (MCP server): 114 ms → 134 ms on Node (+18%), 153 ms → 161 ms on Bun (+5%)
 - File watcher on gin (MCP server): 357 ms → 358 ms on Bun (0%)
