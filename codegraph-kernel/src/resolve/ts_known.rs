@@ -489,7 +489,16 @@ pub(super) struct TsScopeScan {
 }
 
 impl KernelResolver {
-    pub(super) fn ts_scope_scan(&mut self, file: &str, r: &ResolveRefIn) -> Option<TsScopeScan> {
+    pub(super) fn ts_scope_scan(&mut self, file: &str, r: &ResolveRefIn) -> Option<Rc<TsScopeScan>> {
+        if let Some(memo) = self.ts_scope_memo.get(file) {
+            return memo.clone();
+        }
+        let scan = self.ts_scope_scan_uncached(file, r).map(Rc::new);
+        self.ts_scope_memo.insert(file.to_string(), scan.clone());
+        scan
+    }
+
+    fn ts_scope_scan_uncached(&mut self, file: &str, r: &ResolveRefIn) -> Option<TsScopeScan> {
         let source = self.read_file(file)?;
         let mut site = r.clone(); site.file_path = file.to_string(); site.language = "typescript".to_string();
         let tree = self.js_binding_tree(&source, &site)?;
