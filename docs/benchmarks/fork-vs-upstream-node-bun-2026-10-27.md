@@ -147,3 +147,16 @@ Of 76 comparisons the fork is better in 57, shows no clear change in 10 and is w
 - Memory busy on n8n (MCP server): 3.85 GiB → 4.54 GiB on Node (+18%)
 - 8 asks at once on gin (MCP server): 114 ms → 134 ms on Node (+18%), 153 ms → 161 ms on Bun (+5%)
 - File watcher on gin (MCP server): 357 ms → 358 ms on Bun (0%)
+
+## Follow-up merges
+
+Four pull requests landed on `fork/consolidated` after the tables above were generated, each measured on its stacked branch build against the same upstream numbers on the same host. The scorecard above reflects the pre-follow-up tree; the current head is `891e1966`.
+
+| PR | Merge commit | Change | Measured result |
+|---|---|---|---|
+| [#558](https://github.com/bompus/codegraph/pull/558) | `a913e8c2` | Work-stealing chunk dispatch, early batch fan-out, dispatch pause during WAL backpressure, dequeue-armed recycle timer | pretix-Node 9.21 → 8.14 s (beats upstream's 9.04 s); pretix-Bun 8.79 → 7.49 s |
+| [#559](https://github.com/bompus/codegraph/pull/559) | `e28058d3` | Sync retry keyed by the definition delta instead of every changed name | pretix-Bun one-file sync 1.27 → 0.68 s against upstream-Bun ~1.13 s — the sync loss became a ~40% win |
+| [#560](https://github.com/bompus/codegraph/pull/560) | `c01c4a71` | Query-pool warm floor, await-ready grace, compact read-only worker connections | n8n busy RSS 4.54 → 3.10 GiB on Node (−20% vs upstream's 3.85) and → 1.24 GiB on Bun (−64%); gin 8-explore wave ~88 ms Node / ~75 ms Bun against upstream ~114/153 ms; Bun cold first explore 6.06 s → 164 ms |
+| [#561](https://github.com/bompus/codegraph/pull/561) | `891e1966` | Resolver-worker SQLite cache 32 → 16 MiB; near-duplicate pair scoring reuses signing-time shingle sets | ~200 MB index RSS reclaimed, timing neutral; near-duplicate phase on pretix 458 → 284 ms, bringing pretix-Bun index within ~2% of upstream |
+
+What is left on the board after the merges: pretix-Bun index (~+2%, the 0.5 s settle tail plus ~1.4 s of serial post-phases — at the measured optimum of the tuning explored), the pretix and supabase-Bun index-memory cells (the 12 in-process worker heaps that buy the index-time wins), and a ~0% gin file-watcher cell inside noise. Everything else in the 9-cell loss list is now a win: pretix-Bun sync (#559), n8n busy-MCP memory (#560) and the gin concurrent-explore wave (#560).
