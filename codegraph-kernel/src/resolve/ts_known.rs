@@ -227,11 +227,11 @@ impl KernelResolver {
         if let Some(own) = members.iter().find(|n| n.kind == "method") {
             return Ok((Some(own.clone()), true));
         }
-        if let Some(scan) = self.ts_scope_scan(&cls.file_path, at) {
+        if let Some(scan) = self.ts_scope_scan(&cls.file_path) {
             if let Some(block) = scan.blocks.iter().find(|b| b.ambient && b.contains(cls.start_line, cls.start_column)) {
                 let module = block.name.clone();
                 for candidate in self.nodes_by_name(&cls.name)?.iter().filter(|n| n.id != cls.id && is_member_owner_kind(&n.kind)).cloned().collect::<Vec<_>>() {
-                    if !self.ts_scope_scan(&candidate.file_path, at).is_some_and(|scan| scan.blocks.iter().any(|b| b.ambient && b.name == module && b.contains(candidate.start_line, candidate.start_column))) { continue; }
+                    if !self.ts_scope_scan(&candidate.file_path).is_some_and(|scan| scan.blocks.iter().any(|b| b.ambient && b.name == module && b.contains(candidate.start_line, candidate.start_column))) { continue; }
                     if let Some(node) = self.nodes_in_file(&candidate.file_path)?.iter().find(|n| n.name == name && n.kind == "method" && n.start_line >= candidate.start_line && n.end_line <= candidate.end_line).cloned() {
                         return Ok((Some(node), true));
                     }
@@ -473,9 +473,17 @@ pub(super) struct TsScopeBlock {
     name: String,
     start: (i64, i64),
     end: (i64, i64),
+    byte_start: usize,
+    byte_end: usize,
     pub(super) ambient: bool,
     global: bool,
     text: String,
+    /// An ambient block's `export default X` / `export = X` / `export {Y as default}` name.
+    default_name: Option<String>,
+    /// An ambient block's `export { … }` clause names: exported name → local name.
+    export_aliases: Vec<(String, String)>,
+    /// The block has an `export { … }` clause (empty or not).
+    export_clause: bool,
 }
 impl TsScopeBlock {
     pub(super) fn contains(&self, line: i64, column: i64) -> bool {
@@ -488,60 +496,487 @@ pub(super) struct TsScopeScan {
     pub(super) blocks: Vec<TsScopeBlock>,
 }
 
+// ---- Tokenizer and scope scanners: ports of upstream ambient-modules.ts
+// (scanAmbientModules, scanGlobalScope's script flag and scanNamespaceBlocks).
+// They read tokens, never a tree, so a scope scan costs a text pass instead of
+// a tree-sitter parse.
+
+#[derive(Clone, Copy, PartialEq)]
+enum TsTok { Word, Str, Tpl, Punct }
+
+fn ts_word_start(c: u8) -> bool { c.is_ascii_uppercase() || c.is_ascii_lowercase() || c == b'_' || c == b'$' || c > 127 }
+fn ts_word_char(c: u8) -> bool { ts_word_start(c) || c.is_ascii_digit() }
+
+fn ts_regex_after(word: &str) -> bool {
+    matches!(word, "return" | "typeof" | "case" | "do" | "else" | "in" | "of" | "instanceof" | "new" | "delete" | "void" | "throw" | "yield" | "await")
+}
+
+/// Words that start an `export default` declaration rather than name its value.
+fn ts_default_word(word: &str) -> bool {
+    matches!(word, "class" | "function" | "interface" | "abstract" | "async" | "enum")
+}
+
+/// Read a template literal's text from `i` up to its closing backtick or a `${`.
+fn ts_template_text(b: &[u8], i: &mut usize, line: &mut i64, line_start: &mut usize, depth: u32, templates: &mut Vec<u32>) {
+    let n = b.len();
+    while *i < n {
+        let c = b[*i];
+        if c == b'\\' {
+            if *i + 1 < n && b[*i + 1] == b'\n' { *line += 1; *line_start = *i + 2; }
+            *i += 2;
+            continue;
+        }
+        if c == b'`' { *i += 1; return; }
+        if c == b'$' && *i + 1 < n && b[*i + 1] == b'{' { templates.push(depth); *i += 2; return; }
+        if c == b'\n' { *line += 1; *line_start = *i + 1; }
+        *i += 1;
+    }
+}
+
+/// Feed `source`'s tokens to `visit`: kind, text, 1-based line, 0-based byte
+/// column, byte offset and the brace depth outside the token — both braces of
+/// a block carry the depth the block sits at.
+fn ts_tokenize(source: &str, visit: &mut impl FnMut(TsTok, &str, i64, i64, usize, u32)) {
+    let b = source.as_bytes();
+    let n = b.len();
+    let mut i = 0usize;
+    let mut line = 1i64;
+    let mut line_start = 0usize;
+    let mut depth = 0u32;
+    // The brace depth at each open `${`: the `}` that brings depth back to it ends the expression.
+    let mut templates: Vec<u32> = Vec::new();
+    // Whether a `/` here would start a regex: after an operator, a keyword or nothing.
+    let mut regex_allowed = true;
+
+    while i < n {
+        let c = b[i];
+        if c == b'\n' { line += 1; line_start = i + 1; i += 1; continue; }
+        if c == b' ' || c == b'\t' || c == b'\r' { i += 1; continue; }
+        if c == 0xef && i + 2 < n && b[i + 1] == 0xbb && b[i + 2] == 0xbf { i += 3; continue; }
+        if c == 0xc2 && i + 1 < n && b[i + 1] == 0xa0 { i += 2; continue; }
+        let column = i - line_start;
+        if c == b'/' {
+            let next = b.get(i + 1).copied().unwrap_or(0);
+            if next == b'/' {
+                while i < n && b[i] != b'\n' { i += 1; }
+                continue;
+            }
+            if next == b'*' {
+                i += 2;
+                while i < n && !(b[i] == b'*' && i + 1 < n && b[i + 1] == b'/') {
+                    if b[i] == b'\n' { line += 1; line_start = i + 1; }
+                    i += 1;
+                }
+                i += 2;
+                continue;
+            }
+            if regex_allowed {
+                // A regex literal ends at an unescaped `/` outside a character class, or at the line's end.
+                i += 1;
+                let mut in_class = false;
+                while i < n {
+                    let r = b[i];
+                    if r == b'\n' { break; }
+                    if r == b'\\' { i += 1; }
+                    else if r == b'[' { in_class = true; }
+                    else if r == b']' { in_class = false; }
+                    else if r == b'/' && !in_class { i += 1; break; }
+                    i += 1;
+                }
+                while i < n && ts_word_char(b[i]) { i += 1; } // flags
+                regex_allowed = false;
+                visit(TsTok::Tpl, "", line, column as i64, i, depth);
+                continue;
+            }
+        }
+        if c == b'\'' || c == b'"' {
+            let mut j = i + 1;
+            let start = j;
+            let mut text = String::new();
+            let mut from = start;
+            while j < n {
+                let s = b[j];
+                if s == c || s == b'\n' { break; }
+                if s == b'\\' {
+                    text.push_str(&source[from..j]);
+                    j += 2;
+                    from = j;
+                    continue;
+                }
+                j += 1;
+            }
+            text.push_str(&source[from..j.min(n)]);
+            i = if j < n && b[j] == c { j + 1 } else { j };
+            regex_allowed = false;
+            visit(TsTok::Str, &text, line, column as i64, i, depth);
+            continue;
+        }
+        if c == b'`' {
+            i += 1;
+            ts_template_text(b, &mut i, &mut line, &mut line_start, depth, &mut templates);
+            regex_allowed = false;
+            visit(TsTok::Tpl, "", line, column as i64, i, depth);
+            continue;
+        }
+        if c == b'{' {
+            visit(TsTok::Punct, "{", line, column as i64, i, depth);
+            depth += 1;
+            i += 1;
+            regex_allowed = true;
+            continue;
+        }
+        if c == b'}' {
+            i += 1;
+            if templates.last() == Some(&depth) {
+                templates.pop();
+                ts_template_text(b, &mut i, &mut line, &mut line_start, depth, &mut templates);
+                regex_allowed = false;
+                continue;
+            }
+            depth = depth.saturating_sub(1);
+            visit(TsTok::Punct, "}", line, column as i64, i, depth);
+            regex_allowed = true;
+            continue;
+        }
+        if ts_word_start(c) {
+            let mut j = i + 1;
+            while j < n && ts_word_char(b[j]) { j += 1; }
+            let word = &source[i..j];
+            i = j;
+            regex_allowed = ts_regex_after(word);
+            visit(TsTok::Word, word, line, column as i64, i, depth);
+            continue;
+        }
+        if c.is_ascii_digit() {
+            while i < n && (ts_word_char(b[i]) || b[i] == b'.') { i += 1; }
+            regex_allowed = false;
+            continue;
+        }
+        i += 1;
+        regex_allowed = c != b')' && c != b']';
+        visit(TsTok::Punct, &source[i - 1..i], line, column as i64, i - 1, depth);
+    }
+}
+
+struct TsAmbientBlock {
+    name: String,
+    start: (i64, i64),
+    end: (i64, i64),
+    byte_start: usize,
+    byte_end: usize,
+    default_name: Option<String>,
+    export_aliases: Vec<(String, String)>,
+    export_clause: bool,
+}
+
+/// Every `declare module '<name>' { … }` block in `source`, and whether the
+/// file is a script (no top-level `import` or `export`). Port of upstream's
+/// `scanAmbientModules`; a block is kept at the depth it opened at so one
+/// nested inside `declare global` still lands.
+fn ts_scan_ambient(source: &str) -> (bool, Vec<TsAmbientBlock>) {
+    let mut blocks: Vec<TsAmbientBlock> = Vec::new();
+    let mut script = true;
+    // The statement being read at the top level.
+    let mut declare = 0u8; // 1: `declare`, 2: `declare module`, 3: `declare module '<name>'`
+    let mut declare_pos = (0i64, 0i64, 0usize);
+    let mut declare_name = String::new();
+    // After a top-level `import`: the tokens seen so far, to tell `import x = N.y`
+    // (an alias of a namespace, legal in a script) from every other form.
+    let mut import_tokens: Option<Vec<(TsTok, String)>> = None;
+    // The block being read, and the export statement being read inside it.
+    let mut open: Option<(TsAmbientBlock, u32)> = None;
+    let mut export_state = 0u8; // 1: export, 2: export default, 3: export default <kw>, 4: export =, 5: export {, 6: export type
+    let mut clause: Vec<String> = Vec::new();
+
+    let close_clause = |open: &mut TsAmbientBlock, clause: &mut Vec<String>| {
+        let mut i = 0;
+        while i < clause.len() {
+            let local = clause[i].clone();
+            if clause.get(i + 1).map(String::as_str) == Some("as") && clause.get(i + 2).is_some() {
+                let exported = clause[i + 2].clone();
+                if exported == "default" { open.default_name.get_or_insert(local); }
+                else { open.export_aliases.push((exported, local)); }
+                i += 3;
+            } else {
+                open.export_aliases.push((local.clone(), local));
+                i += 1;
+            }
+        }
+        clause.clear();
+    };
+
+    ts_tokenize(source, &mut |kind, text, line, column, offset, depth| {
+        if let Some(t) = &mut import_tokens {
+            t.push((kind, text.to_string()));
+            let settle = t.len() >= 3 || t[0].0 != TsTok::Word || (t.len() == 2 && t[1].1 != "=");
+            if settle {
+                // `import(…)` and `import.meta` are expressions; `import x = N.y` aliases a namespace.
+                let is_alias = t[0].0 == TsTok::Punct && (t[0].1 == "(" || t[0].1 == ".")
+                    || t[0].0 == TsTok::Word && t.get(1).map(|x| x.1.as_str()) == Some("=") && t.get(2).map(|x| x.0) == Some(TsTok::Word) && t[2].1 != "require";
+                if !is_alias { script = false; }
+                import_tokens = None;
+            }
+        }
+        if let Some((block, open_depth)) = &mut open {
+            if kind == TsTok::Punct && text == "}" && depth == *open_depth {
+                block.end = (line, column);
+                block.byte_end = offset + 1;
+                blocks.push(std::mem::replace(block, TsAmbientBlock {
+                    name: String::new(), start: (0, 0), end: (0, 0), byte_start: 0, byte_end: 0,
+                    default_name: None, export_aliases: Vec::new(), export_clause: false,
+                }));
+                open = None;
+                export_state = 0;
+                clause.clear();
+                return;
+            }
+            // The export statement being read inside the block's top level.
+            if export_state == 5 {
+                if kind == TsTok::Punct && text == "}" && depth == *open_depth + 1 {
+                    close_clause(block, &mut clause);
+                    export_state = 0;
+                } else if kind == TsTok::Word {
+                    clause.push(text.to_string());
+                }
+                return;
+            }
+            if depth == *open_depth + 1 {
+                match export_state {
+                    0 => if kind == TsTok::Word && text == "export" { export_state = 1; },
+                    1 => {
+                        if kind == TsTok::Word && text == "default" { export_state = 2; }
+                        else if kind == TsTok::Punct && text == "=" { export_state = 4; }
+                        else if kind == TsTok::Punct && text == "{" { export_state = 5; block.export_clause = true; }
+                        else if kind == TsTok::Word && text == "type" { export_state = 6; }
+                        else { export_state = 0; }
+                    }
+                    2 => {
+                        if kind == TsTok::Word && ts_default_word(text) { export_state = 3; }
+                        else {
+                            if kind == TsTok::Word { block.default_name.get_or_insert(text.to_string()); }
+                            export_state = 0;
+                        }
+                    }
+                    3 => {
+                        if (kind == TsTok::Word && ts_default_word(text)) || (kind == TsTok::Punct && text == "*") { return; }
+                        if kind == TsTok::Word { block.default_name.get_or_insert(text.to_string()); }
+                        export_state = 0;
+                    }
+                    4 => {
+                        if kind == TsTok::Word { block.default_name.get_or_insert(text.to_string()); }
+                        export_state = 0;
+                    }
+                    6 => {
+                        if kind == TsTok::Punct && text == "{" { export_state = 5; block.export_clause = true; }
+                        else { export_state = 0; }
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
+        if depth != 0 {
+            declare = 0;
+            return;
+        }
+        if kind == TsTok::Word {
+            if text == "import" {
+                import_tokens = Some(Vec::new());
+                declare = 0;
+            } else if text == "export" {
+                script = false;
+                declare = 0;
+            } else if text == "declare" {
+                declare = 1;
+                declare_pos = (line, column, offset);
+            } else {
+                declare = if declare == 1 && text == "module" { 2 } else { 0 };
+            }
+            return;
+        }
+        if kind == TsTok::Str && declare == 2 {
+            declare = 3;
+            declare_name = text.to_string();
+            return;
+        }
+        if kind == TsTok::Punct && text == "{" && declare == 3 && !declare_name.is_empty() {
+            open = Some((TsAmbientBlock {
+                name: std::mem::take(&mut declare_name),
+                start: (declare_pos.0, declare_pos.1), end: (0, 0),
+                byte_start: declare_pos.2, byte_end: 0,
+                default_name: None, export_aliases: Vec::new(), export_clause: false,
+            }, depth));
+        }
+        declare = 0;
+    });
+    if let Some(t) = &import_tokens {
+        let is_alias = t[0].0 == TsTok::Punct && (t[0].1 == "(" || t[0].1 == ".")
+            || t[0].0 == TsTok::Word && t.get(1).map(|x| x.1.as_str()) == Some("=") && t.get(2).map(|x| x.0) == Some(TsTok::Word) && t[2].1 != "require";
+        if !is_alias { script = false; }
+    }
+    (script, blocks)
+}
+
+enum TsNsFrame { Global(usize), Module, Ns(usize), Other }
+
+/// Every namespace block (old-spelling `module A` included) and every
+/// `declare global` block in `source`, with the global flag upstream gives
+/// it: directly inside `declare global`, at a declaration script's top level
+/// (`top_level_global`), or inside another global one. Port of upstream's
+/// `scanNamespaceBlocks`; namespaces inside a `declare module 'x'` body are
+/// module `x`'s, never global, and named as if at the file's top level.
+fn ts_scan_namespaces(source: &str, top_level_global: bool, out: &mut Vec<TsScopeBlock>) {
+    let mut open: Vec<TsNsFrame> = Vec::new();
+    let mut names: Option<Vec<String>> = None; // the names after `namespace`/`module`, while its header is read
+    let mut expect_name = false;
+    let mut keyword = (0i64, 0i64, 0usize);
+    let mut declare = 0u8; // 1: `declare`, 2: `declare global`
+    let mut declare_kw = (0i64, 0i64, 0usize); // the `declare` keyword's position
+    let mut ambient_module = false; // just read `module 'x'`
+    let mut after_dot = false;
+
+    ts_tokenize(source, &mut |kind, text, line, column, offset, _depth| {
+        if kind == TsTok::Punct && text == "{" {
+            let header = names.as_ref().filter(|n| !n.is_empty() && !expect_name).cloned();
+            if declare == 2 {
+                let idx = out.len();
+                out.push(TsScopeBlock {
+                    name: "global".to_string(), ambient: false, global: true,
+                    start: (declare_kw.0, declare_kw.1), end: (0, 0),
+                    byte_start: declare_kw.2, byte_end: 0, text: String::new(),
+                    default_name: None, export_aliases: Vec::new(), export_clause: false,
+                });
+                open.push(TsNsFrame::Global(idx));
+            } else if ambient_module {
+                open.push(TsNsFrame::Module);
+            } else if let Some(header) = header.filter(|_| !matches!(open.last(), Some(TsNsFrame::Other))) {
+                let parent_path = match open.last() {
+                    Some(TsNsFrame::Ns(i)) => Some(out[*i].name.clone()),
+                    _ => None,
+                };
+                let idx = out.len();
+                out.push(TsScopeBlock {
+                    name: parent_path.map(|p| format!("{p}.")).unwrap_or_default() + &header.join("."),
+                    ambient: false,
+                    global: match open.last() {
+                        Some(TsNsFrame::Ns(i)) => out[*i].global,
+                        Some(TsNsFrame::Global(_)) => true,
+                        None => top_level_global,
+                        _ => false,
+                    },
+                    start: (keyword.0, keyword.1), end: (0, 0),
+                    byte_start: keyword.2, byte_end: 0, text: String::new(),
+                    default_name: None, export_aliases: Vec::new(), export_clause: false,
+                });
+                open.push(TsNsFrame::Ns(idx));
+            } else {
+                open.push(TsNsFrame::Other);
+            }
+            names = None;
+            declare = 0;
+            ambient_module = false;
+            after_dot = false;
+            return;
+        }
+        if kind == TsTok::Punct && text == "}" {
+            match open.pop() {
+                Some(TsNsFrame::Ns(i)) | Some(TsNsFrame::Global(i)) => {
+                    out[i].end = (line, column);
+                    out[i].byte_end = offset + 1;
+                    out[i].text = source[out[i].byte_start..(offset + 1).min(source.len())].to_string();
+                }
+                _ => {}
+            }
+            names = None;
+            declare = 0;
+            ambient_module = false;
+            after_dot = false;
+            return;
+        }
+        ambient_module = names.as_ref().is_some_and(|n| expect_name && n.is_empty() && kind == TsTok::Str);
+        if let Some(n) = &mut names {
+            if expect_name && kind == TsTok::Word {
+                n.push(text.to_string());
+                expect_name = false;
+                return;
+            }
+            if !expect_name && kind == TsTok::Punct && text == "." {
+                expect_name = true;
+                return;
+            }
+            names = None;
+        }
+        if kind == TsTok::Word {
+            if (text == "namespace" || text == "module") && !after_dot {
+                names = Some(Vec::new());
+                expect_name = true;
+                keyword = (line, column, offset);
+            }
+            if text == "declare" { declare_kw = (line, column, offset); }
+            declare = if text == "declare" { 1 } else if declare == 1 && text == "global" { 2 } else { 0 };
+            after_dot = false;
+            return;
+        }
+        declare = 0;
+        after_dot = kind == TsTok::Punct && text == ".";
+    });
+}
+
 impl KernelResolver {
-    pub(super) fn ts_scope_scan(&mut self, file: &str, r: &ResolveRefIn) -> Option<Rc<TsScopeScan>> {
+    pub(super) fn ts_scope_scan(&mut self, file: &str) -> Option<Rc<TsScopeScan>> {
         if let Some(memo) = self.ts_scope_memo.get(file) {
             return memo.clone();
         }
-        let scan = self.ts_scope_scan_uncached(file, r).map(Rc::new);
+        let scan = self.ts_scope_scan_uncached(file).map(Rc::new);
         self.ts_scope_memo.insert(file.to_string(), scan.clone());
         scan
     }
 
-    fn ts_scope_scan_uncached(&mut self, file: &str, r: &ResolveRefIn) -> Option<TsScopeScan> {
+    /// Port of upstream ambient-modules.ts: reads tokens, never a tree. A
+    /// `declare module '<name>' { … }` in a script declaration file declares
+    /// the module; in a module file it augments one.
+    fn ts_scope_scan_uncached(&mut self, file: &str) -> Option<TsScopeScan> {
         let source = self.read_file(file)?;
-        let mut site = r.clone(); site.file_path = file.to_string(); site.language = "typescript".to_string();
-        let tree = self.js_binding_tree(&source, &site)?;
-        let children = super::iteration::named_children(tree.root_node());
-        let module_file = children.iter().any(|n| matches!(n.kind(), "import_statement" | "export_statement")
-            && !source.text()[n.byte_range()].trim_start().starts_with("export as namespace"));
-        let mut pending = children;
-        let mut blocks = Vec::new();
-        while let Some(node) = pending.pop() {
-            let raw = &source.text()[node.byte_range()];
-            if matches!(node.kind(), "internal_module" | "module") {
-                if let Some(name) = node.child_by_field_name("name") {
-                    let name = source.text()[name.byte_range()].trim().to_string();
-                    blocks.push(TsScopeBlock {
-                        ambient: name.starts_with(['\'', '"']), global: name == "global",
-                        name: name.trim_matches(['\'', '"']).to_string(),
-                        start: (node.start_position().row as i64 + 1, node.start_position().column as i64),
-                        end: (node.end_position().row as i64 + 1, node.end_position().column as i64), text: raw.to_string(),
-                    });
-                }
-            } else if node.kind() == "ambient_declaration" && re!(r"^declare\s+global\s*\{").is_match(raw.trim()) {
-                blocks.push(TsScopeBlock { name: "global".to_string(), ambient: false, global: true,
-                    start: (node.start_position().row as i64 + 1, node.start_position().column as i64),
-                    end: (node.end_position().row as i64 + 1, node.end_position().column as i64), text: raw.to_string() });
-            }
-            pending.extend(super::iteration::named_children(node));
+        let text = source.text();
+        // Nothing the scan can find: not a module file, no blocks to name.
+        if !re!(r"\b(?:declare|namespace|module|import|export)\b").is_match(text) {
+            return Some(TsScopeScan { module_file: false, blocks: Vec::new() });
         }
-        Some(TsScopeScan { module_file, blocks })
+        let (script, ambient) = ts_scan_ambient(text);
+        let top_level_global = re!(r"\.d\.[cm]?ts$").is_match(file) && script;
+        let mut blocks: Vec<TsScopeBlock> = Vec::new();
+        for b in ambient {
+            blocks.push(TsScopeBlock {
+                name: b.name, ambient: true, global: false,
+                start: b.start, end: b.end,
+                byte_start: b.byte_start, byte_end: b.byte_end,
+                text: text[b.byte_start..b.byte_end.min(text.len())].to_string(),
+                default_name: b.default_name, export_aliases: b.export_aliases, export_clause: b.export_clause,
+            });
+        }
+        ts_scan_namespaces(text, top_level_global, &mut blocks);
+        blocks.sort_by_key(|b| b.start);
+        Some(TsScopeScan { module_file: !script, blocks })
     }
 
     fn ts_scope_candidate(&mut self, n: &KNode, r: &ResolveRefIn) -> bool {
-        let Some(scan) = self.ts_scope_scan(&n.file_path, r) else { return false };
+        let Some(scan) = self.ts_scope_scan(&n.file_path) else { return false };
         let containing: Vec<_> = scan.blocks.iter().filter(|b| b.contains(n.start_line, n.start_column)).collect();
+        // Upstream's `global` flag on a namespace says the namespace itself is
+        // a global name (its members still need the qualifier); the bare-name
+        // gates here need the literal `declare global` block, whose members
+        // are globals — upstream's `globalWords` positions.
+        let global_block = |b: &&TsScopeBlock| b.name == "global" && b.global;
         if n.file_path == r.file_path {
-            return containing.iter().all(|b| b.global || b.contains(r.line, r.column));
+            return containing.iter().all(|b| global_block(b) || b.contains(r.line, r.column));
         }
         if is_test_path(&n.file_path) && !is_test_path(&r.file_path) { return false; }
-        if containing.iter().any(|b| b.ambient || (!b.global && b.name != "global")) { return false; }
-        containing.iter().any(|b| b.global) || (!scan.module_file && re!(r"\.d\.[cm]?ts$").is_match(&n.file_path) && !n.qualified_name.contains("::"))
+        if containing.iter().any(|b| b.ambient || !global_block(b)) { return false; }
+        containing.iter().any(global_block) || (!scan.module_file && re!(r"\.d\.[cm]?ts$").is_match(&n.file_path) && !n.qualified_name.contains("::"))
     }
 
     pub(super) fn ts_import_target_visible(&mut self, node: &KNode, source_file: &str, r: &ResolveRefIn) -> Res<bool> {
-        let Some(scan) = self.ts_scope_scan(&node.file_path, r) else { return Ok(true) };
+        let Some(scan) = self.ts_scope_scan(&node.file_path) else { return Ok(true) };
         let Some(block) = scan.blocks.iter().find(|b| b.ambient && b.contains(node.start_line, node.start_column)) else { return Ok(true) };
         Ok(self.import_mappings(source_file)?.iter().any(|m| m.source == block.name)
             || self.import_mappings(&r.file_path)?.iter().any(|m| m.source == block.name))
@@ -549,7 +984,7 @@ impl KernelResolver {
 
     fn ts_namespace_member(&mut self, file: &str, written: &str, r: &ResolveRefIn, imported: bool) -> Res<Option<Arc<KNode>>> {
         let Some((owner, name)) = written.rsplit_once('.') else { return Ok(None) };
-        let Some(scan) = self.ts_scope_scan(file, r) else { return Ok(None) };
+        let Some(scan) = self.ts_scope_scan(file) else { return Ok(None) };
         let nodes = self.nodes_in_file(file)?;
         Ok(nodes.iter().find(|n| n.name == name && scan.blocks.iter().any(|b| b.name == owner && b.contains(n.start_line, n.start_column)
             && (imported || file == r.file_path || scan.blocks.iter().any(|g| g.global && g.contains(b.start.0, b.start.1)) || !scan.module_file)))
@@ -576,17 +1011,44 @@ impl KernelResolver {
         Ok(None)
     }
 
+    /// The declaration files the project holds, computed once per resolution.
+    fn ts_dts_files(&mut self) -> Res<Vec<String>> {
+        if self.ts_dts_files.is_none() {
+            let files = match self.sorted_files() { Some(files) => files, None => Arc::new(self.table()?.files.iter().cloned().collect()) };
+            self.ts_dts_files = Some(files.iter().filter(|f| re!(r"\.d\.[cm]?ts$").is_match(f)).cloned().collect());
+        }
+        Ok(self.ts_dts_files.clone().unwrap_or_default())
+    }
+
+    /// The files whose script `declare module '<specifier>'` blocks declare
+    /// `specifier`, indexed by name — upstream's `scanned.bySpecifier`. Built
+    /// on first lookup; each file's scope scan is one text pass, memoized.
+    fn ts_ambient_files(&mut self, specifier: &str) -> Res<Vec<String>> {
+        if self.ts_ambient_index.is_none() {
+            let mut index: HashMap<String, Vec<String>> = HashMap::new();
+            for file in self.ts_dts_files()? {
+                let Some(scan) = self.ts_scope_scan(&file) else { continue };
+                if scan.module_file { continue; }
+                for name in scan.blocks.iter().filter(|b| b.ambient && !b.name.contains('*')).map(|b| b.name.strip_prefix("node:").unwrap_or(&b.name).to_string()) {
+                    index.entry(name).or_default().push(file.clone());
+                }
+            }
+            self.ts_ambient_index = Some(index);
+        }
+        Ok(self.ts_ambient_index.as_ref().unwrap().get(specifier).cloned().unwrap_or_default())
+    }
+
     pub(super) fn ts_ambient_lookup(&mut self, specifier: &str, exported: &str, default: bool, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
         if specifier.starts_with('.') || specifier.starts_with('/') { return Ok(None); }
         let specifier = specifier.strip_prefix("node:").unwrap_or(specifier);
         let memo_key = (format!("scope-export\0{specifier}\0{}", r.file_path), format!("{default}\0{exported}"));
         let cached = self.ts_ambient_memo.get(&memo_key).cloned();
         if cached == Some(None) { return Ok(None); }
-        let files = match self.sorted_files() { Some(files) => files, None => Arc::new(self.table()?.files.iter().cloned().collect()) };
+        let files = self.ts_ambient_files(specifier)?;
         let mut hits = Vec::new();
-        for file in files.iter().filter(|f| re!(r"\.d\.[cm]?ts$").is_match(f) && cached.as_ref().is_none_or(|cached| cached.as_ref() == Some(*f))) {
-            let Some(scan) = self.ts_scope_scan(file, r) else { continue };
-            if scan.module_file || (is_test_path(file) && !is_test_path(&r.file_path)) { continue; }
+        for file in files.iter().filter(|f| cached.as_ref().is_none_or(|cached| cached.as_ref() == Some(*f))) {
+            if is_test_path(file) && !is_test_path(&r.file_path) { continue; }
+            let Some(scan) = self.ts_scope_scan(file) else { continue };
             for block in scan.blocks.iter().filter(|b| b.ambient && b.name.strip_prefix("node:").unwrap_or(&b.name) == specifier) {
                 if exported == "*" {
                     if let Some(node) = self.nodes_in_file(file)?.iter().find(|n| n.kind == "file") { hits.push(node.clone()); }
@@ -594,24 +1056,21 @@ impl KernelResolver {
                 }
                 let mut local = exported.to_string();
                 if default {
-                    let Some(name) = re!(r"\bexport\s+(?:default\s+(?:(?:abstract\s+)?class\s+|function\s+)?|=\s*)([A-Za-z_$][\w$]*)").captures(&block.text).map(|m| m[1].to_string()) else { continue };
+                    let Some(name) = block.default_name.clone() else { continue };
                     local = name;
                 } else {
-                    for list in re!(r"\bexport\s+(?:type\s+)?\{([^}]*)\}").captures_iter(&block.text) {
-                        for item in list[1].split(',') {
-                            let parts: Vec<_> = item.trim().trim_start_matches("type ").split_whitespace().collect();
-                            if parts.len() == 3 && parts[1] == "as" && parts[2].trim_matches(['\'', '"']) == exported { local = parts[0].trim_matches(['\'', '"']).to_string(); }
-                        }
+                    for (exported_name, local_name) in &block.export_aliases {
+                        if exported_name == exported { local = local_name.clone(); }
                     }
                 }
-                if !default && re!(r"\bexport\s+(?:type\s+)?\{").is_match(&block.text) && local == exported {
+                if !default && block.export_clause && local == exported {
                     let direct = Self::cached_regex(&format!(r"\bexport\s+(?:(?:declare|abstract)\s+)?(?:interface|class|type|function|const|let|var|enum|namespace)\s+{}\b", regex::escape(exported)))?;
                     let listed = Self::cached_regex(&format!(r"(?:\{{|,)\s*(?:type\s+)?{}\s*(?:,|\}})", regex::escape(exported)))?;
                     if !direct.is_match(&block.text) && !listed.is_match(&block.text) { continue; }
                 }
                 let nodes = self.nodes_in_file(file)?;
                 let named: Vec<_> = nodes.iter().filter(|n| n.name == local && block.contains(n.start_line, n.start_column)
-                    && !scan.blocks.iter().any(|b| !b.ambient && !b.global && b.contains(n.start_line, n.start_column) && b.start > block.start && (n.start_line, n.start_column) > b.start)).cloned().collect();
+                    && !scan.blocks.iter().any(|b| !b.ambient && b.name != "global" && b.contains(n.start_line, n.start_column) && b.start > block.start && (n.start_line, n.start_column) > b.start)).cloned().collect();
                 hits.extend(named);
             }
         }
@@ -795,7 +1254,7 @@ impl KernelResolver {
             if imported { return Ok(None); }
         }
         if !type_ref { return Ok(None); }
-        if let Some(scan) = self.ts_scope_scan(&r.file_path, r) {
+        if let Some(scan) = self.ts_scope_scan(&r.file_path) {
             for block in scan.blocks.iter().filter(|b| b.ambient && b.contains(r.line, r.column)) {
                 if block.name.starts_with('.') {
                     if let Some(file) = self.resolve_import_path(&block.name, &r.file_path, &r.language)? {
@@ -815,7 +1274,7 @@ impl KernelResolver {
                 }
             }
         }
-        if let Some(scan) = self.ts_scope_scan(&r.file_path, r) {
+        if let Some(scan) = self.ts_scope_scan(&r.file_path) {
             for block in scan.blocks.iter().filter(|b| b.ambient && b.contains(r.line, r.column)) {
                 if let Some(node) = self.ts_ambient_lookup(&block.name, &written, false, r)? {
                     return Ok(Some(Some(KCand { node, confidence: 0.95, resolved_by: "import" })));
