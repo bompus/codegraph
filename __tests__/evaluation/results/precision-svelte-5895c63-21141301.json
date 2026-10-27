@@ -1,9 +1,9 @@
 {
-  "timestamp": "2026-10-27T14:33:20.959Z",
+  "timestamp": "2026-10-27T16:16:14.439Z",
   "corpus": "svelte",
   "repo": "https://github.com/sveltejs/svelte.git",
   "commit": "5895c63",
-  "codegraphSha": "e9561f46",
+  "codegraphSha": "21141301",
   "summary": {
     "absentCases": 1,
     "absentHeld": 1,

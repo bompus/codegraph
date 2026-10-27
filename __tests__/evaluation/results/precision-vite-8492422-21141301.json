@@ -1,9 +1,9 @@
 {
-  "timestamp": "2026-10-27T14:33:02.980Z",
+  "timestamp": "2026-10-27T16:15:50.773Z",
   "corpus": "vite",
   "repo": "https://github.com/vitejs/vite.git",
   "commit": "8492422",
-  "codegraphSha": "e9561f46",
+  "codegraphSha": "21141301",
   "summary": {
     "absentCases": 6,
     "absentHeld": 6,

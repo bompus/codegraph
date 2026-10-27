@@ -1,9 +1,9 @@
 {
-  "timestamp": "2026-10-27T14:33:43.845Z",
+  "timestamp": "2026-10-27T16:16:50.659Z",
   "corpus": "exposed",
   "repo": "https://github.com/JetBrains/Exposed.git",
   "commit": "2155404",
-  "codegraphSha": "e9561f46",
+  "codegraphSha": "21141301",
   "summary": {
     "absentCases": 2,
     "absentHeld": 2,

@@ -1,9 +1,9 @@
 {
-  "timestamp": "2026-10-27T14:33:47.168Z",
+  "timestamp": "2026-10-27T16:16:22.426Z",
   "corpus": "javalin",
   "repo": "https://github.com/javalin/javalin.git",
   "commit": "48bf31c",
-  "codegraphSha": "e9561f46",
+  "codegraphSha": "21141301",
   "summary": {
     "absentCases": 1,
     "absentHeld": 1,

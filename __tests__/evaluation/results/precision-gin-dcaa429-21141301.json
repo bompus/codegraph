@@ -1,9 +1,9 @@
 {
-  "timestamp": "2026-10-27T14:33:24.348Z",
+  "timestamp": "2026-10-27T16:16:17.620Z",
   "corpus": "gin",
   "repo": "https://github.com/gin-gonic/gin.git",
   "commit": "dcaa429",
-  "codegraphSha": "e9561f46",
+  "codegraphSha": "21141301",
   "summary": {
     "absentCases": 1,
     "absentHeld": 1,
