@@ -227,7 +227,7 @@ impl KernelResolver {
                 .map(|line| strip_line_comments(line)).collect::<Vec<_>>().join("\n");
             if owner.kind == "type_alias" {
                 // Alias method sets follow their targets; defined types do not.
-                let site = ResolveRefIn { from_node_id: owner.id.clone(), reference_name: owner.name.clone(), reference_kind: "references".to_string(), line: owner.start_line, column: owner.start_column, file_path: owner.file_path.clone(), language: "go".to_string(), row_id: None, candidates: None, failure_reason: None };
+                let site = ResolveRefIn { from_node_id: owner.id.clone(), reference_name: owner.name.clone(), reference_kind: "references".to_string(), line: owner.start_line, column: owner.start_column, file_path: owner.file_path.clone(), language: "go".to_string(), row_id: None, candidates: None, failure_reason: None, generated: None };
                 if let Some(tree) = self.parsed_tree(&lines, &site) {
                     let mut declaration = super::iteration::descendant_for_position(
                         tree.root_node(), lines.text(),
@@ -542,7 +542,7 @@ impl KernelResolver {
             candidates: None,
             file_path: cls.file_path.clone(),
             language: cls.language.clone(),
-            failure_reason: None,
+            failure_reason: None, generated: None,
         };
         let mut owner: Option<Arc<KNode>> = Some(Arc::new(cls.clone()));
         if let Some(holder) = holder {

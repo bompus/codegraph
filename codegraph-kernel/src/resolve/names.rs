@@ -7,6 +7,14 @@ use super::name_scope::{can_name_in_type_position, is_bare_rust_name};
 /// no repository class uses may claim: a guess, not a proven link.
 const PHP_UNSEEN_ANCESTOR_CONFIDENCE: f64 = 0.5;
 
+/// Max same-name candidate pool a generated-file ref will evaluate: real
+/// same-name pools sit in the tens; minified bundles push thousands of
+/// artifacts into one pool and turn each ref's retain/scope chain
+/// quadratic (pretix's fabric.min.js: ~950ms per 250-ref chunk vs a ~90ms
+/// floor). Over the cap the name-match declines — unresolved, never a
+/// truncated winner.
+const GENERATED_NAME_POOL_CAP: usize = 256;
+
 /// A module a bundler loads as data, not code: a stylesheet, an image, a GraphQL document, JSON, a font.
 const ASSET_MODULE: &str = r"(?i)\.(?:css|scss|sass|less|styl|stylus|pcss|graphql|gql|png|jpe?g|gif|svg|webp|avif|ico|bmp|tiff?|json5?|ya?ml|toml|md|mdx|txt|html?|xml|csv|woff2?|ttf|otf|eot|mp3|mp4|webm|ogg|wav|flac|pdf|wasm)$";
 
@@ -280,7 +288,7 @@ impl KernelResolver {
             row_id: None, from_node_id: candidate.id.clone(), reference_name: candidate.name.clone(),
             reference_kind: "calls".to_string(), line: candidate.start_line,
             column: candidate.start_column, candidates: None, file_path: candidate.file_path.clone(),
-            language: "rust".to_string(), failure_reason: None,
+            language: "rust".to_string(), failure_reason: None, generated: None,
         };
         let is_trait = self.rust_self_context(&site).is_some_and(|cx| cx.trait_name.is_some());
         self.rust_trait_memo.insert(candidate.id.clone(), is_trait);
@@ -686,6 +694,26 @@ impl KernelResolver {
             }
         }
         let named = self.nodes_by_name(&r.reference_name)?;
+        // Big same-name pools make a bare match pathological: a name like
+        // `t` gets thousands of candidates whose retain/scope checks
+        // dominate a whole batch (pretix's fabric.min.js: ~950ms per
+        // 250-ref chunk vs a ~90ms floor). Two bounds, both declining the
+        // name-match entirely — `unresolved`, never a truncated winner —
+        // with the framework merge still applying downstream:
+        //   * the ref's own file is generated-flagged (minified/codegen
+        //     sources degrade by precedent);
+        //   * the pool is dominated by generated nodes — an artifact pool
+        //     cannot hold a real target anyway, so handwritten refs in
+        //     vendored sources (d3.v6.js, fabric.js, pdf.worker.js —
+        //     unminified, unflagged) get the same bound, while real big
+        //     pools (Migration, __init__) proceed untouched.
+        if named.len() > GENERATED_NAME_POOL_CAP
+            && (r.generated == Some(true)
+                || named.iter().filter(|n| crate::textutil::is_generated_file(&n.file_path)).count() * 4
+                    >= named.len() * 3)
+        {
+            return Ok(None);
+        }
         // Macro constants are not callees (#1838). Where the name is a
         // function-like macro, the call can only reach the function another
         // build configuration compiles, never a same-named type
@@ -973,6 +1001,15 @@ impl KernelResolver {
             }
         }
         let candidates = self.nodes_by_lower_name(&r.reference_name)?;
+        // Same bound as match_by_exact_name_uncapped: the lowercase pool is
+        // at least as wide, so decline before the retain chain.
+        if candidates.len() > GENERATED_NAME_POOL_CAP
+            && (r.generated == Some(true)
+                || candidates.iter().filter(|n| crate::textutil::is_generated_file(&n.file_path)).count() * 4
+                    >= candidates.len() * 3)
+        {
+            return Ok(None);
+        }
         let type_ref = self.is_dotnet_type_ref(r);
         let rust_bare = is_bare_rust_name(r);
         // Names are case-sensitive in every language but a handful: Rust's

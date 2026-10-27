@@ -303,7 +303,7 @@ fn local_at(tree: &tree_sitter::Tree, source: &str, name: &str, line: i64, colum
 impl KernelResolver {
     pub(super) fn go_local_declaration_at(&mut self, name: String, file_path: String, line: i64, column: i64) -> Result<Option<GoLocalDeclaration>> {
         let r = ResolveRefIn { row_id: None, from_node_id: String::new(), reference_name: name.clone(), reference_kind: "references".into(),
-            line, column, candidates: None, file_path: file_path.clone(), language: "go".into(), failure_reason: None };
+            line, column, candidates: None, file_path: file_path.clone(), language: "go".into(), failure_reason: None, generated: None };
         let Some(file) = self.read_file(&file_path) else { return Ok(None) };
         let Some(tree) = self.parsed_tree(&file, &r) else { return Ok(None) };
         Ok(local_at(&tree, file.text(), &name, line, column))

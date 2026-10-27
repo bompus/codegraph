@@ -175,6 +175,11 @@ pub struct ResolveRefIn {
     pub file_path: String,
     pub language: String,
     pub failure_reason: Option<String>,
+    /// Files marked generated at index time (minified bundles, codegen
+    /// output) get a bounded name-match: their same-name candidate pools
+    /// are minification artifacts, and scanning all of them costs ~10× a
+    /// normal ref. Absent/NULL means false.
+    pub generated: Option<bool>,
 }
 
 impl ResolveRefIn {
@@ -1086,10 +1091,11 @@ impl KernelResolver {
     ) -> Result<Vec<ResolveRefIn>> {
         const PREREQ_KINDS: &str = "('imports','extends','implements')";
         let sql = format!(
-            "SELECT id, from_node_id, reference_name, reference_kind, line, col, \
-             candidates, file_path, language, failure_reason FROM unresolved_refs \
-             WHERE status = 'pending' AND id > ?1 \
-             AND reference_kind {} {} ORDER BY id LIMIT ?2",
+            "SELECT r.id, r.from_node_id, r.reference_name, r.reference_kind, r.line, r.col, \
+             r.candidates, r.file_path, r.language, r.failure_reason, f.generated \
+             FROM unresolved_refs r LEFT JOIN files f ON f.path = r.file_path \
+             WHERE r.status = 'pending' AND r.id > ?1 \
+             AND r.reference_kind {} {} ORDER BY r.id LIMIT ?2",
             if prerequisites { "IN" } else { "NOT IN" },
             PREREQ_KINDS
         );
@@ -1110,6 +1116,7 @@ impl KernelResolver {
                     row.get::<_, Option<String>>(7)?.unwrap_or_default(),
                     row.get::<_, Option<String>>(8)?.unwrap_or_default(),
                     row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<i64>>(10)?.map(|g| g != 0),
                 ))
             })
             .map_err(|e| Error::from_reason(e.to_string()))?;
@@ -1119,7 +1126,7 @@ impl KernelResolver {
         }
         drop(stmt);
         let mut out = Vec::new();
-        for (row_id, from_node_id, reference_name, reference_kind, line, column, candidates, mut file_path, mut language, failure_reason) in collected
+        for (row_id, from_node_id, reference_name, reference_kind, line, column, candidates, mut file_path, mut language, failure_reason, generated) in collected
         {
             // Denormalized fallback — mirrors UnresolvedRef construction in
             // resolveBatchYielding: `raw.filePath || nodePath`,
@@ -1135,6 +1142,10 @@ impl KernelResolver {
                     }
                 }
             }
+            // Union with the path convention — same rule as
+            // generatedPredicateFor on the TS side: the DB flag OR a
+            // generated-looking filename.
+            let generated = generated == Some(true) || crate::textutil::is_generated_file(&file_path);
             out.push(ResolveRefIn {
                 row_id: Some(row_id),
                 from_node_id,
@@ -1146,6 +1157,7 @@ impl KernelResolver {
                 file_path,
                 language,
                 failure_reason,
+                generated: Some(generated),
             });
         }
         Ok(out)

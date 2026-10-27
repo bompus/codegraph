@@ -165,7 +165,7 @@ impl KernelResolver {
         let site = ResolveRefIn { row_id: None, from_node_id: n.id.clone(),
             reference_name: root.to_string(), reference_kind: "references".to_string(),
             line: n.start_line, column: n.start_column, candidates: None,
-            file_path: n.file_path.clone(), language: n.language.clone(), failure_reason: None };
+            file_path: n.file_path.clone(), language: n.language.clone(), failure_reason: None, generated: None };
         if self.js_root_binding_scope(&site, root).is_some() { return Ok(false); }
         let global = if global_host(n) {
             let host = root;

@@ -1896,18 +1896,27 @@ export class ReferenceResolver {
 
   /** One kernel `resolveChunk` over `refs`, in order. Throws on any native failure. */
   private resolveChunkWithKernel(kernel: KernelResolverLike, refs: UnresolvedReference[]): ResolveOutcome[] {
-    const kernelRows: ResolveRefIn[] = refs.map((raw) => ({
-      rowId: raw.rowId,
-      fromNodeId: raw.fromNodeId,
-      referenceName: raw.referenceName,
-      referenceKind: raw.referenceKind,
-      line: raw.line,
-      column: raw.column,
-      candidates: raw.candidates ? JSON.stringify(raw.candidates) : undefined,
-      filePath: raw.filePath || this.getFilePathFromNodeId(raw.fromNodeId) || '',
-      language: raw.language || this.getLanguageFromNodeId(raw.fromNodeId) || '',
-      failureReason: raw.failureReason,
-    }));
+    // generatedPredicateFor unions the indexed flag with the path convention —
+    // the kernel applies its bounded name-match only to generated sources
+    // (minified bundles' same-name pools cost ~10x a normal ref to scan).
+    const filePaths: string[] = refs.map((raw) => raw.filePath || this.getFilePathFromNodeId(raw.fromNodeId) || '');
+    const isGenerated = this.queries.generatedPredicateFor(filePaths);
+    const kernelRows: ResolveRefIn[] = refs.map((raw, i) => {
+      const filePath = filePaths[i] ?? '';
+      return {
+        rowId: raw.rowId,
+        fromNodeId: raw.fromNodeId,
+        referenceName: raw.referenceName,
+        referenceKind: raw.referenceKind,
+        line: raw.line,
+        column: raw.column,
+        candidates: raw.candidates ? JSON.stringify(raw.candidates) : undefined,
+        filePath,
+        language: raw.language || this.getLanguageFromNodeId(raw.fromNodeId) || '',
+        failureReason: raw.failureReason,
+        generated: isGenerated(filePath),
+      };
+    });
     const outcomes = kernel.resolveChunk(kernelRows);
     if (outcomes.length !== refs.length) {
       throw new Error(`kernel resolveChunk returned ${outcomes.length} outcomes for ${refs.length} refs`);

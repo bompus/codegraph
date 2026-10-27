@@ -465,7 +465,7 @@ impl KernelResolver {
             candidates: None,
             file_path: n.file_path.clone(),
             language: n.language.clone(),
-            failure_reason: None,
+            failure_reason: None, generated: None,
         };
         self.ensure_cpp_default_index(&n.file_path, &site)?;
         let namespaces = self
