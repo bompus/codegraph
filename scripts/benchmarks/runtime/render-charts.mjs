@@ -10,7 +10,10 @@
 // Per corpus the accepted attempt is the first `index-<corpus>-aN` directory whose
 // `status` file reads `accepted`; the same goes for `mcp-<corpus>-aN` and `cli-gin-aN`.
 // Medians are taken over the runs in that attempt (two per arm, mirrored order).
-// A change counts as better or worse only outside the 3% reporting band.
+// When the benchmark wrote the flat layout (index-sync.tsv, mcp.jsonl, cli-*.json
+// at the output root), run adapt-flat-output.mjs first to stage this layout.
+// A change counts as better or worse only outside the comparison's own
+// run-to-run spread (house-rules #321).
 import { readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -23,8 +26,13 @@ for (const [k, v] of Object.entries(META)) if (!v) { console.error(`missing --${
 
 const ARMS = ['upnode', 'forknode', 'forkbun', 'upbun'];
 const CORPORA = [['gin', 'gin'], ['Alamofire', 'Alamofire'], ['pretix', 'pretix'], ['cpython', 'CPython'], ['discourse', 'discourse'], ['supabase', 'supabase'], ['n8n', 'n8n']];
-const BAND = 0.03;
+// No fixed reporting band: a cell counts as better or worse only when the
+// fork/upstream gap exceeds that comparison's own run-to-run spread — the
+// larger of the two arms' (max − min) / median for the same metric, each arm
+// measured over its repeated runs. A metric whose median is non-positive or
+// whose samples can't support a ratio is inconclusive.
 const median = (a) => { const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const spreadRatio = (a) => { const m = median(a); return m > 0 ? (Math.max(...a) - Math.min(...a)) / m : NaN; };
 const seconds = (t) => { const p = t.split(':'); return parseFloat(p.at(-1)) + 60 * parseFloat(p.at(-2)); };
 const accepted = (prefix) => {
   const attempt = (d) => +d.slice(d.lastIndexOf('-a') + 2);
@@ -40,7 +48,7 @@ for (const [key] of CORPORA) {
   const rows = readFileSync(join(accepted(`index-${key}`), 'index-sync.tsv'), 'utf8').trim().split('\n').map((l) => l.split('\t'));
   index[key] = {};
   for (const arm of ARMS) {
-    const i = rows.filter((r) => r[1] === arm && r[2] === 'index');
+    const i = rows.filter((r) => r[1] === arm && r[2] === 'index' && r[3] === '0');
     const s = rows.filter((r) => r[1] === arm && r[2] !== 'index');
     if (!i.length || !s.length) throw new Error(`${key} ${arm}: missing rows`);
     // A sync that exits non-zero has no time worth comparing: its comparisons are left out and drawn as n/a.
@@ -49,6 +57,8 @@ for (const [key] of CORPORA) {
       indexS: median(i.map((r) => seconds(r[4]))), peakMiB: median(i.map((r) => +r[5])) / 1024,
       dbMiB: median(i.map((r) => +r[7])) / 2 ** 20, nodes: +i[0][8], edges: +i[0][9],
       syncS: syncFailed ? NaN : median(s.map((r) => seconds(r[4]))), runs: i.length, syncRuns: s.length,
+      indexS_spread: spreadRatio(i.map((r) => seconds(r[4]))), peakMiB_spread: spreadRatio(i.map((r) => +r[5])),
+      syncS_spread: syncFailed ? NaN : spreadRatio(s.map((r) => seconds(r[4]))),
     };
   }
 }
@@ -63,9 +73,12 @@ for (const key of ['gin', 'n8n']) {
       if (x.length === 0 || x.some((r) => r[k] == null)) throw new Error(`mcp ${key} ${arm}: ${k} is missing in ${x.length} run(s)`);
       return median(x.map((r) => r[k]));
     };
+    const sp = (k) => spreadRatio(x.map((r) => r[k]));
     mcp[key][arm] = {
       initMs: g('initMs'), firstMs: g('coldToFirstAnswerMs'), warmMs: g('warmMedianMs'), p90Ms: g('warmP90Ms'),
       wave8Ms: g('wave8Ms'), watchMs: g('watchSyncMs'), busyMiB: g('busy_totalMB'), idleMiB: g('idle_totalMB'), idleCpu: g('idleCpuPct'),
+      initMs_spread: sp('initMs'), firstMs_spread: sp('coldToFirstAnswerMs'), warmMs_spread: sp('warmMedianMs'), p90Ms_spread: sp('warmP90Ms'),
+      wave8Ms_spread: sp('wave8Ms'), watchMs_spread: sp('watchSyncMs'), busyMiB_spread: sp('busy_totalMB'), idleMiB_spread: sp('idle_totalMB'), idleCpu_spread: sp('idleCpuPct'),
     };
   }
 }
@@ -77,7 +90,7 @@ const cli = {};
     cli[n] = { label };
     for (const arm of ARMS) {
       const w = res.find((r) => r.name === arm).summary.time_wall_clock;
-      cli[n][arm] = { mean: w.mean * 1000, sd: w.stddev * 1000 };
+      cli[n][arm] = { mean: w.mean * 1000, sd: w.stddev * 1000, spread: w.stddev / w.mean };
     }
   }
 }
@@ -90,15 +103,15 @@ const fPct = (v) => `${v.toFixed(2)}%`;
 const pctChange = (r) => { if (!Number.isFinite(r)) return 'n/a'; const d = Math.round((r - 1) * 100); return (d > 0 ? '+' : d < 0 ? '−' : '') + Math.abs(d) + '%'; };
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
 
-// ---- every comparison: [group, label, {arm: value}, formatter]
+// ---- every comparison: [group, label, {arm: value}, formatter, {arm: spreadRatio}]
 const metrics = [];
-for (const [key, name] of CORPORA) metrics.push(['Full index: time', name, pick(index[key], 'indexS'), fSec]);
-for (const [key, name] of CORPORA) metrics.push(['Full index: peak memory', name, pick(index[key], 'peakMiB'), fMem]);
-for (const [key, name] of CORPORA) metrics.push(['One-file sync: time', name, pick(index[key], 'syncS'), fSec]);
+for (const [key, name] of CORPORA) metrics.push(['Full index: time', name, pick(index[key], 'indexS'), fSec, pick(index[key], 'indexS_spread')]);
+for (const [key, name] of CORPORA) metrics.push(['Full index: peak memory', name, pick(index[key], 'peakMiB'), fMem, pick(index[key], 'peakMiB_spread')]);
+for (const [key, name] of CORPORA) metrics.push(['One-file sync: time', name, pick(index[key], 'syncS'), fSec, pick(index[key], 'syncS_spread')]);
 const MCP_ROWS = [['firstMs', 'Start→answer', fMs], ['warmMs', 'Warm ask', fMs], ['wave8Ms', '8 asks at once', fMs], ['watchMs', 'File watcher', fMs],
   ['busyMiB', 'Memory busy', fMem], ['idleMiB', 'Memory idle', fMem], ['idleCpu', 'CPU idle', fPct]];
-for (const key of ['n8n', 'gin']) for (const [k, label, f] of MCP_ROWS) metrics.push([`MCP server on ${key}`, label, pick(mcp[key], k), f]);
-for (const n of ['version', 'status', 'explore']) metrics.push(['Command-line startup on gin', cli[n].label, Object.fromEntries(ARMS.map((a) => [a, cli[n][a].mean])), fMs]);
+for (const key of ['n8n', 'gin']) for (const [k, label, f] of MCP_ROWS) metrics.push([`MCP server on ${key}`, label, pick(mcp[key], k), f, pick(mcp[key], k + '_spread')]);
+for (const n of ['version', 'status', 'explore']) metrics.push(['Command-line startup on gin', cli[n].label, Object.fromEntries(ARMS.map((a) => [a, cli[n][a].mean])), fMs, Object.fromEntries(ARMS.map((a) => [a, cli[n][a].spread]))]);
 function pick(o, k) { return Object.fromEntries(ARMS.map((a) => [a, o[a][k]])); }
 
 // Two zero measurements are equal; a zero baseline with a positive fork value is Infinity.
@@ -106,19 +119,36 @@ const ratio = (m, rt) => {
   const [up, fk] = rt === 'Node' ? [m[2].upnode, m[2].forknode] : [m[2].upbun, m[2].forkbun];
   return up === 0 ? (fk === 0 ? 1 : Infinity) : fk / up;
 };
+// Per-comparison variation criterion: the larger of the two compared arms' own
+// run-to-run spread (max−min)/median — or sd/mean for the hyperfine runs. A gap
+// outside it is a change; inside it is no clear change; when it can't be
+// computed the cell is inconclusive.
+const cellSpread = (m, rt) => {
+  const [up, fk] = rt === 'Node' ? ['upnode', 'forknode'] : ['upbun', 'forkbun'];
+  const s = Math.max(m[4]?.[up] ?? NaN, m[4]?.[fk] ?? NaN);
+  return Number.isFinite(s) ? s : NaN;
+};
+const classify = (c) => {
+  if (Number.isNaN(c.r) || Number.isNaN(c.spread)) return 'na';
+  if (c.r < 1 - c.spread) return 'better';
+  if (c.r > 1 + c.spread) return 'worse';
+  return 'same';
+};
 const every = [];
-for (const m of metrics) for (const rt of ['Node', 'Bun']) every.push({ m, rt, r: ratio(m, rt) });
+for (const m of metrics) for (const rt of ['Node', 'Bun']) every.push({ m, rt, r: ratio(m, rt), spread: cellSpread(m, rt) });
 const excluded = every.filter((c) => Number.isNaN(c.r));
+const inconclusive = every.filter((c) => !Number.isNaN(c.r) && Number.isNaN(c.spread));
 const ARM_LABEL = { upnode: 'upstream on Node', forknode: 'fork on Node', forkbun: 'fork on Bun', upbun: 'upstream on Bun' };
 const failedArms = ARMS.filter((a) => CORPORA.some(([k]) => Number.isNaN(index[k][a].syncS))).map((a) => ARM_LABEL[a]).join(' and ');
 const cmp = every.filter((c) => !Number.isNaN(c.r));
-const nBetter = cmp.filter((c) => c.r < 1 - BAND).length;
-const nSame = cmp.filter((c) => c.r >= 1 - BAND && c.r <= 1 + BAND).length;
-const nWorse = cmp.filter((c) => c.r > 1 + BAND).length;
+const nBetter = cmp.filter((c) => classify(c) === 'better').length;
+const nSame = cmp.filter((c) => classify(c) === 'same').length;
+const nWorse = cmp.filter((c) => classify(c) === 'worse').length;
+const nInconclusive = inconclusive.length;
 
 // ---- SVG pieces
 const C = { bg: '#0d1117', panel: '#161b22', text: '#e6edf3', muted: '#8b949e', good: '#2ea043', same: '#d29922', bad: '#f85149' };
-const col = (r) => Number.isNaN(r) ? C.muted : (r < 1 - BAND ? C.good : r > 1 + BAND ? C.bad : C.same);
+const colFor = (m, rt) => { const k = classify({ m, rt, r: ratio(m, rt), spread: cellSpread(m, rt) }); return k === 'better' ? C.good : k === 'worse' ? C.bad : k === 'same' ? C.same : C.muted; };
 const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
 const T = (x, y, s, o = {}) => `<text x="${x}" y="${y}" font-size="${o.size || 12}" font-weight="${o.w || 400}" fill="${o.fill || C.text}" text-anchor="${o.a || 'start'}">${esc(s)}</text>`;
 const wrap = (W, H, body, title, desc) => `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="${FONT}" role="img" aria-labelledby="t d">\n<title id="t">${esc(title)}</title>\n<desc id="d">${esc(desc)}</desc>\n<rect width="${W}" height="${H}" rx="8" fill="${C.bg}"/>\n${body}\n</svg>\n`;
@@ -132,8 +162,8 @@ function cards() {
   const speedups = ['n8n', 'CPython'].map((n) => 1 / ratio(idx(n), 'Node'));
   const savings = ['n8n', 'CPython'].map((n) => (1 - ratio(mem(n), 'Node')) * 100);
   const lo = (a) => Math.min(...a), hi = (a) => Math.max(...a);
-  const sp = lo(speedups).toFixed(1) === hi(speedups).toFixed(1) ? `${lo(speedups).toFixed(1)}×` : `${lo(speedups).toFixed(1)}–${hi(speedups).toFixed(1)}×`;
-  const title = `n8n and CPython: the fork indexes ${sp} faster and uses ${Math.round(lo(savings))}–${Math.round(hi(savings))}% less memory`;
+  const dir = (s) => s >= 1 ? `${s.toFixed(1)}× faster` : `${(1 / s).toFixed(1)}× slower`;
+  const title = `Index on n8n ${dir(speedups[0])}, CPython ${dir(speedups[1])}; the fork uses ${Math.round(lo(savings))}–${Math.round(hi(savings))}% less memory`;
   const card = [
     ['Index n8n from scratch', idx('n8n'), 'time'],
     ['Update after editing one file', find('One-file sync: time', 'n8n'), 'time'],
@@ -146,11 +176,11 @@ function cards() {
   b += T(24, 60, 'Numbers are for n8n (the largest test repo) and the command line. Lower is better. Upstream → fork.', { size: 12, fill: C.muted });
   card.forEach(([t, m, kind], i) => {
     const x = 24 + (i % 3) * 284, y = 82 + Math.floor(i / 3) * 150, r = ratio(m, 'Node');
-    const badge = Number.isNaN(r) ? 'n/a' : kind === 'mem' ? `${Math.round((1 - r) * 100)}% less` : `${(1 / r).toFixed(1)}× faster`;
+    const badge = Number.isNaN(r) ? 'n/a' : kind === 'mem' ? (r <= 1 ? `${Math.round((1 - r) * 100)}% less` : `${Math.round((r - 1) * 100)}% more`) : (r >= 1 ? `${r.toFixed(1)}× slower` : `${(1 / r).toFixed(1)}× faster`);
     const f = m[3], v = m[2];
     b += `<rect x="${x}" y="${y}" width="272" height="138" rx="8" fill="${C.panel}"/>`;
     b += T(x + 16, y + 26, t, { size: 13, fill: C.muted });
-    b += T(x + 16, y + 72, badge, { size: 30, w: 700, fill: col(r) });
+    b += T(x + 16, y + 72, badge, { size: 30, w: 700, fill: colFor(m, 'Node') });
     b += T(x + 16, y + 100, `${f(v.upnode)} → ${f(v.forknode)}`, { size: 15 });
     b += T(x + 16, y + 120, `on Bun: ${f(v.upbun)} → ${f(v.forkbun)}`, { size: 12, fill: C.muted });
   });
@@ -159,19 +189,19 @@ function cards() {
   const phrase = { 'Full index: time': (l) => `Indexing ${l}`, 'Full index: peak memory': (l) => `Memory indexing ${l}`, 'One-file sync: time': (l) => `Syncing one file in ${l}` };
   const name = (m) => (phrase[m[0]] ? phrase[m[0]](m[1]) : m[0].startsWith('MCP server on ') ? `${m[1]} on ${m[0].slice(14)} (MCP server)` : `codegraph ${m[1]}`);
   const byMetric = new Map();
-  for (const c of cmp) if (c.r > 1 + BAND) { const k = c.m; (byMetric.get(k) ?? byMetric.set(k, []).get(k)).push(c); }
+  for (const c of cmp) if (classify(c) === 'worse') { const k = c.m; (byMetric.get(k) ?? byMetric.set(k, []).get(k)).push(c); }
   const worse = [...byMetric].map(([m, cs]) => `${name(m)}: ` + cs.map((c) => { const v = c.rt === 'Node' ? [m[2].upnode, m[2].forknode] : [m[2].upbun, m[2].forkbun]; return `${m[3](v[0])} → ${m[3](v[1])} on ${c.rt} (${pctChange(c.r)})`; }).join(', '));
   const lower = (s) => s[0].toLowerCase() + s.slice(1);
-  const same = cmp.filter((c) => c.r >= 1 - BAND && c.r <= 1 + BAND).map((c) => `${lower(name(c.m))} on ${c.rt}`);
+  const same = cmp.filter((c) => classify(c) === 'same').map((c) => `${lower(name(c.m))} on ${c.rt}`);
   const wrapText = (s, n) => { const out = []; let cur = ''; for (const w of s.split(' ')) { if ((cur + ' ' + w).trim().length > n) { out.push(cur); cur = w; } else cur = (cur + ' ' + w).trim(); } if (cur) out.push(cur); return out; };
-  const lines = [...worse, `About the same (within 3%): ${same.join('; ')}.`].flatMap((l) => wrapText(l, 118));
+  const lines = [...worse, `No clear change (inside the comparison's own run-to-run spread): ${same.join('; ')}.`].flatMap((l) => wrapText(l, 118));
   const boxH = 44 + lines.length * 22;
   let y = 392;
   b += `<rect x="24" y="${y}" width="832" height="${boxH}" rx="8" fill="${C.panel}" stroke="${C.bad}" stroke-opacity=".5"/>`;
   b += T(40, y + 26, 'Where the fork is not better', { size: 14, w: 700, fill: C.bad });
   lines.forEach((s, i) => { b += T(40, y + 54 + i * 22, s, { size: 12.5 }); });
   y += boxH + 26;
-  const tally = `Over all ${cmp.length} comparisons on Node and Bun: better in ${nBetter}, about the same in ${nSame}, worse in ${nWorse}.${excluded.length ? ` ${excluded.length} more are left out because the one-file sync failed for ${failedArms}.` : ''}`;
+  const tally = `Over all ${cmp.length} comparisons on Node and Bun: better in ${nBetter}, no clear change in ${nSame}, worse in ${nWorse}${nInconclusive ? `, inconclusive in ${nInconclusive}` : ''}. A difference counts only when it exceeds that comparison's own run-to-run spread.${excluded.length ? ` ${excluded.length} more are left out because the one-file sync failed for ${failedArms}.` : ''}`;
   wrapLine(tally, 120).forEach((l, i) => { if (i) y += 18; b += T(24, y, l, { size: 12, fill: C.muted }); });
   y += 20;
   b += T(24, y, FOOT, { size: 11, fill: C.muted });
@@ -184,7 +214,7 @@ function heatmap() {
   const W = 880;
   let y = 36, b = T(24, y, 'Every result at a glance', { size: 20, w: 700 });
   y += 22;
-  b += T(24, y, 'Each cell is the fork’s change versus upstream. Negative is better (less time or memory). Green = better by over 3%, amber = about the same, red = worse.', { size: 12, fill: C.muted });
+  b += T(24, y, 'Each cell is the fork’s change versus upstream. Negative is better (less time or memory). Green = better beyond the comparison’s own run-to-run spread, amber = inside it, red = worse, grey = inconclusive or no data.', { size: 12, fill: C.muted });
   y += 26;
   const groups = [...new Set(metrics.map((m) => m[0]))];
   for (const g of groups) {
@@ -196,8 +226,8 @@ function heatmap() {
     for (const rt of ['Node', 'Bun']) {
       b += T(LX, y + CH / 2 + 4, `Fork on ${rt}`, { size: 11, fill: C.muted });
       cols.forEach((c, i) => {
-        const r = ratio(c, rt), op = r > 1 + BAND ? 0.85 : r < 1 - BAND ? 0.25 + Math.min(0.6, 1 - r) : 0.55;
-        b += `<rect x="${LX + LW + i * CW + 2}" y="${y}" width="${CW - 4}" height="${CH - 4}" rx="4" fill="${col(r)}" fill-opacity="${op}"/>`;
+        const r = ratio(c, rt), k = classify({ m: c, rt, r, spread: cellSpread(c, rt) }), op = k === 'worse' ? 0.85 : k === 'better' ? 0.25 + Math.min(0.6, 1 - r) : 0.55;
+        b += `<rect x="${LX + LW + i * CW + 2}" y="${y}" width="${CW - 4}" height="${CH - 4}" rx="4" fill="${colFor(c, rt)}" fill-opacity="${op}"/>`;
         b += T(LX + LW + i * CW + CW / 2, y + CH / 2 + 3, pctChange(r), { size: 13, w: 700, a: 'middle' });
       });
       y += CH;
@@ -252,7 +282,7 @@ function tables() {
   L.push(`- Database size, fork vs upstream, % bigger: ${ks.map((k) => `${k} ${((index[k].forknode.dbMiB / index[k].upnode.dbMiB - 1) * 100).toFixed(0)}`).join(', ')}`);
   L.push(`- Edges, fork vs upstream, % change: ${ks.map((k) => `${k} ${((index[k].forknode.edges / index[k].upnode.edges - 1) * 100).toFixed(1)}`).join(', ')}`);
   L.push(`- Node/edge counts identical across runtimes: ${ks.every((k) => index[k].upnode.nodes === index[k].upbun.nodes && index[k].forknode.nodes === index[k].forkbun.nodes && index[k].upnode.edges === index[k].upbun.edges && index[k].forknode.edges === index[k].forkbun.edges)}`);
-  L.push(`- Comparisons: ${cmp.length}; better ${nBetter}, about the same ${nSame}, worse ${nWorse}`);
+  L.push(`- Comparisons: ${cmp.length}; better ${nBetter}, no clear change ${nSame}, worse ${nWorse}${nInconclusive ? `, inconclusive ${nInconclusive}` : ''} (a difference counts only outside the comparison's own run-to-run spread)`);
   return L.join('\n') + '\n';
 }
 

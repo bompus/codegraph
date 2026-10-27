@@ -80,13 +80,13 @@ Session search uses `.codegraph/sessions-v2.db`. The first session search import
 
 ### What the fork adds
 
-Compared with upstream `main` at `1d3619d6` (after v1.6.2). Each item here and in the dispatch and framework lists below was checked against upstream's tree at that commit.
+Compared with upstream `main` at `69af19ac` (after v1.6.2). Each item here and in the dispatch and framework lists below was checked against upstream's tree at that commit.
 
 | Feature | Upstream | Fork | What it does |
 |---|:-:|:-:|---|
 | Session search (`codegraph sessions`, `codegraph_sessions`) | — | ✓ | Searches this project's earlier Claude Code, Codex, Cursor/T3, OpenCode, AGY, Devin and Grok transcripts and its git commit messages, so an agent can find what a past session decided. `codegraph_explore` also names the sessions that mentioned the symbols it returns. `"sessions": false` in `codegraph.json` turns it off. Experimental: `projects` / `--project` searches up to five projects' histories in one call. |
 | Markdown indexing | — | ✓ | Headings, sections, tables and links become graph nodes; a documentation question gets the matching section. Explicit code-file pins remain eligible in mixed documentation/code requests. |
-| Missing names reported | — | ✓ | After a complete scan of indexed source without skipped files, `codegraph_explore` lists requested names it cannot find, helping an agent catch a guessed name. |
+| Missing names reported | Reports them | Reports them, and proves absence | Upstream's note says a requested name is not in the index and the defining file may be unindexed. The fork keeps that note and additionally lists a name only when a bounded (300 ms) scan of every hand-written source file — plus file stems and bindings — completes without finding it as any word, so a listed name is absent from the project outright, not just unindexed. An incomplete scan lists nothing rather than guess. |
 | Requested-source limits reported | — | ✓ | Explore reports requested files that did not receive pin priority within the file limit, unexamined path-like references beyond its bounded scan, and uncovered indexed continuation ranges after a capped file gather. Existing output limits still apply. |
 | Local callee source with file pins | — | ✓ | When a query names functions in pinned files, `codegraph_explore` prioritizes local callee bodies through two call or callback hops, within the file and output budgets. |
 | Quoted prose source | — | ✓ | Quoted spans of three or more words find script strings and template text, ignoring case and punctuation, through a capped source scan. No re-index needed. |
@@ -198,11 +198,11 @@ Call resolution the fork adds:
 
 ### Measured results
 
-Upstream `main` at `986de95c` against the fork at `633fc82c`, each run on Node.js 24.22.0 and on Bun 1.4.3. The fork at `633fc82c` lacks one upstream commit, `986de95c` (an import through `@/` or `~/` in a Vue project links the module's file), so the arms differ in it. Measured 2026-10-18 on a 16-vCPU WSL2 host over seven corpora, with the arms in mirrored order; index figures are the median of two runs and sync figures the median of four. Upstream refuses to start on Bun, which reports itself as Node 26, because upstream blocks Node 25 and newer. With `CODEGRAPH_ALLOW_UNSAFE_NODE=1` it runs; those numbers, the method and the graph sizes are in [`docs/benchmarks/fork-vs-upstream-node-bun-2026-10-18.md`](docs/benchmarks/fork-vs-upstream-node-bun-2026-10-18.md), which also compares this run with the 2026-10-14 one. The scripts that produced them are in [`scripts/benchmarks/runtime/`](scripts/benchmarks/runtime/).
+Upstream `main` at `69af19ac` against the fork at `bc27fdb4`, each run on Node.js 24.22.1 and on Bun 1.4.4. Measured 2026-10-27 on a 16-vCPU WSL2 host over seven corpora, with the arms in mirrored order; index figures are the median of two runs and sync figures the median of four. A comparison counts as a change only when the gap exceeds that comparison's own run-to-run spread — the larger of the two arms' (max − min) / median — and cells that cannot show that are marked inconclusive or no clear change rather than a fixed band. Upstream refuses to start on Bun, which reports itself as Node 26, because upstream blocks Node 25 and newer; it ran here with `CODEGRAPH_ALLOW_UNSAFE_NODE=1`. The host shared other work during the run, so spread-based cells carry more noise than a quiet host would; the numbers, the method, the graph sizes and the disclosures are in [`docs/benchmarks/fork-vs-upstream-node-bun-2026-10-27.md`](docs/benchmarks/fork-vs-upstream-node-bun-2026-10-27.md). The scripts that produced them are in [`scripts/benchmarks/runtime/`](scripts/benchmarks/runtime/).
 
-![Fork against upstream CodeGraph on n8n and the command line: the fork indexes n8n 1.3 times faster, syncs an edited file 3.0 times faster, answers a warm question 3.4 times faster and uses 37% less memory while indexing. The fork is better in 65 of 74 comparisons, about the same in 4 and worse in 5.](assets/fork-vs-upstream-performance.svg?v=4)
+![Fork against upstream CodeGraph on n8n and the command line: the fork indexes n8n 2.4 times slower, syncs an edited file 2.8 times faster, answers a warm question 1.8 times faster and uses 49% less memory while indexing. The fork is better in 56 of 76 comparisons, shows no clear change in 5 and is worse in 15.](assets/fork-vs-upstream-performance.svg?v=5)
 
-The fork's one-file sync is faster than upstream's on every corpus where upstream's sync succeeds: 14% (gin) to 67% (n8n) on Node and 5% (pretix) to 65% (n8n) on Bun, 28% on CPython on Node and 21% on Bun. On Node the fork indexes CPython 17% and n8n 22% faster, gin and Alamofire 4% faster, ties on discourse and supabase (within 3%), and is slower on pretix (+13%); it uses less memory while indexing on five of the seven corpora, and more on Alamofire (+15%) and pretix (+11%). The five comparisons where the fork is worse are listed in the chart: indexing pretix (+13% on Node, +20% on Bun) and index memory on Alamofire (+15% on Node) and pretix (+11% on Node, +6% on Bun). Upstream's one-file sync fails on supabase with `FOREIGN KEY constraint failed` ([colbymchenry/codegraph#2565](https://github.com/colbymchenry/codegraph/issues/2565)), so the two supabase sync comparisons are left out of the 74. The chart does not compare peak memory during a one-file sync, where the fork is higher on CPython (1.23 GiB against 909 MiB on Node, +39%; +51% on Bun), Alamofire (+14% on Node), gin (+10%) and discourse (+4% on Node, +8% on Bun). The benchmark doc has [every result](docs/benchmarks/fork-vs-upstream-node-bun-2026-10-18.md#every-result-at-a-glance) in one heatmap.
+The fork's one-file sync is faster than upstream's on six of the seven corpora — 11% (gin) to 64% (n8n) on Node, 19% (supabase, where upstream's spread is wide) to 57% (discourse) on Bun — with supabase on Node the one no-clear-change. Full indexing is the fork's weak surface this run: it is slower on five of seven corpora (supabase 2.3× and n8n 2.4× on Node; the supabase-resolution section below explains why), ties nowhere outside spread, and wins only on CPython (1.6× on Node). It uses less memory while indexing on all seven (18–49%). The 15 comparisons where the fork is worse are listed in the chart and the benchmark doc: six index-time cells, the busy-MCP memory on n8n (+18% on Node), the gin concurrent-explore wave, and small index-time cells on gin and Alamofire. The benchmark doc has [every result](docs/benchmarks/fork-vs-upstream-node-bun-2026-10-27.md#every-result-at-a-glance) in one heatmap.
 
 The fork starts its resolver pool at or above 150,000 pending references. Below that, it can start the pool part-way through if at least 20,000 unresolved references remain and the estimated main-thread work is at least 0.4 s. An explicit `CODEGRAPH_PARALLEL_RESOLVE_MIN` replaces both gates. Against a pre-change baseline build, five tested corpora indexed 11-48% faster at 56-132% more peak memory with identical graphs ([measurements](docs/benchmarks/adaptive-pool-engage-2026-10-15.md)).
 
@@ -212,31 +212,31 @@ A [2026-10-15 mid-size comparison](docs/benchmarks/midsize-sweep-2026-10-15.md) 
 
 | Corpus | Upstream, Node | Fork, Node | Fork, Bun |
 |---|---|---|---|
-| gin (Go, 119 files) | 1.06 s, 577 MiB | 1.02 s, 395 MiB | 1.24 s, 293 MiB |
-| Alamofire (Swift, 129 files) | 1.44 s, 830 MiB | 1.39 s, 953 MiB | 1.19 s, 643 MiB |
-| pretix (Python + JS, 1,472 files) | 8.36 s, 2.94 GiB | 9.40 s, 3.25 GiB | 9.27 s, 2.50 GiB |
-| CPython (C + Python, 3,708 files) | 40.2 s, 6.25 GiB | 33.3 s, 4.10 GiB | 34.0 s, 3.61 GiB |
-| discourse (Ruby + JS, 20,277 files) | 20.7 s, 3.86 GiB | 20.8 s, 2.95 GiB | 18.6 s, 2.23 GiB |
-| supabase (React + Next.js + TS, 10,716 files) | 18.6 s, 4.66 GiB | 18.7 s, 3.82 GiB | 18.9 s, 3.34 GiB |
-| n8n (Vue + TS, 24,434 files) | 84.5 s, 9.97 GiB | 66.3 s, 6.30 GiB | 66.0 s, 6.07 GiB |
+| gin (Go, 119 files) | 0.96 s, 559 MiB | 1.09 s, 392 MiB | 1.06 s, 296 MiB |
+| Alamofire (Swift, 129 files) | 1.35 s, 879 MiB | 1.62 s, 632 MiB | 0.99 s, 664 MiB |
+| pretix (Python + JS, 1,472 files) | 9.04 s, 3.29 GiB | 12.5 s, 2.71 GiB | 12.4 s, 2.42 GiB |
+| CPython (C + Python, 3,708 files) | 55.0 s, 7.15 GiB | 33.8 s, 4.01 GiB | 33.5 s, 3.48 GiB |
+| discourse (Ruby + JS, 20,277 files) | 19.6 s, 4.07 GiB | 22.2 s, 2.82 GiB | 20.8 s, 2.40 GiB |
+| supabase (React + Next.js + TS, 10,716 files) | 18.2 s, 4.86 GiB | 41.5 s, 3.59 GiB | 40.6 s, 3.76 GiB |
+| n8n (Vue + TS, 24,434 files) | 74.9 s, 12.2 GiB | 3:00, 6.27 GiB | 2:57, 6.33 GiB |
 
-The Alamofire row includes the resolver change above, which starts the pool part-way through a mid-size index and costs memory: the fork peaks at 953 MiB against upstream's 830 MiB (+15%) while indexing 4% faster. The [2026-10-15 mid-size comparison](docs/benchmarks/midsize-sweep-2026-10-15.md) measured the same pattern on a different build pair (1.44 s and 1,042 MiB against 1.38 s and 791 MiB).
+The fork's index is slower than upstream's on five of the seven corpora this run — clearly so on the two TypeScript-heavy monorepos (supabase 2.3×, n8n 2.4×) and pretix (+38%). The supabase and n8n regressions trace to upstream's ambient-`declare module` lookup (merged in fork #548): the Rust port scans every declaration file per out-of-repo import. A per-file memo ([#554](https://github.com/bompus/codegraph/pull/554)) ended the reparse-every-reference quadratic — without it the supabase index never finished — but the remaining scan is still per-reference × per-file work upstream does once per candidate name. The fix for the residual gap is tracked as follow-up work; the benchmark doc has the [full accounting](docs/benchmarks/fork-vs-upstream-node-bun-2026-10-27.md#the-supabase-resolution-regression). In return the fork's index uses 18–49% less memory on every corpus, and its one-file sync is faster on six of seven (below).
 
-Upstream at `6560052` took 2.0 to 2.7 times as long to index Python as at `290e03f` (pretix 9.2 s to 18.8 s, CPython 35.6 s to 95.3 s; [a same-host check](docs/benchmarks/fork-vs-upstream-node-bun-2026-10-03.md#since-2026-09-28) put the cause in upstream's code). At `986de95c` it is back near those earlier times (pretix 8.4 s, CPython 40 s), so the fork's lead on those two corpora in the 2026-10-12 run (1.7 and 2.3 times) is gone on pretix, where the fork is 13% slower, and is 17% on CPython.
+Upstream at `6560052` took 2.0 to 2.7 times as long to index Python as at `290e03f` (pretix 9.2 s to 18.8 s, CPython 35.6 s to 95.3 s; [a same-host check](docs/benchmarks/fork-vs-upstream-node-bun-2026-10-03.md#since-2026-09-28) put the cause in upstream's code). At `69af19ac` upstream's CPython index is slower than at `986de95c` (55.0 s against 40.2 s on this host) while the fork's is unchanged, so the fork's CPython lead is 1.6× this run.
 
 **One-file sync** (edit one file, `codegraph sync`):
 
 | Corpus | Upstream, Node | Fork, Node | Fork, Bun |
 |---|---|---|---|
-| gin | 0.47 s | 0.41 s | 0.34 s |
-| Alamofire | 0.68 s | 0.55 s | 0.44 s |
-| pretix | 2.55 s | 2.19 s | 2.00 s |
-| CPython | 6.47 s | 4.69 s | 4.62 s |
-| discourse | 5.88 s | 2.74 s | 2.54 s |
-| supabase | fails (exit 1) | 3.17 s | 2.73 s |
-| n8n | 13.1 s | 4.37 s | 3.79 s |
+| gin | 0.47 s | 0.42 s | 0.32 s |
+| Alamofire | 0.48 s | 0.32 s | 0.21 s |
+| pretix | 1.62 s | 1.07 s | 0.81 s |
+| CPython | 5.35 s | 2.42 s | 1.70 s |
+| discourse | 4.78 s | 2.31 s | 1.73 s |
+| supabase | 4.58 s | 3.37 s | 2.34 s |
+| n8n | 11.6 s | 4.18 s | 3.41 s |
 
-Upstream's sync of supabase exits with `FOREIGN KEY constraint failed` after a change to a file that lazy-loads a workspace package ([colbymchenry/codegraph#2565](https://github.com/colbymchenry/codegraph/issues/2565)); the fork syncs it.
+Upstream's supabase sync works in this run — the `FOREIGN KEY constraint failed` seen in every prior run ([colbymchenry/codegraph#2565](https://github.com/colbymchenry/codegraph/issues/2565)) was fixed upstream on 2026-10-19. Its two passes differed widely on Node (1.05 s and 8.1 s); the 4.58 s figure is the median of four, and the spread means that comparison counts as no clear change rather than a fork win.
 
 Both builds rebuild the links inferred from events, callbacks and function pointers after a sync, so a sync ends with the graph a full index would build ([colbymchenry/codegraph#1988](https://github.com/colbymchenry/codegraph/issues/1988)). Upstream reruns every inference pass inside each sync that touches an inferred link; the fork reruns the same passes a full index runs once edits pause. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns the fork's rebuild off, trading it for stale inferred links.
 
@@ -244,23 +244,26 @@ Both builds rebuild the links inferred from events, callbacks and function point
 
 | | Upstream, Node | Fork, Node | Fork, Bun |
 |---|---|---|---|
-| Start to first explore answer | 3.60 s | 2.78 s | 2.48 s |
-| Explore, warm median | 600 ms | 177 ms | 187 ms |
-| 8 explores at once | 3.45 s | 2.30 s | 2.29 s |
-| Memory while busy | 4.30 GiB | 3.83 GiB | 3.01 GiB |
-| Edited file re-indexed by the watcher | 1.32 s | 835 ms | 669 ms |
-| Memory at idle | 4.88 GiB | 2.15 GiB | 1.23 GiB |
-| CPU at idle, share of one core | 0.44% | 0.35% | 0.48% |
+| `initialize` answered | 114 ms | 52 ms | 38 ms |
+| Start to first explore answer | 2.95 s | 2.64 s | 2.19 s |
+| Explore, warm median | 242 ms | 131 ms | 107 ms |
+| 8 explores at once | 2.40 s | 1.91 s | 1.63 s |
+| Memory while busy | 3.85 GiB | 4.54 GiB | 3.50 GiB |
+| Edited file re-indexed by the watcher | 1.15 s | 766 ms | 511 ms |
+| Memory at idle | 4.40 GiB | 3.58 GiB | 1.37 GiB |
+| CPU at idle, share of one core | 0.40% | 0.33% | 0.25% |
+
+The fork-Node server's memory *while busy* is 18% above upstream's on n8n this run — the one MCP cell where the fork loses outright; its idle footprint is still 19% lower on Node and 69% lower on Bun.
 
 **CLI startup** on gin (`hyperfine`, mean of 20 runs):
 
 | Command | Upstream, Node | Fork, Node | Fork, Bun |
 |---|---|---|---|
-| `codegraph --version` | 64 ms | 33 ms | 24 ms |
-| `codegraph status` | 176 ms | 130 ms | 87 ms |
-| `codegraph explore "<query>"` | 231 ms | 121 ms | 91 ms |
+| `codegraph --version` | 73 ms | 35 ms | 21 ms |
+| `codegraph status` | 166 ms | 114 ms | 63 ms |
+| `codegraph explore "<query>"` | 220 ms | 117 ms | 71 ms |
 
-**Node or Bun.** The fork produces the same node and edge counts on both, and the full test suite passed on Node.js 24.21.0, Node.js 26.10.0 and Bun 1.4.2 at `48903f5` (`npm run test:bun`; one test is skipped under Bun for [oven-sh/bun#42891](https://github.com/oven-sh/bun/issues/42891)). Since then the suite has grown, and the Bun run skips 14 more tests that need what Bun does not provide: patching a builtin so the library sees it (`syncBuiltinESMExports` is a no-op, [oven-sh/bun#42616](https://github.com/oven-sh/bun/pull/42616)) and an emptied `PATH` blocking a spawn ([oven-sh/bun#44948](https://github.com/oven-sh/bun/issues/44948)). Each skip is measured at run time, so the test returns when Bun supports it. On Bun, peak index memory is 4–32% lower than on Node (n8n 4%, supabase 13%), the idle MCP server holds 34–43% less memory, and commands start faster. Index times range from 20% slower (gin, a 1.0 s index) to 14% faster (Alamofire) than Node's, and sync times are 1% (CPython) to 19% (Alamofire) faster. Bun has two costs. Eight concurrent explores take 41% longer on gin (210 ms against 149 ms) and show no clear change on n8n (2.29 s against 2.30 s); contention between worker threads reading through Bun's SQLite is the suspected cause ([oven-sh/bun#44084](https://github.com/oven-sh/bun/issues/44084), [#44187](https://github.com/oven-sh/bun/issues/44187)). Idle CPU is 0.13 to 0.26 points of one core above Node's (0.40% against 0.14% on gin, 0.48% against 0.35% on n8n), a few milliseconds of CPU per second, and a separate profile did not reproduce the order on n8n.
+**Node or Bun.** The fork produces the same node and edge counts on both, and the full test suite passed on Node.js 24.21.0, Node.js 26.10.0 and Bun 1.4.2 at `48903f5` (`npm run test:bun`; one test is skipped under Bun for [oven-sh/bun#42891](https://github.com/oven-sh/bun/issues/42891)). Since then the suite has grown, and the Bun run skips 14 more tests that need what Bun does not provide: patching a builtin so the library sees it (`syncBuiltinESMExports` is a no-op, [oven-sh/bun#42616](https://github.com/oven-sh/bun/pull/42616)) and an emptied `PATH` blocking a spawn ([oven-sh/bun#44948](https://github.com/oven-sh/bun/issues/44948)). Each skip is measured at run time, so the test returns when Bun supports it. On Bun 1.4.4, fork index times match Node's within each corpus's own spread except Alamofire (−39%), sync times run 19–36% faster, and commands start faster (`--version` 21 ms against 35 ms). The idle MCP server holds 29% (gin) to 62% (n8n) less memory on Bun. Bun has one cost this run: eight concurrent explores on gin took 20% longer (161 ms against 134 ms); on n8n the wave runs 15% faster (1.63 s against 1.91 s). Peak index memory on Bun is 11–25% lower than Node on four corpora and 2–6% higher on Alamofire, supabase and n8n — no uniform direction.
 
 Measured separately:
 
@@ -275,10 +278,10 @@ The [benchmark](#benchmark-results) and [speed](#built-for-speed--the-rust-kerne
 
 ### What it costs
 
-- **Larger database:** 11–21% bigger on the other six corpora above, and 37% on supabase, which has 1,978 Markdown files. It holds Markdown, binding rows and more nodes.
-- **Fewer edges on some projects:** 5% fewer on pretix and 2% fewer on CPython, because the fork declines links it cannot confirm. Some of those were correct links.
-- **Slower to index some projects:** against upstream's current build in the 2026-10-18 run, pretix took 9.40 s to index against 8.36 s (+13% on Node, +20% on Bun) and peaked at 3.25 GiB against 2.94 GiB on Node (+11%; +6% on Bun); Alamofire peaked at 953 MiB against 830 MiB on Node (+15%) after the resolver pool change. A one-file sync peaks higher on CPython (1.23 GiB against 909 MiB on Node, +39%), Alamofire (+14%), gin (+10%) and discourse (+4%). A warm question on gin takes 17 ms against 25 ms on Node and 19 ms against 21 ms on Bun.
-- **On Bun:** slower concurrent explores on small projects, and an idle CPU a few milliseconds per second higher than Node's in the benchmark, as above.
+- **Larger database:** 11–20% bigger on six of the seven corpora above, and 37% on supabase, which has 1,978 Markdown files. It holds Markdown, binding rows and more nodes.
+- **Fewer edges on some projects:** 8% fewer on pretix and 2% fewer on CPython, because the fork declines links it cannot confirm. Some of those were correct links.
+- **Slower to index most projects this run:** in the 2026-10-27 comparison the fork's full index is slower on five of seven corpora — supabase 2.3× and n8n 2.4× on Node, pretix +38% (+72% on Bun), Alamofire +20%, discourse +13% (+15% on Bun) and gin +14% on Node; only CPython is faster (1.6×). The TypeScript-monorepo regressions trace to the ambient-`declare module` port described above; the residual gap is tracked follow-up work. One-file syncs still peak higher on some corpora (2026-10-18 run: CPython 1.23 GiB against 909 MiB on Node, +39%; Alamofire +14%; gin +10%; discourse +4%).
+- **On Bun:** slower concurrent explores on small projects (gin wave +20% this run), and a mixed peak-memory picture — 11–25% lower on four corpora, 2–6% higher on three.
 
 ---
 
