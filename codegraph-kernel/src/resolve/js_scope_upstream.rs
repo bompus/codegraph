@@ -293,7 +293,7 @@ impl KernelResolver {
     pub(super) fn js_declaration_reachable(&mut self, n: &KNode, r: &ResolveRefIn) -> Option<bool> {
         if is_js_family(&n.language) && !matches!(n.language.as_str(), "javascript" | "jsx")
             && n.file_path != r.file_path && n.kind == "function" {
-            if let Some(scan) = self.ts_scope_scan(&n.file_path, r) {
+            if let Some(scan) = self.ts_scope_scan(&n.file_path) {
                 if scan.blocks.iter().any(|b| b.ambient && b.contains(n.start_line, n.start_column)) { return Some(false); }
             }
         }

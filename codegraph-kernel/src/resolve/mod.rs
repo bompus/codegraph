@@ -707,10 +707,14 @@ pub struct KernelResolver {
     /// `(package, type)` → the project file declaring the package with that type in it.
     ts_ambient_memo: HashMap<(String, String), Option<String>>,
     /// `file` → its ambient/global scope scan (None when unreadable). The
-    /// scan parses the file and ambient-module lookup walks every `.d.ts`
-    /// once per import, so each file is scanned once and shared — upstream
-    /// memoizes the same way (TS_GLOBAL_SCOPES).
+    /// scan is a text pass (upstream's ambient-modules.ts port), memoized per
+    /// file the way upstream memoizes TS_GLOBAL_SCOPES.
     ts_scope_memo: HashMap<String, Option<Rc<ts_known::TsScopeScan>>>,
+    /// The project's `.d.[cm]?ts` files, computed on first ambient lookup.
+    ts_dts_files: Option<Vec<String>>,
+    /// `declare module '<name>'` specifier → the script declaration files
+    /// declaring it (upstream's `scanned.bySpecifier`), built on first lookup.
+    ts_ambient_index: Option<HashMap<String, Vec<String>>>,
     /// `(file, type as written)` → what the name names there.
     ts_named_type_memo: HashMap<(String, String), ts_known::TsNamedType>,
     /// Whether the project declares a `createInstance` returning an `InstanceType` of its constructor argument.
@@ -941,6 +945,8 @@ impl KernelResolver {
             ts_imported_type_memo: HashMap::new(),
             ts_ambient_memo: HashMap::new(),
             ts_scope_memo: HashMap::new(),
+            ts_dts_files: None,
+            ts_ambient_index: None,
             ts_named_type_memo: HashMap::new(),
             ts_create_instance_declared: None,
             python_bound_memo: HashMap::new(),
