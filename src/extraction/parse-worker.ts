@@ -18,7 +18,7 @@ import { extractFromSource } from './tree-sitter';
 import { detectLanguage } from './grammars';
 import { tryKernelExtractRaw } from './kernel';
 import { commonJsRequireRefs } from './commonjs-requires';
-import { getAllFrameworkResolvers, getApplicableFrameworks } from '../resolution/frameworks';
+import { applyFrameworkExtracts } from './framework-extracts';
 import { mayDefineCppMacroMethods } from './languages/cpp-macro-methods';
 import type { Language, ExtractionResult } from '../types';
 
@@ -43,20 +43,11 @@ parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: st
       // Kernel deferred-decode fast path: ship the file's tables as flat
       // buffers and decode at the STORE boundary, so the main thread never
       // materializes per-node objects (nor pays their structured-clone cost —
-      // buffer clone is a flat memcpy). Only when no applicable framework has
-      // an extract() hook: those merge extra nodes/refs into the DECODED
-      // result inside extractFromSource, so such files keep the decoded path.
-      // So does a C++ file that may define methods with its own macros: they
-      // are minted after the kernel, in extractFromSource.
+      // buffer clone is a flat memcpy). Only a C++ file that may define
+      // methods with its own macros keeps the decoded path — those are
+      // minted after the kernel, in extractFromSource.
       let result: ExtractionResult | undefined;
-      const frameworksNeedDecode =
-        frameworkNames && frameworkNames.length > 0
-          ? getApplicableFrameworks(
-              getAllFrameworkResolvers().filter((r) => frameworkNames.includes(r.name)),
-              language
-            ).some((fw) => !!fw.extract)
-          : false;
-      if (!frameworksNeedDecode && !(language === 'cpp' && mayDefineCppMacroMethods(content!))) {
+      if (!(language === 'cpp' && mayDefineCppMacroMethods(content!))) {
         const raw = tryKernelExtractRaw(filePath!, content!, language);
         if (raw) {
           result = {
@@ -69,6 +60,11 @@ parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: st
             kernelBuffers: raw.buffers,
             kernelCounts: raw.counts,
           };
+          // A framework extract() hook no longer forces the decoded path:
+          // the hook needs only (filePath, source), so it runs here and its
+          // nodes/refs append onto the transport as extras — the store side
+          // pushes them after decode, same order as extractFromSource.
+          applyFrameworkExtracts(result, filePath!, content!, language, frameworkNames);
         }
       }
       result ??= extractFromSource(filePath!, content!, language, frameworkNames);

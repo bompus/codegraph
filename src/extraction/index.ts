@@ -2434,9 +2434,12 @@ export class ExtractionOrchestrator {
       const bp = walBackpressure?.();
       if (bp) await bp;
 
-      // Kernel deferred-decode results carry table sizes in kernelCounts
-      // (their object arrays are empty — decode happens at the store).
-      const nodeCount = result.kernelCounts?.nodes ?? result.nodes.length;
+      // Kernel deferred-decode results carry table sizes in kernelCounts —
+      // decode happens at the store; result.nodes then holds only the
+      // framework extract() additions, so count both.
+      const nodeCount = result.kernelCounts !== undefined
+        ? result.kernelCounts.nodes + result.nodes.length
+        : result.nodes.length;
       const edgeCount = result.kernelCounts?.edges ?? result.edges.length;
 
       // A file whose grammar failed to load was never parsed (#2335).
@@ -2460,6 +2463,7 @@ export class ExtractionOrchestrator {
             buffers: result.kernelBuffers,
             file: this.buildFileRecord(filePath, content, language, stats, nodeCount, result.errors),
             ...(result.unresolvedReferences.length > 0 ? { extraRefs: result.unresolvedReferences } : {}),
+            ...(result.nodes.length > 0 ? { extraNodes: result.nodes } : {}),
           });
         } else {
           storeWriter.send(this.buildFreshStoreBundle(filePath, content, language, stats, result));

@@ -44,10 +44,7 @@ import { CfmlExtractor } from './cfml-extractor';
 import { tryKernelExtract, takeDeferredPreParse, tryKernelBindings, attachBindingNodeIds } from './kernel';
 import { captureLiterals } from './literal-capture';
 import { commonJsRequireRefs } from './commonjs-requires';
-import {
-  getAllFrameworkResolvers,
-  getApplicableFrameworks,
-} from '../resolution/frameworks';
+import { applyFrameworkExtracts } from './framework-extracts';
 
 // Re-export for backward compatibility
 export { generateNodeId } from './tree-sitter-helpers';
@@ -9931,29 +9928,7 @@ export function extractFromSource(
   }
 
   // Framework-specific extraction (routes, middleware, etc.)
-  if (frameworkNames && frameworkNames.length > 0) {
-    const allResolvers = getAllFrameworkResolvers();
-    const applicable = getApplicableFrameworks(
-      allResolvers.filter((r) => frameworkNames.includes(r.name)),
-      detectedLanguage
-    );
-    for (const fw of applicable) {
-      if (!fw.extract) continue;
-      try {
-        const fwResult = fw.extract(filePath, source);
-        result.nodes.push(...fwResult.nodes);
-        result.unresolvedReferences.push(...fwResult.references);
-      } catch (err) {
-        result.errors.push({
-          message: `Framework extractor '${fw.name}' failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-          filePath,
-          severity: 'warning',
-        });
-      }
-    }
-  }
+  applyFrameworkExtracts(result, filePath, source, detectedLanguage, frameworkNames);
 
   return result;
 }
