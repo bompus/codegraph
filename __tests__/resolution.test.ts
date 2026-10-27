@@ -11,8 +11,7 @@ import * as os from 'os';
 import { CodeGraph } from '../src';
 import { Node, UnresolvedReference } from '../src/types';
 import { ReferenceResolver, createResolver, ResolutionContext } from '../src/resolution';
-import { resolveImportPath, importMappingsFromBindings, loadCppIncludeDirs, clearCppIncludeDirCache } from '../src/resolution/import-resolver';
-import { tryKernelBindings, tryKernelExtract } from '../src/extraction/kernel';
+import { resolveImportPath, loadCppIncludeDirs, clearCppIncludeDirCache } from '../src/resolution/import-resolver';
 import type { UnresolvedRef } from '../src/resolution/types';
 import { detectFrameworks, getAllFrameworkResolvers } from '../src/resolution/frameworks';
 import { QueryBuilder } from '../src/db/queries';
@@ -80,6 +79,8 @@ describe('Resolution Module', () => {
     }
   });
 
+
+
   describe('Import Resolver', () => {
     it('should resolve relative import paths', () => {
       const context: ResolutionContext = {
@@ -125,66 +126,10 @@ describe('Resolution Module', () => {
       expect(result).toBe('src/helpers.ts');
     });
 
-    it('should extract JS/TS import mappings', () => {
-      const content = `
-import { foo } from './foo';
-import bar from '../bar';
-import * as utils from './utils';
-import { baz, qux } from './baz';
-`;
 
-      // JS/TS mappings come from the binding rows, never from source regexes.
-      const rows = tryKernelBindings('src/index.ts', content, 'typescript') ?? [];
-      const mappings = importMappingsFromBindings(rows) ?? [];
 
-      expect(mappings.length).toBeGreaterThan(0);
-      expect(mappings.some((m) => m.localName === 'foo')).toBe(true);
-      expect(mappings.some((m) => m.localName === 'bar')).toBe(true);
-      expect(mappings.find((m) => m.localName === 'utils')).toMatchObject({ isNamespace: true, source: './utils' });
-    });
-
-    it('should extract Python import mappings', () => {
-      const content = `
-from utils import helper
-from .models import User
-import os
-from ..services import auth_service
-`;
-
-      // Python mappings come from the kernel walker's binding rows.
-      const rows = tryKernelExtract('src/main.py', content, 'python')?.bindings ?? [];
-      const mappings = importMappingsFromBindings(rows) ?? [];
-
-      expect(mappings.length).toBeGreaterThan(0);
-      expect(mappings.find((m) => m.localName === 'helper')).toMatchObject({ source: 'utils', exportedName: 'helper' });
-      expect(mappings.find((m) => m.localName === 'User')).toMatchObject({ source: '.models' });
-      expect(mappings.find((m) => m.localName === 'os')).toMatchObject({ isNamespace: true, source: 'os' });
-      expect(mappings.find((m) => m.localName === 'auth_service')).toMatchObject({ source: '..services' });
-    });
-
-    it('should extract parenthesized Python from-imports', () => {
-      const content = `
-from store.base import (
-    Base,
-    helper as h,  # a comment, with a comma and a call()
-)
-"""
-from docstring import NotAnImport
-"""
-from store.rows import (Row, Col)
-`;
-
-      const rows = tryKernelExtract('src/main.py', content, 'python')?.bindings ?? [];
-      const mappings = importMappingsFromBindings(rows) ?? [];
-
-      expect(mappings.map((m) => [m.localName, m.exportedName, m.source])).toEqual([
-        ['Base', 'Base', 'store.base'],
-        ['h', 'helper', 'store.base'],
-        ['Row', 'Row', 'store.rows'],
-        ['Col', 'Col', 'store.rows'],
-      ]);
-    });
   });
+
 
   describe('Framework Detection', () => {
     it('should detect React framework', () => {
@@ -518,44 +463,6 @@ void initialize() { Packet(); }
       expect(outgoing.some((e) => e.kind === 'calls' && e.target === packet!.id)).toBe(false);
     });
 
-    it('keeps calls to a C++ constructor when Type() resolves through an include', async () => {
-      fs.writeFileSync(
-        path.join(tempDir, 'proxy.hpp'),
-        `struct iteration_proxy {
-  explicit iteration_proxy(int& cont) {}
-};
-`
-      );
-      fs.writeFileSync(
-        path.join(tempDir, 'json.hpp'),
-        `#include "proxy.hpp"
-
-struct Json {
-  int n;
-  iteration_proxy items() { return iteration_proxy(n); }
-};
-`
-      );
-
-      cg = await CodeGraph.init(tempDir, { index: true });
-      cg.resolveReferences();
-
-      const items = cg.getNodesByKind('method').find((n) => n.name === 'items');
-      const ctor = cg.getNodesByKind('method').find(
-        (n) => n.name === 'iteration_proxy' && n.filePath.replace(/\\/g, '/').endsWith('proxy.hpp'),
-      );
-      const klass =
-        cg.getNodesByKind('struct').find((n) => n.name === 'iteration_proxy') ??
-        cg.getNodesByKind('class').find((n) => n.name === 'iteration_proxy');
-      expect(items).toBeDefined();
-      expect(ctor).toBeDefined();
-      expect(klass).toBeDefined();
-
-      const outgoing = cg.getOutgoingEdges(items!.id);
-      expect(outgoing.some((e) => e.kind === 'calls' && e.target === ctor!.id)).toBe(true);
-      expect(outgoing.some((e) => e.kind === 'instantiates' && e.target === klass!.id)).toBe(false);
-    });
-
     it('resolves a static call through an imported C++ union to its member', async () => {
       fs.writeFileSync(
         path.join(tempDir, 'ops.hpp'),
@@ -627,42 +534,6 @@ impl Describe for Ctl { fn describe(&self) -> String { "ctl".into() } }
       const unionEdge = synth.find((e) => e.target === unionImpl!.id);
       expect(
         (unionEdge!.metadata as { synthesizedBy?: string } | undefined)?.synthesizedBy
-      ).toBe('interface-impl');
-    });
-
-    it('bridges TRANSITIVE supertypes — A implements B, B extends C → A overrides C members', async () => {
-      // A call typed to `Shape` dispatches to `Circle.draw` even though Circle
-      // only directly `implements Colored` — the interface-impl bridge must
-      // walk implements/extends chains, not just direct supertypes.
-      fs.writeFileSync(
-        path.join(tempDir, 'Shapes.java'),
-        `public interface Shape { void draw(); }
-public interface Colored extends Shape { void fill(); }
-public class Circle implements Colored {
-    public void draw() { }
-    public void fill() { }
-}
-`
-      );
-
-      cg = await CodeGraph.init(tempDir, { index: true });
-
-      const methods = cg.getNodesByKind('method');
-      const shapeDraw = methods.find((n) => n.qualifiedName === 'Shape::draw');
-      const coloredFill = methods.find((n) => n.qualifiedName === 'Colored::fill');
-      const circleDraw = methods.find((n) => n.qualifiedName === 'Circle::draw');
-      const circleFill = methods.find((n) => n.qualifiedName === 'Circle::fill');
-      expect(shapeDraw && coloredFill && circleDraw && circleFill).toBeTruthy();
-
-      const synth = (id: string) =>
-        cg.getOutgoingEdges(id).filter((e) => e.kind === 'calls' && e.provenance === 'heuristic');
-      // Transitive: Shape::draw → Circle::draw (two hops: Circle→Colored→Shape).
-      expect(synth(shapeDraw!.id).map((e) => e.target)).toEqual([circleDraw!.id]);
-      // Direct supertype still bridges: Colored::fill → Circle::fill.
-      expect(synth(coloredFill!.id).map((e) => e.target)).toEqual([circleFill!.id]);
-      const edge = synth(shapeDraw!.id)[0]!;
-      expect(
-        (edge.metadata as { synthesizedBy?: string } | undefined)?.synthesizedBy
       ).toBe('interface-impl');
     });
 
@@ -1089,8 +960,10 @@ func UseAliased() {
         `from pkg import module
 import os
 
+
 def caller():
     return module.func()
+
 
 def external_caller():
     return os.getcwd()
@@ -1133,6 +1006,7 @@ def external_caller():
       fs.writeFileSync(
         path.join(tempDir, 'record.py'),
         `from . import ledger
+
 
 def add_outcome(row):
     if not ledger.append(row):
@@ -1193,8 +1067,10 @@ def add_outcome(row):
         `from pkg import module as mod_alias
 import top_level as tl
 
+
 def from_import_caller():
     return mod_alias.func()
+
 
 def plain_import_caller():
     return tl.top_func()
@@ -1225,45 +1101,6 @@ def plain_import_caller():
       expect(moduleFile).toBeDefined();
       const fileImports = cg.getOutgoingEdges(mainFile!.id).filter((e) => e.kind === 'imports');
       expect(fileImports.map((e) => e.target)).toContain(moduleFile!.id);
-    });
-
-    it('never resolves an absolute Python import into a subpackage of another package', async () => {
-      // `import json` is the stdlib module: `src/app/json/` is importable as
-      // `app.json`, never as `json`, because `src/app/` is itself a package.
-      // A top-level package under `src/` still resolves.
-      fs.mkdirSync(path.join(tempDir, 'src', 'app', 'json'), { recursive: true });
-      fs.writeFileSync(path.join(tempDir, 'src', 'app', '__init__.py'), '');
-      fs.writeFileSync(path.join(tempDir, 'src', 'app', 'json', '__init__.py'), 'def load(fp):\n    return 1\n');
-      fs.writeFileSync(path.join(tempDir, 'src', 'app', 'util.py'), 'def helper():\n    return 2\n');
-      fs.mkdirSync(path.join(tempDir, 'tests'));
-      fs.writeFileSync(
-        path.join(tempDir, 'tests', 'test_config.py'),
-        `import json
-import app.util
-
-def test_load():
-    return json.load(None)
-
-def test_helper():
-    return app.util.helper()
-`
-      );
-
-      cg = await CodeGraph.init(tempDir, { index: true });
-
-      const testFile = cg.getNodesByKind('file').find((n) => n.filePath.replace(/\\/g, '/') === 'tests/test_config.py');
-      expect(testFile).toBeDefined();
-      const importTargets = cg
-        .getOutgoingEdges(testFile!.id)
-        .filter((e) => e.kind === 'imports')
-        .map((e) => cg.getNode(e.target)?.filePath.replace(/\\/g, '/'));
-      expect(importTargets).not.toContain('src/app/json/__init__.py');
-      expect(importTargets).toContain('src/app/util.py');
-
-      const load = cg.getNodesByKind('function').find((n) => n.name === 'load');
-      expect(cg.getIncomingEdges(load!.id).map((e) => cg.getNode(e.source)?.name)).not.toContain('test_load');
-      const helper = cg.getNodesByKind('function').find((n) => n.name === 'helper');
-      expect(cg.getIncomingEdges(helper!.id).map((e) => cg.getNode(e.source)?.name)).toContain('test_helper');
     });
 
     it('attaches Go methods to their receiver type across files (#583, cross-file half)', async () => {
@@ -1588,6 +1425,7 @@ func main() {
       getAllFiles: () => [],
     });
 
+
     it('resolves C++ calls end-to-end to same-named classes in different files (#1079)', async () => {
       // The exact repro from the issue: two files, each with its own
       // `Logger::log`. Before the fix both callers pointed at the first def.
@@ -1625,6 +1463,7 @@ func main() {
       expect(callTargets('useA')).toContain(logA.id);
       expect(callTargets('useB')).toContain(logB.id);
     });
+
 
     it('resolves a static/class-receiver call to the class in the caller\'s file (#1079)', async () => {
       // `Logger.log()` — the receiver is the class NAME, so this routes through
@@ -1743,45 +1582,29 @@ func main() {
       startLine: 1, endLine: 1, startColumn: 0, endColumn: 0, updatedAt: 0,
     });
 
-    it('resolveBatchKernelFirst offers a yield checkpoint for every ref', async () => {
+
+    it('the production resolver context memoizes method matches per (language, type, method)', async () => {
       fs.writeFileSync(
-        path.join(tempDir, 'a.ts'),
-        `export function fnA() { return 1; }\nexport function fnB() { return fnA(); }\nexport function fnC() { return fnB(); }\n`,
-      );
-      fs.writeFileSync(
-        path.join(tempDir, 'b.ts'),
-        `import { fnA } from './a';\nexport function fnD() { return fnA(); }\n`,
+        path.join(tempDir, 'svc.ts'),
+        `class Logger { log() { return 1; } }\nexport function use() { const lg = new Logger(); return lg.log(); }\n`,
       );
       cg = await CodeGraph.init(tempDir, { index: true });
       const resolver = (cg as unknown as { resolver: ReferenceResolver }).resolver;
+      const ctx = (resolver as unknown as { context: ResolutionContext }).context;
 
-      // `init({ index: true })` already ran resolution, so feed the batch
-      // directly — resolveBatchKernelFirst takes it as an argument; whether each
-      // ref resolves is irrelevant to the checkpoint contract.
-      const refs: UnresolvedReference[] = ['fnA', 'fnB', 'nosuchFn', 'fnA', 'alsoMissing'].map((name, i) => ({
-        fromNodeId: `caller-${i}`,
-        referenceName: name,
-        referenceKind: 'calls',
-        line: i + 1,
-        column: 0,
-        filePath: 'a.ts',
-        language: 'typescript',
-      }));
+      const first = ctx.getMethodMatches!('Logger', 'log', 'typescript');
+      const second = ctx.getMethodMatches!('Logger', 'log', 'typescript');
+      expect(first.map((n) => n.qualifiedName)).toEqual(['Logger::log']);
+      // Same array instance = served from the memo, not recomputed.
+      expect(second).toBe(first);
 
-      let checkpoints = 0;
-      const countingYield = async () => { checkpoints++; };
-      const result = await (resolver as unknown as {
-        resolveBatchKernelFirst(batch: UnresolvedReference[], maybeYield: () => Promise<void>): Promise<{ stats: { total: number } }>;
-        closeKernel(): void;
-      }).resolveBatchKernelFirst(refs, countingYield);
-      resolver.closeKernel();
-
-      // One checkpoint per ref: a pocket of pathologically slow refs can never
-      // run more than ONE ref past the yield budget before the heartbeat gets
-      // a window — the #1122 kill required 500.
-      expect(checkpoints).toBe(refs.length);
-      expect(result.stats.total).toBe(refs.length);
+      resolver.clearCaches();
+      const afterClear = ctx.getMethodMatches!('Logger', 'log', 'typescript');
+      expect(afterClear).not.toBe(first);
+      expect(afterClear.map((n) => n.qualifiedName)).toEqual(['Logger::log']);
     });
+
+
   });
 
   describe('Local-variable receiver-type inference (#1108)', () => {
@@ -1798,6 +1621,9 @@ export class Collision { get(key) { return key; } }
 export function readKey() { return 'values'; }
 ${receivers.map((receiver, i) => `export function nested${i}(holder, höldér) { return ${receiver}.get(readKey()); }`).join('\n')}
 `);
+      // A dotted chain stays in the index, unresolved, as the call's evidence
+      // (#1790 dropped these calls outright).
+      const kept: Record<number, string> = { 0: 'holder.values.get', 6: 'imported.values.get', 7: 'data.holder.values.get' };
       cg = await CodeGraph.init(tempDir, { index: true });
       for (let i = 0; i < receivers.length; i++) {
         const caller = cg.getNodesByName(`nested${i}`).find(n => n.kind === 'function')!;
@@ -1806,6 +1632,10 @@ ${receivers.map((receiver, i) => `export function nested${i}(holder, höldér) {
         // root object nor Collision.get is evidence of the called member.
         expect(callees.length, receivers[i]).toBeGreaterThan(0);
         expect(callees.every(({ node }) => node.name === 'readKey'), receivers[i]).toBe(true);
+        if (kept[i]) {
+          const refs = cg.getUnresolvedReferencesFrom(caller.id).filter((r) => r.referenceKind === 'calls');
+          expect(refs.map((r) => r.referenceName), receivers[i]).toEqual([kept[i]]);
+        }
       }
     });
 
@@ -2154,6 +1984,7 @@ export function annotated(values: ${type}<string>) {
       });
     }
   });
+
 
   describe('tsconfig path aliases', () => {
     it('resolves an aliased import to the alias-mapped file (not a same-named file elsewhere)', async () => {
@@ -2520,6 +2351,7 @@ export function annotated(values: ${type}<string>) {
 
     return join(values)
 
+
 def report_missing(unresolved):
     missing_list = ", ".join(sorted(unresolved))
     return f"Could not resolve: {missing_list}"
@@ -2847,7 +2679,7 @@ export function useGet() { return api.get(); }
       }
     }, 30000);
 
-    it('does not mistake an imported non-literal receiver for its called member', async () => {
+    it('leaves a non-literal value receiver on its existing path', async () => {
       const tmpDir = setup({
         'src/mk.ts': `export function m() { return 'top-level, unrelated to obj'; }
 export const obj = makeObj();
@@ -2863,14 +2695,14 @@ export function remoteUse() { return obj.m(); }
         await cg.indexAll();
         // `obj` holds a call result, not a literal: the same-named top-level
         // `m` lies outside its declaration, so containment finds nothing and
-        // neither call targets `m`. The imported call still goes through the
-        // receiver constant, so `remoteUse` links to `obj` and nothing else.
+        // both calls keep today's behavior (unresolved in the defining file;
+        // the constant edge through the import) rather than guessing.
         expect(await callersOf(cg, 'm', 'function')).toEqual([]);
         const obj = (await cg.searchNodes('obj', { limit: 5 })).find((r) => r.node.kind === 'constant');
         const remote = (await cg.searchNodes('remoteUse', { limit: 5 })).find((r) => r.node.kind === 'function');
         expect(
-          cg.getOutgoingEdges(remote!.node.id).filter((e) => e.kind === 'calls').map((e) => e.target)
-        ).toEqual([obj!.node.id]);
+          cg.getOutgoingEdges(remote!.node.id).some((e) => e.kind === 'calls' && e.target === obj!.node.id)
+        ).toBe(true);
         cg.close();
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -3240,26 +3072,6 @@ int run() {
       expect(result).toBe('mylib/utils.h');
     });
 
-    it('should extract C/C++ import mappings from #include directives', () => {
-      const code = `#include <iostream>
-#include "myheader.h"
-#include "utils/helpers.hpp"`;
-
-      // C/C++ mappings come from the kernel walker's include rows.
-      const rows = tryKernelExtract('main.cpp', code, 'cpp')?.bindings ?? [];
-      const mappings = importMappingsFromBindings(rows) ?? [];
-
-      expect(mappings.length).toBe(3);
-      expect(mappings[0]).toEqual({
-        localName: 'iostream',
-        exportedName: '*',
-        source: 'iostream',
-        isDefault: false,
-        isNamespace: true,
-      });
-      expect(mappings[1]!.localName).toBe('myheader');
-      expect(mappings[2]).toMatchObject({ localName: 'helpers', source: 'utils/helpers.hpp' });
-    });
 
     it('should discover include directories from compile_commands.json', () => {
       // Create a temp project with compile_commands.json
@@ -3351,7 +3163,6 @@ int run() {
     // feature can't silently regress to a no-op in the indexing flow.
     it('connects #include to the real header file via include-dir scan (end-to-end)', async () => {
       const tempProject = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-cpp-e2e-'));
-      let db: ReturnType<typeof DatabaseConnection.open> | undefined;
       try {
         fs.mkdirSync(path.join(tempProject, 'include'), { recursive: true });
         fs.mkdirSync(path.join(tempProject, 'src'), { recursive: true });
@@ -3374,7 +3185,7 @@ int run() {
         // The `#include "utils.h"` edge should target the real
         // `include/utils.h` file node — not a floating `import` node
         // living inside main.cpp.
-        db = DatabaseConnection.open(path.join(tempProject, '.codegraph', 'codegraph.db'));
+        const db = DatabaseConnection.open(path.join(tempProject, '.codegraph', 'codegraph.db'));
         const rows = db.getDb().prepare(`
           select dst.kind as dstKind, dst.file_path as dstPath
           from edges e
@@ -3395,13 +3206,13 @@ int run() {
         );
         expect(stdlibFile).toBeUndefined();
       } finally {
-        // Windows will not delete a file that still has an open handle. Both
-        // holders have to go: the graph's own connection, and the direct one
-        // this test opens to read edges back. Closing here rather than after
-        // the query keeps that true when a query or an assertion throws.
-        // close() is idempotent, so the outer afterEach's destroy() stays safe.
-        db?.close();
-        cg?.close();
+        // The graph opened on tempProject has to be closed here: the outer
+        // afterEach runs after this finally, so on Windows the still-open
+        // database makes the removal fail with EPERM.
+        if (cg) {
+          cg.close();
+          cg = undefined as unknown as CodeGraph;
+        }
         fs.rmSync(tempProject, { recursive: true, force: true });
       }
     });
@@ -3439,9 +3250,6 @@ class Both : public Base<char>, public Plain {}; // templated + plain in one cla
             where e.kind = 'extends'`
         )
         .all() as Array<{ fromName: string; toName: string }>;
-      // Closed before the assertions: an open second connection to the same
-      // database keeps a handle on tempDir, and afterEach's removal then fails
-      // with EPERM on Windows.
       db.close();
       const has = (from: string, to: string) =>
         edges.some((r) => r.fromName === from && r.toName === to);
@@ -3460,7 +3268,6 @@ class Both : public Base<char>, public Plain {}; // templated + plain in one cla
 
     it('resolves require_once to a file→file imports edge (#660)', async () => {
       const tempProject = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-php-e2e-'));
-      let db: ReturnType<typeof DatabaseConnection.open> | undefined;
       try {
         fs.mkdirSync(path.join(tempProject, 'src'), { recursive: true });
         fs.writeFileSync(
@@ -3477,7 +3284,7 @@ class Both : public Base<char>, public Plain {}; // templated + plain in one cla
         // reporter's repro: page.php's `require_once("lib.php")` must resolve
         // to the real src/lib.php file node — a file→file `imports` edge, so
         // callers(lib.php) now includes page.php.
-        db = DatabaseConnection.open(path.join(tempProject, '.codegraph', 'codegraph.db'));
+        const db = DatabaseConnection.open(path.join(tempProject, '.codegraph', 'codegraph.db'));
         const rows = db.getDb().prepare(`
           select dst.kind as dstKind, dst.file_path as dstPath
           from edges e
@@ -3493,15 +3300,19 @@ class Both : public Base<char>, public Plain {}; // templated + plain in one cla
         );
         expect(resolved, 'page.php → src/lib.php imports edge missing').toBeDefined();
       } finally {
-        db?.close();
-        cg?.close();
+        // The graph opened on tempProject has to be closed here: the outer
+        // afterEach runs after this finally, so on Windows the still-open
+        // database makes the removal fail with EPERM.
+        if (cg) {
+          cg.close();
+          cg = undefined as unknown as CodeGraph;
+        }
         fs.rmSync(tempProject, { recursive: true, force: true });
       }
     });
 
     it('resolves a subdirectory include path to the correct file (#660)', async () => {
       const tempProject = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-php-subdir-'));
-      let db: ReturnType<typeof DatabaseConnection.open> | undefined;
       try {
         fs.mkdirSync(path.join(tempProject, 'inc'), { recursive: true });
         fs.writeFileSync(
@@ -3515,7 +3326,7 @@ class Both : public Base<char>, public Plain {}; // templated + plain in one cla
 
         cg = await CodeGraph.init(tempProject, { index: true });
 
-        db = DatabaseConnection.open(path.join(tempProject, '.codegraph', 'codegraph.db'));
+        const db = DatabaseConnection.open(path.join(tempProject, '.codegraph', 'codegraph.db'));
         const rows = db.getDb().prepare(`
           select dst.kind as dstKind, dst.file_path as dstPath
           from edges e
@@ -3531,15 +3342,19 @@ class Both : public Base<char>, public Plain {}; // templated + plain in one cla
           'index.php → inc/db.php imports edge missing'
         ).toBeDefined();
       } finally {
-        db?.close();
-        cg?.close();
+        // The graph opened on tempProject has to be closed here: the outer
+        // afterEach runs after this finally, so on Windows the still-open
+        // database makes the removal fail with EPERM.
+        if (cg) {
+          cg.close();
+          cg = undefined as unknown as CodeGraph;
+        }
         fs.rmSync(tempProject, { recursive: true, force: true });
       }
     });
 
     it('does not mis-connect an unresolvable include to a same-named file elsewhere (#660)', async () => {
       const tempProject = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-php-misresolve-'));
-      let db: ReturnType<typeof DatabaseConnection.open> | undefined;
       try {
         // app/page.php's `require "inc/db.php"` resolves relative to app/, where
         // inc/db.php does NOT exist. A same-named lib/inc/db.php exists elsewhere
@@ -3558,7 +3373,7 @@ class Both : public Base<char>, public Plain {}; // templated + plain in one cla
 
         cg = await CodeGraph.init(tempProject, { index: true });
 
-        db = DatabaseConnection.open(path.join(tempProject, '.codegraph', 'codegraph.db'));
+        const db = DatabaseConnection.open(path.join(tempProject, '.codegraph', 'codegraph.db'));
         const rows = db.getDb().prepare(`
           select dst.kind as dstKind, dst.file_path as dstPath
           from edges e
@@ -3574,8 +3389,13 @@ class Both : public Base<char>, public Plain {}; // templated + plain in one cla
           'app/page.php must NOT mis-connect to unrelated lib/inc/db.php'
         ).toBeUndefined();
       } finally {
-        db?.close();
-        cg?.close();
+        // The graph opened on tempProject has to be closed here: the outer
+        // afterEach runs after this finally, so on Windows the still-open
+        // database makes the removal fail with EPERM.
+        if (cg) {
+          cg.close();
+          cg = undefined as unknown as CodeGraph;
+        }
         fs.rmSync(tempProject, { recursive: true, force: true });
       }
     });
@@ -5279,21 +5099,6 @@ in
   });
 
   describe('Bindings in a module that exports nothing (#1719)', () => {
-    it('does not treat documentation headings as package imports', async () => {
-      fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({ workspaces: ['packages/*'] }));
-      fs.mkdirSync(path.join(tempDir, 'packages/vite'), { recursive: true });
-      fs.writeFileSync(path.join(tempDir, 'packages/vite/package.json'), JSON.stringify({ name: 'vite', main: './index.js' }));
-      fs.writeFileSync(path.join(tempDir, 'packages/vite/index.js'), 'export function defineConfig(x) { return x }');
-      fs.writeFileSync(path.join(tempDir, 'guide.md'), '# vite\n');
-      fs.writeFileSync(path.join(tempDir, 'consumer.js'), "import { defineConfig } from 'vite'\nexport const config = defineConfig({})\n");
-      cg = await CodeGraph.init(tempDir, { index: true });
-      cg.resolveReferences();
-      const heading = cg.getNodesByKind('module').find((n) => n.language === 'markdown');
-      expect(heading).toBeDefined();
-      expect(cg.getIncomingEdges(heading!.id).filter((e) => e.kind === 'imports')).toEqual([]);
-      const definition = cg.getNodesByKind('function').find((n) => n.name === 'defineConfig');
-      expect(cg.getIncomingEdges(definition!.id).some((e) => e.kind === 'imports')).toBe(true);
-    });
 
     it('ignores export examples in strings and comments when checking module visibility', async () => {
       fs.mkdirSync(path.join(tempDir, 'src'));

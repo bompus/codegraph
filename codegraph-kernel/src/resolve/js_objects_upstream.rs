@@ -344,3 +344,193 @@ impl KernelResolver {
         Ok(false)
     }
 }
+
+const JS_SUPER_LANGS: &[&str] = &["typescript", "tsx", "javascript", "jsx"];
+
+/// `this.m()` written inside a class member names the member on `this`'s
+/// class (its own first, then the nearest `extends` ancestor) — the
+/// extractors strip `this.` so the ref arrives bare and the claim gate's
+/// `this.` exclusion would otherwise leave it to name guesses.
+impl KernelResolver {
+    pub(super) fn match_js_this_call(&mut self, r: &ResolveRefIn) -> Res<Option<ResolveOutcome>> {
+        if r.reference_kind != "calls" || !JS_SUPER_LANGS.contains(&r.language.as_str())
+            || !re!(r"^[A-Za-z_$][\w$]*$").is_match(&r.reference_name) { return Ok(None); }
+        let Some(lines) = self.read_file(&r.file_path) else { return Ok(None) };
+        let Some(line) = lines.get((r.line - 1).max(0) as usize) else { return Ok(None) };
+        let Some(slice) = line.get(r.column.max(0) as usize..) else { return Ok(None) };
+        if !this_dot_name(slice, &r.reference_name) { return Ok(None); }
+        let Some(caller) = self.node_by_id(&r.from_node_id)? else { return Ok(None) };
+        let Some((member, cls)) = self.js_class_member_around(&caller)? else { return Ok(None) };
+        if let Some(own) = self.js_own_method(&cls, &r.reference_name, member.is_static)? {
+            return Ok(Some(ResolveOutcome::resolved(&own, 0.9, "exact-match", true, None)));
+        }
+        match self.js_inherited_method(&cls, &r.reference_name, member.is_static)? {
+            Some(node) => Ok(Some(ResolveOutcome::resolved(&node, 0.9, "exact-match", true, None))),
+            None => Ok(None),
+        }
+    }
+}
+
+/// matchJsSuperCall (js-super-calls.ts): a TS/JS call written `super.name(…)`
+/// runs the method of the class's parent, or the nearest ancestor of that
+/// one that has the method, static matching the caller's kind (#2497).
+/// `Ok(None)` leaves the ref to the other strategies; a site whose
+/// ancestors don't carry the method is terminal — never a guess by name.
+impl KernelResolver {
+    pub(super) fn match_js_super_call(&mut self, r: &ResolveRefIn) -> Res<Option<ResolveOutcome>> {
+        if !self.is_js_super_call_site(r)? { return Ok(None); }
+        let Some(caller) = self.node_by_id(&r.from_node_id)? else { return Ok(None) };
+        let Some((member, cls)) = self.js_class_member_around(&caller)? else { return Ok(None) };
+        if self.js_writes_class_before(&member, r)? { return Ok(None); }
+        match self.js_inherited_method(&cls, &r.reference_name, member.is_static)? {
+            // The `extends` walk and static match prove the ancestor; the
+            // name-guess post guards in `finish` would veto it (`run` is a
+            // local method name), so the verdict is built directly.
+            Some(node) => Ok(Some(ResolveOutcome::resolved(&node, 0.9, "instance-method", true, None))),
+            None => Ok(Some(ResolveOutcome::unresolved())),
+        }
+    }
+
+    /// isJsSuperCallSite: the call is written `super.name(…)` where it
+    /// starts (the member on the next line or two included).
+    fn is_js_super_call_site(&mut self, r: &ResolveRefIn) -> Res<bool> {
+        if r.reference_kind != "calls" || !JS_SUPER_LANGS.contains(&r.language.as_str())
+            || !re!(r"^[A-Za-z_$][\w$]*$").is_match(&r.reference_name) { return Ok(false); }
+        let Some(lines) = self.read_file(&r.file_path) else { return Ok(false) };
+        let Some(line) = lines.get((r.line - 1).max(0) as usize) else { return Ok(false) };
+        let column = r.column.max(0) as usize;
+        let Some(slice) = line.get(column..) else { return Ok(false) };
+        if !slice.starts_with("super") { return Ok(false); }
+        if super_dot_name(slice, &r.reference_name) { return Ok(true); }
+        let at = (r.line - 1).max(0) as usize;
+        let window = lines.get(at..(at + 3).min(lines.len())).unwrap_or_default().join("\n");
+        Ok(window.get(column..).is_some_and(|w| super_dot_name(w, &r.reference_name)))
+    }
+
+    /// classMemberAround: the class member `caller` belongs to, and its
+    /// class — following arrow functions nested in it up to 4 deep.
+    fn js_class_member_around(&mut self, caller: &Arc<KNode>) -> Res<Option<(Arc<KNode>, Arc<KNode>)>> {
+        let mut member = caller.clone();
+        for _ in 0..4 {
+            if member.kind != "function" { break; }
+            let Some(outer) = self.js_owner_of(&member, &["function", "method", "property"])? else { return Ok(None) };
+            member = outer;
+        }
+        if member.kind != "method" && member.kind != "property" { return Ok(None); }
+        let Some(cls) = self.js_owner_of(&member, &["class"])? else { return Ok(None) };
+        Ok(Some((member, cls)))
+    }
+
+    /// ownerOf: the node `node` is declared in, by its qualified name, in
+    /// its file and around it.
+    fn js_owner_of(&mut self, node: &Arc<KNode>, kinds: &[&str]) -> Res<Option<Arc<KNode>>> {
+        let Some(cut) = node.qualified_name.rfind("::") else { return Ok(None) };
+        if cut == 0 { return Ok(None); }
+        Ok(self.nodes_by_qualified_name(&node.qualified_name[..cut])?.iter()
+            .find(|n| kinds.contains(&n.kind.as_str()) && n.file_path == node.file_path
+                && n.start_line <= node.start_line && n.end_line >= node.end_line)
+            .cloned())
+    }
+
+    /// writesClassBefore: a `class` is written between where `member`
+    /// starts and the call (a class expression's `super` is that class's).
+    fn js_writes_class_before(&mut self, member: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        let Some(lines) = self.read_file(&r.file_path) else { return Ok(false) };
+        if member.start_line > r.line { return Ok(false); }
+        let from = (member.start_line - 1).max(0) as usize;
+        let to = (r.line as usize).min(lines.len());
+        if from >= to { return Ok(false); }
+        let mut span: Vec<String> = lines[from..to].to_vec();
+        let last = span.len() - 1;
+        let col = (r.column.max(0) as usize).min(span[last].len());
+        if !span[last].is_char_boundary(col) { return Ok(false); }
+        span[last] = span[last][..col].to_string();
+        let first_col = if member.start_line == r.line {
+            (member.start_column as usize).min(col)
+        } else {
+            (member.start_column as usize).min(span[0].len())
+        };
+        if !span[0].is_char_boundary(first_col) { return Ok(false); }
+        span[0] = span[0][first_col..].to_string();
+        let text = span.join("\n");
+        if !has_class_keyword(&text) { return Ok(false); }
+        Ok(has_class_keyword(&awaited::blank_string_contents(&awaited::strip_ts_comments(&text))))
+    }
+
+    /// inheritedMethod: the nearest method named `name` of `cls`'s
+    /// ancestors, static or instance as asked (BFS over `extends`).
+    fn js_inherited_method(&mut self, cls: &Arc<KNode>, name: &str, is_static: bool) -> Res<Option<Arc<KNode>>> {
+        let mut seen: HashSet<String> = HashSet::from([cls.id.clone()]);
+        let mut level = self.js_superclasses_of(cls)?;
+        for _ in 0..8 {
+            if level.is_empty() { break; }
+            let mut next = Vec::new();
+            for parent in level {
+                if !seen.insert(parent.id.clone()) { continue; }
+                if let Some(own) = self.js_own_method(&parent, name, is_static)? { return Ok(Some(own)); }
+                next.extend(self.js_superclasses_of(&parent)?);
+            }
+            level = next;
+        }
+        Ok(None)
+    }
+
+    fn js_superclasses_of(&mut self, cls: &KNode) -> Res<Vec<Arc<KNode>>> {
+        let ids = self.outgoing_edge_targets(&cls.id, &["extends"])?;
+        let mut out = Vec::new();
+        for id in ids {
+            if let Some(n) = self.node_by_id(&id)? {
+                if n.kind == "class" && JS_SUPER_LANGS.contains(&n.language.as_str()) { out.push(n); }
+            }
+        }
+        Ok(out)
+    }
+
+    /// ownMethod: a method `cls` itself declares under `name`; of
+    /// TypeScript's overload signatures and the body, the body (last one).
+    fn js_own_method(&mut self, cls: &KNode, name: &str, is_static: bool) -> Res<Option<Arc<KNode>>> {
+        let mut own: Vec<Arc<KNode>> = self.nodes_by_qualified_name(&format!("{}::{}", cls.qualified_name, name))?
+            .iter()
+            .filter(|m| m.kind == "method" && m.file_path == cls.file_path
+                && m.start_line >= cls.start_line && m.end_line <= cls.end_line
+                && m.is_static == is_static)
+            .cloned()
+            .collect();
+        own.sort_by_key(|m| (m.start_line, m.start_column));
+        Ok(own.pop())
+    }
+}
+
+/// `class` written as a keyword — not an identifier tail or a member
+/// (upstream's `(?<![\w$.])class(?![\w$])`; rust regex has no look-around).
+fn has_class_keyword(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    for m in re!(r"class").find_iter(text) {
+        let before = m.start().checked_sub(1).map(|i| bytes[i]);
+        let after = bytes.get(m.end()).copied();
+        let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+        let before_ok = before.is_none_or(|b| !word(b) && b != b'.');
+        let after_ok = after.is_none_or(|b| !word(b));
+        if before_ok && after_ok { return true; }
+    }
+    false
+}
+
+/// The text starts `super.<name>` with `name` not an identifier's head
+/// (upstream's `^super\s*\.\s*NAME(?![\w$])`, written out by hand).
+fn super_dot_name(slice: &str, name: &str) -> bool {
+    let rest = slice.strip_prefix("super").unwrap_or("");
+    if rest.is_empty() { return false; }
+    let rest = rest.trim_start();
+    let Some(rest) = rest.strip_prefix('.') else { return false };
+    let rest = rest.trim_start();
+    if !rest.starts_with(name) { return false; }
+    rest[name.len()..].chars().next().is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '$'))
+}
+
+/// The text starts `this.<name>` with `name` not an identifier's head.
+fn this_dot_name(slice: &str, name: &str) -> bool {
+    let Some(rest) = slice.strip_prefix("this.") else { return false };
+    if !rest.starts_with(name) { return false; }
+    rest[name.len()..].chars().next().is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '$'))
+}

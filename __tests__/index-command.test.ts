@@ -13,7 +13,7 @@
  * library) is covered.
  */
 
-import { describe, it, expect, beforeEach, afterEach, onTestFinished } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -59,21 +59,21 @@ function isAlive(pid: number): boolean {
   }
 }
 
+/**
+ * A live process standing in for a daemon that does not answer its socket.
+ * Its command line reads like a CodeGraph MCP server's: one that is plainly
+ * some other program would make the lock stale, and `index` would clear it
+ * (#2770).
+ */
 function startDetachedProcess(): number {
   const source = [
     "const { spawn } = require('child_process');",
-    "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });",
+    "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', 'codegraph.js', 'serve', '--mcp'], { detached: true, stdio: 'ignore' });",
     'child.unref();',
     'console.log(child.pid);',
   ].join(' ');
   const pid = Number(execFileSync(process.execPath, ['-e', source], { encoding: 'utf8' }).trim());
   if (!Number.isInteger(pid) || pid <= 0) throw new Error('could not start daemon fixture');
-  // Registered at spawn: a setup step that throws before the test's own
-  // try/finally (a socket path too long to listen on) would otherwise leave
-  // this detached process running after the suite exits.
-  onTestFinished(() => {
-    try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
-  });
   return pid;
 }
 
@@ -155,9 +155,13 @@ describe('codegraph index — full re-index keeps the graph populated (#874)', (
       }),
     );
 
-    expect(() => runCodegraph(['index', '--quiet'], tempDir)).toThrow(/could not verify.*daemon/i);
-    expect(isAlive(daemonPid)).toBe(true);
-    expect(fs.existsSync(lockPath)).toBe(true);
+    try {
+      expect(() => runCodegraph(['index', '--quiet'], tempDir)).toThrow(/did not answer as its daemon, so it was left running/);
+      expect(isAlive(daemonPid)).toBe(true);
+      expect(fs.existsSync(lockPath)).toBe(true);
+    } finally {
+      if (isAlive(daemonPid)) process.kill(daemonPid, 'SIGKILL');
+    }
   });
 });
 

@@ -37,6 +37,7 @@ import {
   type TreeNode as SyntaxNode,
 } from '../extraction/parse-tree';
 import { parseWithinBudget } from '../extraction/parse-budget';
+import { escapeRegExp } from '../utils';
 
 // =============================================================================
 // Public shape
@@ -570,7 +571,7 @@ function statusSetBefore(call: SyntaxNode, callee: string): number | null {
   const receiver = bare.split('.')[0]!;
   let statement: SyntaxNode | null = call;
   while (statement.parent && !STATEMENT_BLOCKS.has(statement.parent.type)) statement = statement.parent;
-  const re = new RegExp(`^\\s*(?:await\\s+)?${receiver}\\s*\\.\\s*(?:status|code)\\s*\\(\\s*([1-5]\\d{2})\\s*\\)\\s*;?\\s*$|^\\s*${receiver}\\s*\\.\\s*statusCode\\s*=\\s*([1-5]\\d{2})\\s*;?\\s*$`);
+  const re = new RegExp(`^\\s*(?:await\\s+)?${escapeRegExp(receiver)}\\s*\\.\\s*(?:status|code)\\s*\\(\\s*([1-5]\\d{2})\\s*\\)\\s*;?\\s*$|^\\s*${escapeRegExp(receiver)}\\s*\\.\\s*statusCode\\s*=\\s*([1-5]\\d{2})\\s*;?\\s*$`);
   let prev: SyntaxNode | null = statement.previousNamedSibling;
   for (let i = 0; prev && i < STATUS_LOOKBACK; i++, prev = prev.previousNamedSibling) {
     if (prev.type === 'comment') continue;

@@ -8,6 +8,7 @@
 //! are walked like any other (tree-sitter's recovery is canonical).
 
 mod lombok;
+mod records;
 mod bindings;
 mod refs;
 use crate::buffers::{
@@ -27,7 +28,11 @@ use tree_sitter::Node;
 
 
 fn is_method_type(kind: &str) -> bool {
-    matches!(kind, "method_declaration" | "constructor_declaration")
+    matches!(kind, "method_declaration" | "constructor_declaration" | "compact_constructor_declaration")
+}
+/// classTypes (languages/java.ts): a `record` is a class.
+fn is_class_type(kind: &str) -> bool {
+    matches!(kind, "class_declaration" | "record_declaration")
 }
 fn is_interface_type(kind: &str) -> bool {
     matches!(kind, "interface_declaration" | "annotation_type_declaration")
@@ -343,7 +348,7 @@ impl<'t> Walker<'t> {
         let md_owner = self.top_row();
         self.markdown_refs_from_string(node, md_owner);
 
-        if kind == "class_declaration" {
+        if is_class_type(kind) {
             self.extract_class(node);
             skip_children = true;
         } else if is_method_type(kind) {
@@ -415,7 +420,7 @@ impl<'t> Walker<'t> {
         // Static-member / value-read (`Type.CONST`) — self-gates on field_access.
         self.extract_static_member_ref(node);
 
-        if kind == "class_declaration" {
+        if is_class_type(kind) {
             self.extract_class(node);
             return;
         }
@@ -452,7 +457,11 @@ impl<'t> Walker<'t> {
         for c in named_kids(body) {
             self.visit_node(c);
         }
-        // Lombok member synthesis (#912) — class still on the stack.
+        // synthesizeJavaMembers — class still on the stack: record
+        // components first, then Lombok (#912).
+        if node.kind() == "record_declaration" {
+            self.synthesize_record_components(node, row);
+        }
         self.synthesize_lombok_members(node, row);
         self.stack.pop();
     }
@@ -855,6 +864,20 @@ impl<'t> Walker<'t> {
         }
     }
 
+    /// supertypeName — a parameterized supertype (`generic_type`) by the name
+    /// before its type arguments: `Store` for `implements Store<String>`.
+    fn supertype_name(&self, node: Node<'t>) -> String {
+        if node.kind() == "generic_type" {
+            let named = (0..node.named_child_count())
+                .filter_map(|j| node.named_child(j))
+                .find(|c| c.kind() != "type_arguments");
+            if let Some(named) = named {
+                return self.text(named).to_string();
+            }
+        }
+        self.text(node).to_string()
+    }
+
     /// extractInheritance — the Java clauses (type_list-aware).
     fn extract_inheritance(&mut self, node: Node<'t>, class_row: u32) {
         let extends_kind = crate::buffers::EDGE_EXTENDS;
@@ -870,7 +893,7 @@ impl<'t> Walker<'t> {
                         None => child.named_child(0).into_iter().collect(),
                     };
                     for target in targets {
-                        let name = self.text(target).to_string();
+                        let name = self.supertype_name(target);
                         self.push_ref_at(class_row, &name, extends_kind, target);
                     }
                 }
@@ -882,7 +905,7 @@ impl<'t> Walker<'t> {
                         None => named_kids(child).collect(),
                     };
                     for iface in targets {
-                        let name = self.text(iface).to_string();
+                        let name = self.supertype_name(iface);
                         self.push_ref_at(class_row, &name, implements_kind, iface);
                     }
                 }

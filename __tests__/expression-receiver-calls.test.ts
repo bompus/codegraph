@@ -171,7 +171,7 @@ describe('expression receivers', () => {
     // and resolves only on proof; upstream collapses it to the bare `start`.
     expect(refs).toEqual([
       'list().map', 'list', 'x.run', 'y.run', 'x.stop', 'getTarget().install', 'getTarget',
-      'f', 'run', 'go', 'window.Api.start',
+      'f', 'run', 'new Runner().go', 'window.Api.start',
     ]);
   });
 });

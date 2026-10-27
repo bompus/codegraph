@@ -577,6 +577,8 @@ mod dart_local;
 mod dart_calls;
 mod lua_alias;
 mod member_scope;
+mod pascal_scope;
+mod ruby_paths;
 mod vbnet;
 mod receivers;
 mod bound;
@@ -680,6 +682,7 @@ pub struct KernelResolver {
     php_supers_memo: HashMap<String, Rc<Vec<String>>>,
     /// dartSupertypesOf, by type name.
     vb: vbnet::VbMemo,
+    pascal: pascal_scope::PasMemo,
     js_objects: js_objects_upstream::JsObjects,
     dart_libraries: dart_libraries::DartLibraries,
     dart_locals: dart_local::DartLocals,
@@ -915,6 +918,7 @@ impl KernelResolver {
             java_supers_memo: HashMap::new(),
             php_supers_memo: HashMap::new(),
             vb: vbnet::VbMemo::default(),
+            pascal: pascal_scope::PasMemo::default(),
             js_objects: Default::default(),
             dart_libraries: Default::default(),
             dart_locals: Default::default(),

@@ -16,10 +16,10 @@ mod bindings;
 mod refs;
 use crate::buffers::{
     node_kind_index, Arena, BoolFlags, EmitOut, NodeRow,
-    RefRow, Tables, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, FLAG_IS_EXPORTED, NONE, NONE_STR,
+    RefRow, Tables, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, FLAG_IS_EXPORTED, FUNCTION_REF_CODE, NONE, NONE_STR,
 };
 use crate::walker::named_kids;
-use crate::walker::{Scope, ValueScope, Cand, scope_qualified_name};
+use crate::walker::{Scope, ValueScope, scope_qualified_name};
 use crate::textutil::{is_builtin_type, is_literal_receiver};
 use crate::docstring::preceding_go_doc_comment;
 use crate::ids;
@@ -66,6 +66,44 @@ struct Extra {
 }
 
 
+struct Cand<'t> {
+    from: u32,
+    name: String,
+    line: u32,
+    column_byte: usize,
+    row: usize,
+    /// The value container the candidate came from: the flush reads its
+    /// scope from there when the function shadows the name (#2596).
+    node: Node<'t>,
+}
+
+impl<'t> Cand<'t> {
+    /// Cand::at (walker.rs) plus the value container (#2596).
+    fn at(from: u32, name: impl Into<String>, node: Node<'t>, container: Node<'t>) -> Option<Cand<'t>> {
+        let name = name.into();
+        if name.is_empty() || crate::textutil::is_stoplisted(&name) {
+            return None;
+        }
+        let p = node.start_position();
+        Some(Cand { from, name, line: p.row as u32 + 1, column_byte: node.start_byte(), row: p.row, node: container })
+    }
+
+    /// Cand::member (walker.rs) plus the value container (#2596): a member
+    /// value that keeps its receiver path, anchored at the member name.
+    fn member(from: u32, path: &str, member: Node<'t>, container: Node<'t>) -> Option<Cand<'t>> {
+        let path = path.split('.').map(str::trim).collect::<Vec<_>>().join(".");
+        let named = path.contains('.')
+            && path.split('.').all(|part| {
+                !part.is_empty()
+                    && part.bytes().enumerate().all(|(i, c)| c == b'_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
+            });
+        if !named {
+            return None;
+        }
+        let p = member.start_position();
+        Some(Cand { from, name: path, line: p.row as u32 + 1, column_byte: member.start_byte(), row: p.row, node: container })
+    }
+}
 
 /// Per-node metadata for the receiver-method owner lookup (mirrors the TS
 /// side's scan over `this.nodes` — FIRST match wins, earlier-in-file only).
@@ -90,7 +128,7 @@ pub struct Walker<'t> {
     /// Go binds a name to one import, so an unaliased import whose last path
     /// element is such a name (`"github.com/cheggaaa/pb/v3"`) does not bind it.
     explicit_import_names: HashSet<String>,
-    fn_ref_cands: Vec<Cand>,
+    fn_ref_cands: Vec<Cand<'t>>,
     fs_values: HashMap<String, u32>,
     fs_value_counts: HashMap<String, u32>,
     value_scopes: Vec<ValueScope<'t>>,
@@ -418,7 +456,9 @@ impl<'t> Walker<'t> {
             signature: self.signature_of(node),
             return_type: self.return_type_of(node),
             qualified_name: receiver_type.as_ref().map(|r| format!("{r}::{name}")),
-            ..Extra::default() // extractMethod passes no isExported
+            // methodsAreTopLevel: a Go method is a top-level declaration, so
+            // extractMethod gives it the function's exportedness (name case).
+            is_exported: Some(self.is_exported(node)),
         };
         let Some(row) = self.create_node("method", &name, node, extra) else { return };
 
@@ -895,7 +935,7 @@ impl<'t> Walker<'t> {
     /// embedding names — `T`, `*T` (the `*` is a sibling token), `pkg.T` and
     /// `T[X]` all embed `T`. A qualified type yields its name; resolution reads
     /// the package back from the source at that position. None for any other
-    /// type and for a predeclared one.
+    /// type and for a predeclared one but `error`, an interface with a method.
     fn embedded_type_name(&self, ty: Option<Node<'t>>) -> Option<Node<'t>> {
         let mut ty = ty?;
         if ty.kind() == "generic_type" {
@@ -903,7 +943,10 @@ impl<'t> Walker<'t> {
         }
         match ty.kind() {
             "qualified_type" => ty.child_by_field_name("name"),
-            "type_identifier" if !is_go_predeclared_type(self.text(ty)) => Some(ty),
+            "type_identifier" => {
+                let name = self.text(ty);
+                (name == "error" || !is_go_predeclared_type(name)).then_some(ty)
+            }
             _ => None,
         }
     }
@@ -1062,7 +1105,45 @@ impl<'t> Walker<'t> {
 
     // --- fn refs (GO_SPEC, with the literal_element/expression_list layers) --------
 
-    flush_fn_ref_candidates_impl!();
+    fn flush_fn_ref_candidates(&mut self) {
+        let cands = std::mem::take(&mut self.fn_ref_cands);
+        if cands.is_empty() || util::is_generated_file(self.file_path) {
+            return;
+        }
+        let survivors: Vec<Cand<'t>> = cands
+            .into_iter()
+            .filter(|c| {
+                c.name.starts_with("this.")
+                    || c.name.contains('.')
+                    || c.name.contains("::")
+                    || self.defined_fn_names.contains(&c.name)
+                    || self.imported_names.contains(&c.name)
+            })
+            .collect();
+        // One reference per function and name, at its first use; one per
+        // scope where the function binds the name itself (#2596). Mirrors
+        // flushFnRefCandidates / goScopedFnRefKeys.
+        let scopes = go_scoped_fn_ref_scopes(&survivors, &self.node_ids, self.src);
+        let mut seen: HashSet<(String, String, Option<usize>)> = HashSet::new();
+        for (i, c) in survivors.into_iter().enumerate() {
+            let scope = scopes.get(&i).copied();
+            if !seen.insert((self.node_ids[c.from as usize].clone(), c.name.clone(), scope)) {
+                continue;
+            }
+            let column = self.cols.col(self.src, c.row, c.column_byte);
+            let name_ref = self.arena.put(&c.name);
+            self.tables.push_ref(&RefRow {
+                from_idx: c.from,
+                kind: FUNCTION_REF_CODE,
+                line: c.line,
+                column,
+                reference_name: name_ref,
+                candidates: NONE_STR,
+                from_id_str: NONE_STR,
+            });
+        }
+    }
+
 
     // --- value refs -------------------------------------------------------------------
 
@@ -1080,4 +1161,156 @@ fn is_go_predeclared_type(name: &str) -> bool {
             | "float64" | "int" | "int8" | "int16" | "int32" | "int64" | "rune" | "string" | "uint"
             | "uint8" | "uint16" | "uint32" | "uint64" | "uintptr"
     )
+}
+
+// --- a local that shadows the function a value names (#2596) ---------------------
+
+/// Go nodes that open a scope a local can be declared in: a block, the
+/// implicit block of an `if` / `for` / `switch` / `select` statement, and each
+/// clause of a `switch` or `select`. Mirrors GO_SCOPE_TYPES (function-ref.ts).
+const GO_SCOPE_TYPES: [&str; 10] = [
+    "block",
+    "if_statement",
+    "for_statement",
+    "expression_switch_statement",
+    "type_switch_statement",
+    "select_statement",
+    "expression_case",
+    "default_case",
+    "type_case",
+    "communication_case",
+];
+
+/// Where a function-value candidate sits: the innermost scope node's id
+/// (usize::MAX when there is none) and the unit it is written in: the
+/// function or method declaration, or for a func literal at file scope the
+/// outermost literal, else None. Mirrors goFnRefSite.
+fn go_fn_ref_site<'t>(node: Node<'t>) -> (usize, Option<Node<'t>>) {
+    let mut scope = usize::MAX;
+    let mut literal: Option<Node<'t>> = None;
+    let mut cur = Some(node);
+    while let Some(n) = cur {
+        if scope == usize::MAX && GO_SCOPE_TYPES.contains(&n.kind()) {
+            scope = n.id();
+        }
+        if matches!(n.kind(), "function_declaration" | "method_declaration") {
+            return (scope, Some(n));
+        }
+        if n.kind() == "func_literal" {
+            literal = Some(n);
+        }
+        cur = n.parent();
+    }
+    (scope, literal)
+}
+
+/// The names among `names` that a function binds itself, as (unit id, name):
+/// its func literals' parameters, `:=`, `var` and `const`, range and
+/// type-switch variables, and a select case's received value. A name the
+/// function's own receiver, parameters or results bind is left out: those
+/// cover its whole body. Mirrors goLocalBindings.
+fn go_local_bindings<'t>(units: &[Node<'t>], names: &HashSet<&str>, src: &str) -> HashSet<(usize, String)> {
+    let mut out: HashSet<(usize, String)> = HashSet::new();
+    for unit in units {
+        let mut bind = |id: Option<Node<'t>>| {
+            if let Some(id) = id {
+                if id.kind() == "identifier" {
+                    let name = &src[id.start_byte()..id.end_byte()];
+                    if names.contains(name) {
+                        out.insert((unit.id(), name.to_string()));
+                    }
+                }
+            }
+        };
+        let declares = |n: Node<'t>| {
+            (0..n.child_count()).any(|i| n.child(i).is_some_and(|c| !c.is_named() && c.kind() == ":="))
+        };
+        let mut stack: Vec<Node<'t>> = vec![*unit];
+        while let Some(n) = stack.pop() {
+            let list = match n.kind() {
+                "short_var_declaration" => n.child_by_field_name("left"),
+                "range_clause" | "receive_statement" if declares(n) => n.child_by_field_name("left"),
+                "type_switch_statement" => n.child_by_field_name("alias"),
+                _ => None,
+            };
+            if let Some(list) = list {
+                for i in 0..list.named_child_count() {
+                    bind(list.named_child(i));
+                }
+            }
+            if matches!(n.kind(), "var_spec" | "const_spec" | "parameter_declaration" | "variadic_parameter_declaration") {
+                let mut cursor = n.walk();
+                for c in n.children_by_field_name("name", &mut cursor) {
+                    bind(Some(c));
+                }
+            }
+            for i in (0..n.named_child_count()).rev() {
+                if let Some(c) = n.named_child(i) {
+                    stack.push(c);
+                }
+            }
+        }
+        for field in ["receiver", "parameters", "result"] {
+            let Some(list) = unit.child_by_field_name(field) else { continue };
+            if list.kind() != "parameter_list" {
+                continue;
+            }
+            for i in 0..list.named_child_count() {
+                let Some(p) = list.named_child(i) else { continue };
+                if !matches!(p.kind(), "parameter_declaration" | "variadic_parameter_declaration") {
+                    continue;
+                }
+                let mut cursor = p.walk();
+                for c in p.children_by_field_name("name", &mut cursor) {
+                    if c.kind() == "identifier" {
+                        out.remove(&(unit.id(), src[c.start_byte()..c.end_byte()].to_string()));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The candidates, by index, that get one reference per scope instead of
+/// one per function, each with the id of the scope it sits in: names a
+/// function uses at least twice and binds itself. Only those candidates'
+/// positions are read from the tree. Mirrors goScopedFnRefScopes.
+fn go_scoped_fn_ref_scopes<'t>(cands: &[Cand<'t>], node_ids: &[String], src: &str) -> HashMap<usize, usize> {
+    let mut groups: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
+    for (i, c) in cands.iter().enumerate() {
+        if c.name.contains('.') {
+            continue;
+        }
+        groups.entry((node_ids[c.from as usize].as_str(), c.name.as_str())).or_default().push(i);
+    }
+    let mut sites: Vec<(usize, usize, Node<'t>)> = Vec::new();
+    let mut units: Vec<Node<'t>> = Vec::new();
+    let mut unit_ids: HashSet<usize> = HashSet::new();
+    let mut names: HashSet<&str> = HashSet::new();
+    for members in groups.values() {
+        if members.len() < 2 {
+            continue;
+        }
+        for &i in members {
+            let (scope, unit) = go_fn_ref_site(cands[i].node);
+            let Some(unit) = unit else { continue };
+            sites.push((i, scope, unit));
+            if unit_ids.insert(unit.id()) {
+                units.push(unit);
+            }
+            names.insert(cands[i].name.as_str());
+        }
+    }
+    let mut out: HashMap<usize, usize> = HashMap::new();
+    if units.is_empty() {
+        return out;
+    }
+    let bound = go_local_bindings(&units, &names, src);
+    for (i, scope, unit) in sites {
+        if bound.contains(&(unit.id(), cands[i].name.clone())) {
+            out.insert(i, scope);
+        }
+    }
+    out
 }

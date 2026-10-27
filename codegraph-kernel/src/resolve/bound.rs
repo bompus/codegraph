@@ -737,6 +737,13 @@ if site.language == "dart" && site.reference_kind == "calls" {
         // Of a member template's explicit specializations, the one the call's template arguments
         // name (cpp_specialization_pool).
         let members = self.cpp_specialization_pool(members, site);
+        // A receiver typed by `x = Widget.new` is an instance: `def call`
+        // before `def self.call` when both share `Widget::call` (#2834).
+        let members = if site.language == "ruby" {
+            super::ruby_paths::ruby_methods_of_kind_first(members, "instance")
+        } else {
+            members
+        };
         if members.len() > 1 && site.language == "cpp" && site.reference_kind == "calls" && !site.reference_name.contains("().") {
             // A C++ call on a typed receiver takes the overload its arguments fit, not the first
             // one declared (a chained call `inner(…).name(…)` keeps the first: the arguments at
@@ -1318,6 +1325,13 @@ Ok(self.dart_member_of(type_name, method, r, false)?
             let node = self.cpp_overload_for(ordered, method, r)?;
             return Ok(Some(KCand { node, confidence, resolved_by }));
         }
+        // A receiver typed by `x = Widget.new` is an instance: `def m` before
+        // `def self.m` when both share `Owner::m` (#2834).
+        let matches = if r.language == "ruby" {
+            super::ruby_paths::ruby_methods_of_kind_first(matches, "instance")
+        } else {
+            matches
+        };
         Ok(Self::pick_method_match(matches, r, confidence, resolved_by, preferred_fqn))
     }
 

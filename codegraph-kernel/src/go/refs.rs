@@ -14,6 +14,9 @@ impl<'t> Walker<'t> {
             "literal_value" => ("list", ""),
             _ => return,
         };
+        if self.stack.is_empty() {
+            return;
+        }
         let from = self.top_row();
 
         let mut values: Vec<Node> = Vec::new();
@@ -62,13 +65,13 @@ impl<'t> Walker<'t> {
         }
 
         for v in values {
-            self.normalize_fn_ref_value(v, from, 0);
+            self.normalize_fn_ref_value(v, from, 0, node);
         }
     }
 
     /// normalizeValue with GO_SPEC's transparent layers (literal_element,
     /// expression_list — both fan out to named children).
-    pub(super) fn normalize_fn_ref_value(&mut self, v: Node<'t>, from: u32, depth: u32) {
+    pub(super) fn normalize_fn_ref_value(&mut self, v: Node<'t>, from: u32, depth: u32, container: Node<'t>) {
         stack_guard!();
         if depth > 4 {
             return;
@@ -76,18 +79,18 @@ impl<'t> Walker<'t> {
         match v.kind() {
             "identifier" => {
                 let name = self.text(v).to_string();
-                self.fn_ref_cands.extend(Cand::at(from, name, v));
+                self.fn_ref_cands.extend(Cand::at(from, name, v, container));
             }
             // A method value `c.store.Fetch` keeps its receiver (#1820).
             "selector_expression" => {
                 if let Some(field) = v.child_by_field_name("field") {
                     let path = self.selector_path(v);
-                    self.fn_ref_cands.extend(Cand::member(from, &path, field));
+                    self.fn_ref_cands.extend(Cand::member(from, &path, field, container));
                 }
             }
             "literal_element" | "expression_list" => {
                 for c in named_kids(v) {
-                    self.normalize_fn_ref_value(c, from, depth + 1);
+                    self.normalize_fn_ref_value(c, from, depth + 1, container);
                 }
             }
             _ => {}

@@ -101,15 +101,22 @@ function findDeclaratorQualifiedId(declarator: SyntaxNode): SyntaxNode | undefin
     if (current.type === 'qualified_identifier') return current;
     for (let i = 0; i < current.namedChildCount; i++) {
       const child = current.namedChild(i);
-      // Don't descend into parameters or the trailing return type — their types
-      // (`const std::string&`, `-> std::string`) aren't the function name.
-      if (child && !['parameter_list', 'trailing_return_type', 'noexcept', 'throw_specifier', 'requires_clause'].includes(child.type)) {
+      // Don't descend into parameters, the trailing return type or the
+      // clauses after them — `const std::string&`, `-> std::string`,
+      // nlohmann/json's `noexcept(noexcept(JSONSerializer<U>::to_json(…)))`,
+      // `throw(std::bad_alloc)`, `requires std::integral<T>` name no function.
+      if (child && !DECLARATOR_NON_NAME_PARTS.has(child.type)) {
         queue.push(child);
       }
     }
   }
   return undefined;
 }
+
+/** The parts of a function declarator that hold types or expressions, never its name. */
+const DECLARATOR_NON_NAME_PARTS: ReadonlySet<string> = new Set([
+  'parameter_list', 'trailing_return_type', 'noexcept', 'throw_specifier', 'requires_clause',
+]);
 
 /**
  * Single-argument macros are ambiguous without their definition (#1373).
@@ -1125,15 +1132,6 @@ export function maskCppRawStrings(source: string): { source: string; restore: (b
 }
 
 /**
- * A C definition whose return type a column-0 macro supplies: `LOCAL(int)`
- * then `SRE(at)(SRE_STATE *state)` or `tf_q(long long c)` and its `{`. The
- * grammar reads the macro as the type (`macro_type_specifier`); blanking it
- * leaves a definition with no type, which C parses as `(at)` or as no
- * function at all.
- */
-const C_MACRO_TYPED_DEFINITION_RE = /^[A-Za-z_]\w*\s*\([^()]*\)(?:\s*\([^()]*\))?\s*\{/;
-
-/**
  * Blank annotation-style macro invocations that decorate a declaration but carry
  * NO terminating semicolon — the pervasive Unreal-Engine reflection markup
  * (`UPROPERTY(...)`, `UFUNCTION(...)`, `UCLASS(...)`, `GENERATED_BODY()`,
@@ -1165,13 +1163,20 @@ const C_MACRO_TYPED_DEFINITION_RE = /^[A-Za-z_]\w*\s*\([^()]*\)(?:\s*\([^()]*\))
  *    an operator (`MAKE(a) + 1`) — all rejected. String/char literals inside the
  *    args are skipped so an embedded `)` can't mis-close the balance.
  *
- * Shared by C and C++. C passes `keepReturnTypeMacros`, which keeps a column-0
- * macro that a definition follows (see C_MACRO_TYPED_DEFINITION_RE). A blanked
- * macro inside a block comment is harmless (comments don't parse), and the rare
- * line-leading no-semicolon ALL-CAPS call that isn't markup only loses that one
- * annotation, never a whole class.
+ * C runs it too (redis's `REDIS_NO_SANITIZE("bounds")` above a definition),
+ * with `keepCReturnTypes`: there a macro that wraps the return type of the
+ * function declared after it is no markup, it IS the type — cJSON's
+ * `CJSON_PUBLIC(char *) cJSON_Print(const cJSON *item)`, libgit2's
+ * `GIT_EXTERN(int) git_blob_dup(…);` — and tree-sitter-c reads it as one (a
+ * `macro_type_specifier`). Blanked with its argument, it left `cJSON_Print(…)`
+ * and a block, which parse as a call: the function had no node (#2470). See
+ * isCReturnTypeMacro for how such a macro is told from markup.
+ *
+ * A blanked macro inside a block comment is harmless (comments don't parse),
+ * and the rare line-leading no-semicolon ALL-CAPS call that isn't markup only
+ * loses that one annotation, never a whole class.
  */
-export function blankCppAnnotationMacroCalls(source: string, keepReturnTypeMacros = false): string {
+export function blankCppAnnotationMacroCalls(source: string, options: { keepCReturnTypes?: boolean } = {}): string {
   if (!/^[ \t]*[A-Z][A-Z0-9_]{2,}\s*\(/m.test(source)) return source;
   const rawStrings = maskCppRawStrings(source);
   source = rawStrings.source;
@@ -1180,7 +1185,8 @@ export function blankCppAnnotationMacroCalls(source: string, keepReturnTypeMacro
   let m: RegExpExecArray | null;
   while ((m = re.exec(source)) !== null) {
     const macroStart = m.index + (m[1] ?? '').length; // skip leading indent
-    let i = m.index + m[0].length - 1; // index of the opening '('
+    const open = m.index + m[0].length - 1; // index of the opening '('
+    let i = open;
     let depth = 0;
     let end = -1;
     for (; i < source.length; i++) {
@@ -1207,7 +1213,7 @@ export function blankCppAnnotationMacroCalls(source: string, keepReturnTypeMacro
     // Only markup is followed by the declaration it decorates; a statement call
     // (`;`), init-list item (`,`/`{`), or expression fragment (operator) is not.
     if (!after || !/[A-Za-z_~#]/.test(after)) continue;
-    if (keepReturnTypeMacros && macroStart === m.index && C_MACRO_TYPED_DEFINITION_RE.test(source.slice(j, j + 4096))) continue;
+    if (options.keepCReturnTypes && macroStart === m.index && isCReturnTypeMacro(source, m.index, open, end, j)) continue;
     for (let k = macroStart; k < end; k++) {
       if (chars[k] !== '\n' && chars[k] !== '\r') chars[k] = ' ';
     }
@@ -1216,25 +1222,104 @@ export function blankCppAnnotationMacroCalls(source: string, keepReturnTypeMacro
   return rawStrings.restore(chars.join(''));
 }
 
+/** A macro argument that reads as a C type: `char *`, `const cJSON *`, `unsigned long`, `git_repository *`. */
+const C_RETURN_TYPE_ARG_RE = /^\s*[A-Za-z_][\w\s*]*$/;
+/** A function declarator's name and the `(` of its parameter list. */
+const C_DECLARATOR_HEAD_RE = /[A-Za-z_]\w*\s*\(/y;
+/**
+ * What may end a function declarator: attributes (`__attribute__((format(printf, 1, 2)))`,
+ * an ALL-CAPS attribute macro, with or without arguments), then the body's `{` or a prototype's `;`.
+ */
+const C_DECLARATOR_TAIL_RE = /\s*(?:(?:__attribute__\s*\(\((?:[^()]|\([^()]*\))*\)\)|[A-Z][A-Z0-9_]*(?![\w$])(?:\s*\((?:[^()]|\([^()]*\))*\))?)\s*)*[{;]/y;
+
+/**
+ * Whether the column-0 macro call `MACRO(…)` starting at `lineStart` (its
+ * argument list from `open` to `end`, the next code at `next`) is the return
+ * type of the function declared right after it, not markup:
+ *  - its one argument reads as a type, so `ATTR_FORMAT(1, 2)` and
+ *    `REDIS_NO_SANITIZE("bounds")` are markup;
+ *  - only the function's declarator follows: a name, its parameter list,
+ *    attributes, then `{` or `;`. Markup is followed by a declaration with a
+ *    type of its own (`ATTR(x) void f(void);`);
+ *  - the line above leaves no declaration open. jemalloc writes the type
+ *    there: `size_t JEMALLOC_NOTHROW\nJEMALLOC_ATTR(pure)\nje_sallocx(…) {`,
+ *    and that macro is the attribute it looks like.
+ * Column 0 is where a file-scope declaration starts; an indented statement
+ * prefix in a body (`FOREACH(n) visit(n);`) is no return type.
+ */
+function isCReturnTypeMacro(source: string, lineStart: number, open: number, end: number, next: number): boolean {
+  if (!C_RETURN_TYPE_ARG_RE.test(source.slice(open + 1, end - 1))) return false;
+  C_DECLARATOR_HEAD_RE.lastIndex = next;
+  const head = C_DECLARATOR_HEAD_RE.exec(source);
+  if (!head) return false;
+  let close = -1;
+  let depth = 0;
+  for (let i = next + head[0].length - 1; i < source.length && close < 0; i++) {
+    const c = source[i];
+    if (c === '(') depth++;
+    else if (c === ')') { if (--depth === 0) close = i; }
+    else if (c === ';' || c === '{' || c === '}') return false;
+  }
+  if (close < 0) return false;
+  C_DECLARATOR_TAIL_RE.lastIndex = close + 1;
+  if (C_DECLARATOR_TAIL_RE.test(source)) return !opensCDeclaration(source, lineStart);
+  // `MACRO(t) NAME(a)(b) {`: a macro-shaped name whose declarator carries a
+  // second parameter list (`SRE(at)(SRE_STATE *state)`) — the first pass of
+  // C_MACRO_TYPED_DEFINITION_RE's `(?:\s*\([^()]*\))?` group. The second group
+  // must end at a body; a `;` makes this markup's ordinary declaration.
+  let i = close + 1;
+  while (i < source.length && /\s/.test(source[i] as string)) i++;
+  if (source[i] !== '(') return false;
+  let innerClose = -1;
+  let innerDepth = 0;
+  for (; i < source.length; i++) {
+    const c = source[i];
+    if (c === '(') innerDepth++;
+    else if (c === ')') { if (--innerDepth === 0) { innerClose = i; break; } }
+    else if (c === ';' || c === '{' || c === '}') return false;
+  }
+  if (innerClose < 0) return false;
+  i = innerClose + 1;
+  while (i < source.length && /\s/.test(source[i] as string)) i++;
+  return source[i] === '{' && !opensCDeclaration(source, lineStart);
+}
+
+/**
+ * Whether the line right above `lineStart` leaves a declaration open: its
+ * code ends in a type's last token (`unsigned long`, `char *`, `size_t
+ * JEMALLOC_NOTHROW`). A blank line, a directive, or a comment closes none.
+ */
+function opensCDeclaration(source: string, lineStart: number): boolean {
+  if (lineStart === 0) return false;
+  const from = source.lastIndexOf('\n', lineStart - 2) + 1;
+  const line = source.slice(from, lineStart - 1).replace(/\/\/.*$/, '').trim();
+  return line !== '' && !line.startsWith('#') && /[\w*]$/.test(line);
+}
+
 /**
  * Blank a macro that is the ONLY token on its line — no parens, no semicolon:
  * namespace-management macros (`FMT_BEGIN_NAMESPACE`, `FMT_END_EXPORT`,
  * `JEMALLOC_DIAGNOSTIC_DISABLE_SPURIOUS`), Qt's `Q_OBJECT`, and friends. A
  * bare identifier is not a statement or declaration in C or C++, so
- * tree-sitter drops into error recovery at every one, which can mis-nest
- * scopes in header-heavy trees. Replacing the token with equal-length spaces
+ * tree-sitter drops into error recovery at every one — and since the kernel
+ * path defers ANY erroring file to wasm, this single idiom deferred 13/73 fmt
+ * files and a comparable share of jemalloc, forfeiting the native-parse win
+ * on exactly the header-heavy trees it targets (the wasm path also mis-nests
+ * scopes around them today). Replacing the token with equal-length spaces
  * preserves every byte offset and the surrounding declarations parse clean.
  *
  * Matched tightly so a real identifier can never be touched — ALL of:
- *  - the line consists of ONE ALL-CAPS token (≥4 chars after any leading `_`,
- *    with `_`; `_TESTFUNC_IMPL` counts), optionally
+ *  - the line consists of ONE ALL-CAPS token (≥4 chars, with `_`), optionally
  *    followed by a same-line comment — a lone lowercase identifier or any
  *    second token disqualifies;
  *  - the PREVIOUS non-blank line does not end in a continuation character
  *    (`=`, an operator, `,`, `(`, `?`, `:`, or a `\` macro-definition
  *    continuation) — so an ALL-CAPS operand split onto its own line inside a
  *    multi-line expression (`int x =\n  SOME_CONST\n  | OTHER;`) is left
- *    alone; and
+ *    alone. A preprocessor directive ends at its own line, even one that
+ *    ends in `>`: GLib's `G_BEGIN_DECLS` below `#include <glib.h>`, and
+ *    Objective-C's `NS_ASSUME_NONNULL_BEGIN` below `#import
+ *    <Foundation/Foundation.h>`, are blanked; and
  *  - the NEXT line of code starts like a declaration/scope token
  *    (letter, `_`, `#`, `{`, `}`, or `~`) or the file ends — an operator,
  *    string literal, or `;` continuation rejects the match. Comments in
@@ -1243,36 +1328,30 @@ export function blankCppAnnotationMacroCalls(source: string, keepReturnTypeMacro
  * Shared by C and C++ (the idiom is identical in both), and by Objective-C
  * through OBJC_LONE_MACROS.
  */
-const LONE_MACRO_LINE_RE = /^[ \t]*(_*[A-Z][A-Z0-9_]{3,})[ \t]*(?:\/\/[^\n\r]*|\/\*[^\n\r]*\*\/[ \t]*)?\r?$/;
+const LONE_MACRO_LINE_RE = /^[ \t]*([A-Z][A-Z0-9_]{3,})[ \t]*(?:\/\/[^\n\r]*|\/\*[^\n\r]*\*\/[ \t]*)?\r?$/;
 const LONE_MACRO_CONTINUATION_END_RE = /[=+\-*/%&|^<>?:,(\\]$/;
 
 /** How a language's code reads around a macro alone on its line. */
 interface LoneMacroRules {
   /** What the code after the macro may start with. */
   nextCode: RegExp;
-  /** Whether a preprocessor directive above the macro ends at its own line. */
-  directivesEnd: boolean;
   /** Whether a macro that is a body's only statement, between `{` and `}`, stays. */
   keepsSoleStatement: boolean;
 }
 
-const C_LONE_MACROS: LoneMacroRules = { nextCode: /[A-Za-z_#{}~]/, directivesEnd: false, keepsSoleStatement: false };
+const C_LONE_MACROS: LoneMacroRules = { nextCode: /[A-Za-z_#{}~]/, keepsSoleStatement: false };
 
 /**
  * Objective-C's: the code after the macro may be a directive, like the
  * `@interface` below `NS_ASSUME_NONNULL_BEGIN` or the `@end` below
- * `OF_SINGLETON_METHODS`. A preprocessor line above it continues nothing,
- * even one that ends in `>`, like the `#import <Foundation/Foundation.h>`
- * above most headers' `NS_ASSUME_NONNULL_BEGIN`. Blanking that macro but not
- * another before the same `@interface` (`OF_SUBCLASSING_RESTRICTED`) left
- * `OF_ASSUME_NONNULL_BEGIN @interface …`, which reads as a function.
+ * `OF_SINGLETON_METHODS`.
  *
  * A macro that is a method's whole body, like ObjFW's `{
  * OF_UNRECOGNIZED_SELECTOR }`, stays: the parser's error there stays inside
  * that body, but blanking it changed how the parser recovered from an
  * earlier misread, and OFMutableString.m lost 11 calls in the methods below.
  */
-export const OBJC_LONE_MACROS: LoneMacroRules = { nextCode: /[A-Za-z_#{}~@]/, directivesEnd: true, keepsSoleStatement: true };
+export const OBJC_LONE_MACROS: LoneMacroRules = { nextCode: /[A-Za-z_#{}~@]/, keepsSoleStatement: true };
 
 export function blankLoneMacroLines(source: string, rules: LoneMacroRules = C_LONE_MACROS): string {
   if (!/^[ \t]*_*[A-Z][A-Z0-9_]{3,}[ \t]*\r?$/m.test(source)) return source;
@@ -1774,8 +1853,12 @@ export function blankCLeadingAttrMacros(source: string): string {
  *
  * is NOT valid C — `extern "C" {` (and any other C++-only line under the
  * guard) drops tree-sitter-c into error recovery, so effectively every public
- * C header carries parse errors. A C compiler never sees the guarded lines
- * (`__cplusplus` is only defined for C++), so blanking the region BODY mirrors the
+ * C header carries parse errors. The wasm path shrugs (recovery keeps the
+ * rest); the kernel path defers EVERY erroring file to wasm by policy — so
+ * this one idiom pushed C-header deferral to ~32% on redis (vs the <10%
+ * gate) and forfeited the native-parse win exactly where C repos have the
+ * most files. A C compiler never sees the guarded lines (`__cplusplus` is
+ * only defined for C++), so blanking the region BODY mirrors the
  * preprocessor's own view of the file.
  *
  * Matched conservatively, line-based and offset-preserving:
@@ -1826,10 +1909,11 @@ export function blankCCplusplusGuardBodies(source: string): string {
  * &list) { … }` (git), `list_for_each_entry(pos, head, member) { … }` (the
  * Linux kernel's core iteration idiom). A call followed by a brace block is
  * not a C statement, so tree-sitter-c drops into error recovery at every use —
- * these macros cause parse errors in macro-heavy C trees.
+ * these macros are the single largest source of parse errors in macro-heavy C
+ * trees (git: ~39% of files error; the kernel path defers each one to wasm).
  * Blanking JUST the macro call leaves the brace block as a bare compound
- * statement — valid C — so the body's calls/locals extract normally with both
- * the bespoke and generic extractors instead of relying on error recovery.
+ * statement — valid C — so the body's calls/locals extract normally on both
+ * arms instead of riding error recovery.
  *
  * C-ONLY, and matched tightly:
  *  - the call must be INDENTED (statement position; file-scope definitions
@@ -2450,7 +2534,7 @@ export function blankCNamedVariadicDefineDots(source: string): string {
  * cleanly — at the cost of the references inside the initializer, which the
  * broken parse was not yielding either. Statement-level only (`);` follows),
  * macro-cased name only, offsets preserved. Runs before the kernel route
- * point, so both the bespoke and generic C extractors see the same bytes.
+ * point, so both the wasm and kernel C arms see the same bytes.
  */
 export function blankCDesignatedMacroArgs(source: string): string {
   if (source.indexOf('=') === -1) return source;
@@ -2500,7 +2584,7 @@ function preParseCSource(source: string): string {
                 )
               )
             ),
-            true
+            { keepCReturnTypes: true }
           )
         )
       )
@@ -2582,23 +2666,20 @@ export const cppExtractor: LanguageExtractor = {
     return parameters ? getNodeText(parameters, source) + (node.type === 'declaration' ? ';' : '') : undefined;
   },
   getVisibility: (node) => {
-    // The nearest access specifier before the node among its parent's
-    // children; none means undefined, not the class or struct default.
+    // Check for access specifier in parent
     const parent = node.parent;
-    let visibility: 'public' | 'private' | 'protected' | undefined;
     if (parent) {
       for (let i = 0; i < parent.childCount; i++) {
         const child = parent.child(i);
-        if (!child || child.startIndex >= node.startIndex) break;
-        if (child.type === 'access_specifier') {
+        if (child?.type === 'access_specifier') {
           const text = child.text;
-          if (text.includes('public')) visibility = 'public';
-          else if (text.includes('private')) visibility = 'private';
-          else if (text.includes('protected')) visibility = 'protected';
+          if (text.includes('public')) return 'public';
+          if (text.includes('private')) return 'private';
+          if (text.includes('protected')) return 'protected';
         }
       }
     }
-    return visibility;
+    return undefined;
   },
   resolveTypeAliasKind: (node, _source) => {
     // C++ typedef: `typedef enum { ... } name;`, `typedef struct { ... } name;`,

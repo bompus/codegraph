@@ -1411,6 +1411,15 @@ if inferred.is_none() && r.language == "dart" {
                 let own = found.qualified_name == format!("{}::{method}", c.qualified_name);
                 return Ok(Some(KCand { node: found, confidence: if own { 0.85 } else { 0.8 }, resolved_by }));
             }
+            // A call on a Ruby class or module constant takes the class
+            // method (`def self.m`) when it and `def m` share the qualified
+            // name, then the owner's Ruby ancestry (#2834).
+            if c.language == "ruby" {
+                if let Some((found, own)) = self.ruby_method_of(&c.qualified_name, method, r)? {
+                    return Ok(Some(KCand { node: found, confidence: if own { confidence } else { 0.8 }, resolved_by }));
+                }
+                continue;
+            }
             let in_file = self.nodes_in_file(&c.file_path)?;
             if let Some(mn) = in_file
                 .iter()
@@ -1819,5 +1828,155 @@ impl KernelResolver {
             return Ok(TsTypedLocal::Hit(hit));
         }
         Ok(TsTypedLocal::Pass(file))
+    }
+}
+
+/// matchNewReceiverCall (name-matcher.ts): `new Runner(args).run()`, encoded
+/// by the extractor as `new Runner().run`. The receiver is an instance of the
+/// class written at the call, so this shape resolves only through that class.
+fn new_receiver_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^new ([\w$.]+)\(\)\.([\w$]+)$").unwrap())
+}
+
+impl KernelResolver {
+    /// matchNewReceiverCall — the class a `new C().m` ref constructs, as the
+    /// name its declaration carries: `ns.Runner` → `Runner`, an aliased named
+    /// import `R` → `Runner`. A JS/TS built-in (`RegExp`, `Map`, `Date`…)
+    /// counts only when the file imports or declares a class of that name —
+    /// otherwise a project class that merely shares the name would take
+    /// every `new Map().get()` in the repo.
+    pub(super) fn match_new_receiver_call(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        let Some(m) = new_receiver_re().captures(&r.reference_name) else { return Ok(None) };
+        let written = m.get(1).unwrap().as_str();
+        let method = m.get(2).unwrap().as_str();
+        let last = written.rsplit('.').next().unwrap_or(written);
+        let mut cls = last.to_string();
+        if !written.contains('.') {
+            let imported = self
+                .import_mappings(&r.file_path)?
+                .iter()
+                .find(|i| i.local_name == written)
+                .cloned();
+            if let Some(imp) = imported {
+                if !imp.is_default
+                    && !imp.is_namespace
+                    && crate::textutil::ascii_ident_re().is_match(&imp.exported_name)
+                {
+                    cls = imp.exported_name;
+                }
+            } else if JS_BUILT_INS.contains(last)
+                && !self.nodes_in_file(&r.file_path)?.iter().any(|n| n.kind == "class" && n.name == last)
+            {
+                return Ok(None);
+            }
+        }
+        if r.language == "java" || r.language == "csharp" {
+            return self.match_java_csharp_new_receiver_call(&cls, written, method, r);
+        }
+        let file = self.ts_imported_type_file(written, r)?;
+        if let Some(hit) = self.resolve_method_on_type(&cls, method, r, 0.9, "instance-method", file.as_deref())? {
+            return Ok(Some(hit));
+        }
+        // An ES5 constructor function (`function Params() {}`) keeps its
+        // methods as functions assigned onto its prototype in its own file.
+        let ctors: Vec<Arc<KNode>> = self
+            .nodes_by_name(&cls)?
+            .iter()
+            .filter(|n| n.kind == "function" && same_language_family(&n.language, &r.language))
+            .cloned()
+            .collect();
+        let [ctor] = ctors.as_slice() else { return Ok(None) };
+        let lines = self.read_file(&ctor.file_path);
+        let on_proto: Vec<Arc<KNode>> = self
+            .nodes_in_file(&ctor.file_path)?
+            .iter()
+            .filter(|n| {
+                n.name == method
+                    && (n.kind == "function" || n.kind == "method")
+                    && lines
+                        .as_ref()
+                        .and_then(|l| l.get((n.start_line - 1).max(0) as usize))
+                        .is_some_and(|line| line.contains("prototype"))
+            })
+            .cloned()
+            .collect();
+        Ok(match on_proto.as_slice() {
+            [only] => Some(KCand { node: only.clone(), confidence: 0.8, resolved_by: "instance-method" }),
+            _ => None,
+        })
+    }
+
+    /// matchJavaCsharpNewReceiverCall — a Java or C# `new Foo().bar()`. With
+    /// one project class of the name, its method or an inherited one, as for
+    /// any typed call. With several, the class the language picks, or none:
+    /// Java's written package (`new a.b.Foo()`), the file's single-type
+    /// import, else the caller's own package; C#'s one type the file's
+    /// namespaces and usings can see (isCsharpTypeVisible). Then only that
+    /// class's own method.
+    fn match_java_csharp_new_receiver_call(
+        &mut self,
+        cls: &str,
+        written: &str,
+        method: &str,
+        r: &ResolveRefIn,
+    ) -> Res<Option<KCand>> {
+        let twins: Vec<Arc<KNode>> = self
+            .nodes_by_name(cls)?
+            .iter()
+            .filter(|n| (n.kind == "class" || n.kind == "struct") && same_language_family(&n.language, &r.language))
+            .cloned()
+            .collect();
+        if twins.len() <= 1 {
+            return self.resolve_method_on_type(cls, method, r, 0.9, "instance-method", None);
+        }
+        let dir_of = |file: &str| file.rsplit('/').skip(1).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("/");
+        let mut chosen: Option<Arc<KNode>> = None;
+        if r.language == "csharp" {
+            // isCsharpTypeVisible (name-matcher.ts): `ns::Type` is visible
+            // from a file whose own namespaces cover `ns` or whose usings
+            // name it. A `new X().m` ref never matches a using alias, so that
+            // arm does not apply.
+            let own = self.csharp_namespaces_at(r).unwrap_or_default();
+            let usings = self.csharp_namespace_usings_at(r);
+            let mut visible = Vec::new();
+            for n in &twins {
+                let ns = n.qualified_name.split("::").next().unwrap_or("");
+                if own.iter().any(|o| o == ns || o.starts_with(&format!("{ns}.")))
+                    || usings.contains(ns)
+                {
+                    visible.push(n.clone());
+                }
+            }
+            if visible.len() == 1 {
+                chosen = Some(visible.remove(0));
+            }
+        } else {
+            let fqn = if written.contains('.') {
+                Some(written.to_string())
+            } else {
+                self.imported_fqn_of(cls, r)?
+            };
+            if let Some(fqn) = fqn {
+                let path = fqn.replace('.', "/");
+                chosen = twins
+                    .iter()
+                    .find(|n| n.file_path.strip_suffix(".java").unwrap_or(&n.file_path).ends_with(&format!("/{path}")))
+                    .cloned();
+            } else {
+                let own_dir = dir_of(&r.file_path);
+                let own: Vec<&Arc<KNode>> = twins.iter().filter(|n| dir_of(&n.file_path) == own_dir).collect();
+                if own.len() == 1 {
+                    chosen = Some(own[0].clone());
+                }
+            }
+        }
+        let Some(chosen) = chosen else { return Ok(None) };
+        let want_qn = format!("{}::{}", chosen.qualified_name, method);
+        Ok(self
+            .nodes_in_file(&chosen.file_path)?
+            .iter()
+            .find(|n| n.kind == "method" && n.name == method && n.qualified_name == want_qn)
+            .map(|node| KCand { node: node.clone(), confidence: 0.9, resolved_by: "instance-method" }))
     }
 }

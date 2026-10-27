@@ -1230,10 +1230,15 @@ impl KernelResolver {
         }
         let class_name = segments[segments.len() - 1];
         let dir_segments = &segments[..segments.len() - 1];
-        let mut best: Option<Arc<KNode>> = None;
-        let mut best_score = 0usize;
-        let mut tie = false;
+        // Production code never names a component in a test suite; a test can
+        // name one, by the path to it.
+        let from_test = super::resolver_upstream::test_suite_path(&r.file_path);
+        let mut best_score = 0f64;
+        let mut tied: Vec<Arc<KNode>> = Vec::new();
         for cand in candidates(self, class_name)? {
+            if !from_test && super::resolver_upstream::is_test_suite_path(&cand.file_path) {
+                continue;
+            }
             let path = cand.file_path.replace('\\', "/");
             let mut dirs: Vec<&str> = path.split('/').collect();
             dirs.pop();
@@ -1244,18 +1249,154 @@ impl KernelResolver {
             {
                 score += 1;
             }
+            // The one exception to corroboration: a one-folder path naming a
+            // component at the project root, `wheels` the mapping onto it
+            // (#2652); the file must be named like the component.
+            let mut score = score as f64;
+            if score == 0.0 && dirs.is_empty() && dir_segments.len() == 1 {
+                let stem = cand.file_path.replace('\\', "/").to_lowercase();
+                if stem.strip_suffix(".cfc").is_some_and(|s| s == class_name.to_lowercase()) {
+                    score = 0.5;
+                }
+            }
             if score > best_score {
-                best = Some(cand);
                 best_score = score;
-                tie = false;
-            } else if score == best_score && score > 0 {
-                tie = true;
+                tied = vec![cand];
+            } else if score == best_score && score > 0.0 {
+                tied.push(cand);
             }
         }
-        if best_score == 0 || tie {
+        // A test's tie between a component and a suite mirroring its path
+        // names the component, as it does from production code (#2650).
+        if tied.len() > 1 {
+            tied.retain(|c| !super::resolver_upstream::is_test_suite_path(&c.file_path));
+        }
+        if best_score == 0.0 || tied.len() != 1 {
             return Ok(None);
         }
-        Ok(best.map(|node| KCand { node, confidence: 0.9, resolved_by: "qualified-name" }))
+        Ok(tied
+            .into_iter()
+            .next()
+            .map(|node| KCand { node, confidence: if best_score >= 1.0 { 0.9 } else { 0.8 }, resolved_by: "qualified-name" }))
+    }
+
+    /// resolveCfmlConstructedCall: a call chained onto a construction
+    /// (#2652) — `createObject("component", "a.b.Batch").init()` or `new
+    /// a.b.Batch().init()`, encoded `a.b.Batch().init`. The component is the
+    /// one its path names, by resolveCfmlComponentPath's rules, or for a bare
+    /// name the one beside the calling file, else the only one of that name.
+    /// The method is the component's own or one it inherits.
+    pub(super) fn resolve_cfml_constructed_call(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        let Some(m) = re!(r"^([A-Za-z_$][\w$.-]*)\(\)\.([A-Za-z_$][\w$]*)$").captures(&r.reference_name) else {
+            return Ok(None);
+        };
+        let component = m[1].to_string();
+        let cls = if component.contains('.') {
+            let as_instantiates = r.clone().naming(&component, "instantiates");
+            match self.resolve_cfml_component_path(&as_instantiates)? {
+                Some(c) => Some(c.node),
+                None => None,
+            }
+        } else {
+            self.cfml_component_by_name(&component, &r.file_path)?
+        };
+        let Some(cls) = cls else { return Ok(None) };
+        let method = self.cfml_method_of(&cls, &m[2].to_lowercase(), &mut HashSet::new())?;
+        Ok(method.map(|node| KCand { node, confidence: 0.9, resolved_by: "instance-method" }))
+    }
+
+    /// cfmlComponentByName: the CFML component a bare name reaches from
+    /// `from_file` — the one in its directory, else the only one so named.
+    fn cfml_component_by_name(&mut self, name: &str, from_file: &str) -> Res<Option<Arc<KNode>>> {
+        let components: Vec<Arc<KNode>> = self
+            .nodes_by_lower_name(&name.to_lowercase())?
+            .iter()
+            .filter(|n| (n.kind == "class" || n.kind == "interface") && (n.language == "cfml" || n.language == "cfscript"))
+            .cloned()
+            .collect();
+        fn dir_of(p: &str) -> &str {
+            p.rfind('/').map(|i| &p[..=i]).unwrap_or("")
+        }
+        let beside: Vec<&Arc<KNode>> = components.iter().filter(|n| dir_of(&n.file_path) == dir_of(from_file)).collect();
+        if beside.len() == 1 {
+            return Ok(Some(beside[0].clone()));
+        }
+        Ok((components.len() == 1).then(|| components[0].clone()))
+    }
+
+    /// cfmlMethodOf: a component's method by its lowercased name (CFML names
+    /// ignore case) — its own, else one a supertype has.
+    fn cfml_method_of(&mut self, cls: &KNode, lower_name: &str, seen: &mut HashSet<String>) -> Res<Option<Arc<KNode>>> {
+        if !seen.insert(cls.id.clone()) || seen.len() > 8 {
+            return Ok(None);
+        }
+        let own = self.nodes_in_file(&cls.file_path)?.iter().find(|n| {
+            n.kind == "method"
+                && n.name.to_lowercase() == lower_name
+                && n.qualified_name.to_lowercase() == format!("{}::{}", cls.name, n.name).to_lowercase()
+                && n.start_line >= cls.start_line
+                && n.end_line <= cls.end_line
+        }).cloned();
+        if own.is_some() {
+            return Ok(own);
+        }
+        for supertype in self.supertype_nodes(&cls.id)? {
+            if let Some(inherited) = self.cfml_method_of(&supertype, lower_name, seen)? {
+                return Ok(Some(inherited));
+            }
+        }
+        Ok(None)
+    }
+
+    /// resolveCfmlIncludePath: the file a CFML include names (#2651) —
+    /// `include "x.cfm";`, `<cfinclude template="x.cfm">`,
+    /// `cfinclude(template="x.cfm")`. Relative to the including file's
+    /// directory, or to the web (project) root when the path starts with
+    /// `/`. One case-insensitive match counts when the exact case misses.
+    pub(super) fn resolve_cfml_include_path(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        let written = r.reference_name.trim().replace('\\', "/");
+        let from_root = written.starts_with('/');
+        let mut parts: Vec<String> = if from_root {
+            Vec::new()
+        } else {
+            let mut v: Vec<String> = r.file_path.replace('\\', "/").split('/').map(String::from).collect();
+            v.pop();
+            v
+        };
+        for seg in written.split('/') {
+            match seg {
+                "" | "." => {}
+                ".." => {
+                    if parts.pop().is_none() {
+                        return Ok(None);
+                    }
+                }
+                s => parts.push(s.to_string()),
+            }
+        }
+        let Some(file_name) = parts.last().filter(|s| !s.is_empty()).cloned() else {
+            return Ok(None);
+        };
+        let wanted = parts.join("/");
+        let files: Vec<Arc<KNode>> = self
+            .nodes_by_lower_name(&file_name.to_lowercase())?
+            .iter()
+            .filter(|n| n.kind == "file")
+            .cloned()
+            .collect();
+        if let Some(exact) = files.iter().find(|n| n.file_path == wanted) {
+            return Ok(Some(KCand {
+                node: exact.clone(),
+                confidence: if from_root { 0.85 } else { 0.95 },
+                resolved_by: "file-path",
+            }));
+        }
+        let folded: Vec<&Arc<KNode>> = files.iter().filter(|n| n.file_path.eq_ignore_ascii_case(&wanted)).collect();
+        Ok((folded.len() == 1).then(|| KCand {
+            node: folded[0].clone(),
+            confidence: if from_root { 0.8 } else { 0.9 },
+            resolved_by: "file-path",
+        }))
     }
 
     /// The resolved import path's file node @0.9, or nothing.
@@ -1540,7 +1681,9 @@ impl KernelResolver {
         &mut self,
         r: &ResolveRefIn,
     ) -> Res<Option<KCand>> {
-        if r.reference_kind != "imports" || !r.reference_name.contains('.') {
+        if r.reference_kind != "imports"
+            || (!r.reference_name.contains('.') && !self.is_python_from_import_module(r.clone()))
+        {
             return Ok(None);
         }
         Ok(self
@@ -1595,6 +1738,13 @@ impl KernelResolver {
 
 fn is_declaration_file(path: &str) -> bool {
     [".d.ts", ".d.mts", ".d.cts"].iter().any(|ext| path.ends_with(ext))
+}
+
+/// isCfmlTemplatePath: the name a CFML include carries — a path with a
+/// separator, or one ending in a template extension.
+pub(super) fn is_cfml_template_path(name: &str) -> bool {
+    !name.contains(':')
+        && (name.contains('/') || name.contains('\\') || re!(r"(?i)\.(?:cfml?|cfc|cfs)$").is_match(name.trim()))
 }
 
 /// Whether the `import` statement on `line` names the module `source` as a

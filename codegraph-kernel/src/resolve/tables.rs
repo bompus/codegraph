@@ -1033,9 +1033,57 @@ pub(super) const PASCAL_UNIT_PREFIXES: [&str; 15] = [
     "IdHTTP", "IdTCP", "IdSSL",
 ];
 
-/// PASCAL_BUILT_INS (index.ts): standard units, intrinsics and RTL classes.
-pub(super) static PASCAL_BUILT_INS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+/// PASCAL_SYSTEM_NAMES (extraction/languages/pascal-system.ts): the names
+/// Delphi's compiler and System unit give meaning to — intrinsics, the
+/// System/SysUtils routines everyone calls, and the built-in types a
+/// typecast names. All lowercase; Pascal names ignore case.
+pub(super) static PASCAL_SYSTEM_NAMES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [
+        // Intrinsics and System routines
+        "abs", "addr", "arctan", "assert", "assigned", "assignfile", "atomiccmpexchange",
+        "atomicdecrement", "atomicexchange", "atomicincrement", "blockread", "blockwrite",
+        "break", "chdir", "chr", "closefile", "concat", "continue", "copy", "cos", "dec",
+        "default", "delete", "dispose", "eof", "eoln", "exclude", "exit", "exp", "fail",
+        "filepos", "filesize", "fillchar", "finalize", "frac", "freemem", "getdir",
+        "getmem", "gettypekind", "halt", "hasweakref", "hi", "high", "inc", "include",
+        "initialize", "insert", "int", "ioresult", "isconstvalue", "ismanagedtype",
+        "length", "ln", "lo", "low", "mkdir", "move", "new", "odd", "ord", "paramcount",
+        "paramstr", "pi", "pred", "ptr", "random", "randomize", "read", "readln",
+        "reallocmem", "returnaddress", "rmdir", "round", "runerror", "setlength",
+        "setstring", "sin", "sizeof", "slice", "sqr", "sqrt", "str", "succ", "swap",
+        "trunc", "typehandle", "typeinfo", "typeof", "uniquestring", "upcase", "val",
+        "vararrayredim", "write", "writeln",
+        // SysUtils routines the resolver has always taken for the RTL's
+        "abort", "date", "datetostr", "floattostr", "format", "freeandnil", "inttostr",
+        "lowercase", "now", "pos", "strtodate", "strtofloat", "strtoint", "time",
+        "trim", "uppercase",
+        // Built-in types, called as typecasts
+        "ansichar", "ansistring", "boolean", "byte", "bytebool", "cardinal", "char",
+        "comp", "currency", "double", "extended", "int16", "int32", "int64", "int8",
+        "integer", "longbool", "longint", "longword", "nativeint", "nativeuint",
+        "olevariant", "pansichar", "pchar", "pointer", "pwidechar", "rawbytestring",
+        "real", "shortint", "shortstring", "single", "smallint", "string", "uint16",
+        "uint32", "uint64", "uint8", "unicodestring", "utf8string", "variant",
+        "widechar", "widestring", "word", "wordbool",
+    ]
+    .into_iter()
+    .collect()
+});
+
+/// RTL routine-type names (`TProc`, `TFunc<T>`) and the names Delphi gives
+/// them — used by pascal_scope's procedural-data check.
+pub(super) static RTL_PROCEDURAL_TYPES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    [
+        "tproc", "tfunc", "tpredicate", "tcomparison", "tthreadprocedure",
+        "tlistsortcompare", "tstringlistsortcompare",
+    ]
+    .into_iter()
+    .collect()
+});
+
+/// PASCAL_BUILT_INS (index.ts): standard units, intrinsics and RTL classes.
+pub(super) static PASCAL_BUILT_INS: LazyLock<HashSet<String>> = LazyLock::new(|| {
+    let names: HashSet<String> = [
         "System", "SysUtils", "Classes", "Types", "Variants", "StrUtils",
         "Math", "DateUtils", "IOUtils", "Generics.Collections", "Generics.Defaults",
         "Rtti", "TypInfo", "SyncObjs", "RegularExpressions",
@@ -1055,7 +1103,9 @@ pub(super) static PASCAL_BUILT_INS: LazyLock<HashSet<&'static str>> = LazyLock::
         "IInterface", "IUnknown",
     ]
     .into_iter()
-    .collect()
+    .map(|s: &str| s.to_lowercase())
+    .collect();
+    names
 });
 
 pub(super) static GO_BUILT_INS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {

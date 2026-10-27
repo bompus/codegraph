@@ -195,7 +195,7 @@ async function exprReceivers(x, y) {
       .map((r) => r.referenceName)).toEqual([
         'list().map', 'list', 'x.run',
         ...(typed ? ['x.run', 'y.run', 'x.stop', 'getTarget().install', 'getTarget', 'has'] : []),
-        'f', 'run', 'stop', 'go', 'window.Api.start',
+        'f', 'run', 'stop', 'new Runner().go', 'window.Api.start',
       ]);
   });
 

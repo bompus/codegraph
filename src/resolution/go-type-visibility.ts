@@ -26,7 +26,7 @@ interface GoQualification {
 
 
 
-function goRefQualification(ref: UnresolvedRef, context: ResolutionContext): GoQualification {
+export function goRefQualification(ref: UnresolvedRef, context: ResolutionContext): GoQualification {
   if (ref.referenceKind === 'imports') return {};
   const name = ref.referenceName.split('.').pop()!;
   if (!/^[A-Za-z_]\w*$/.test(name)) return {};

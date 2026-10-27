@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { isWslWindowsDrive } from './sync/watch-policy';
+import { loadNodeSqlite } from './db/node-sqlite';
 
 /** The default per-project data directory name. */
 export const DEFAULT_CODEGRAPH_DIR = '.codegraph';
@@ -235,10 +236,11 @@ function hasCodeGraphSchema(dbPath: string, st: fs.Stats): boolean {
  * second connection opened and closed here leaves the first one's locks alone.
  */
 function probeSchema(dbPath: string): 'schema' | 'no-schema' | 'not-sqlite' | 'unknown' {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { DatabaseSync } = require('node:sqlite');
   let db: any = null;
   try {
+    // A runtime without node:sqlite can't inspect the file: `unknown`, so the
+    // command goes on to open it and reports why that is impossible.
+    const { DatabaseSync } = loadNodeSqlite();
     db = new DatabaseSync(dbPath, { readOnly: true });
     const row = db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'nodes'").get();
     return row !== undefined ? 'schema' : 'no-schema';
@@ -739,13 +741,14 @@ const STRUCTURAL_UNSEGMENTED = /如何|怎么|怎麼|在哪|哪里|哪裡|追踪
 const DOC_DATA_EXT = /\.(md|markdown|txt|rst|json|ya?ml|toml|lock|csv|tsv|log|ini|cfg|conf|env|xml|html?|png|jpe?g|gif|svg|pdf)$/i;
 
 /**
- * Is `prompt` a message the host wrote rather than the user? Claude Code
- * delivers a finished background task as a `<task-notification>` user turn, and
- * its task paths, ids and summary trip the keyword gate, so every finished
- * command front-loaded unrelated source into the conversation.
+ * Claude Code injects `<task-notification>…</task-notification>` blocks as
+ * `user` messages when a background agent finishes, and UserPromptSubmit
+ * hooks receive them exactly like typed prompts (#1832). The whole prompt
+ * must be that single envelope; a user question that merely mentions the
+ * marker is still a prompt.
  */
-export function isHostNotification(prompt: string): boolean {
-  return /^\s*<(?:task-notification|system-reminder)>/.test(prompt);
+export function isTaskNotification(prompt: string): boolean {
+  return /^\s*<task-notification>[\s\S]*<\/task-notification>\s*$/.test(prompt);
 }
 
 /**
@@ -1150,4 +1153,42 @@ export function validateDirectory(projectRoot: string): {
  */
 export function isAgentMessage(prompt: string): boolean {
   return /^\s*<agent-message(?:\s[^>]*)?>[\s\S]*<\/agent-message>\s*$/.test(prompt);
+}
+
+/**
+ * A message another local Claude Code session sends to this one arrives as a
+ * `<cross-session-message from="…">…</cross-session-message>` prompt, which
+ * UserPromptSubmit hooks also receive (#2635). Same rule as
+ * {@link isTaskNotification}: only a prompt that is entirely that envelope is
+ * skipped.
+ */
+export function isCrossSessionMessage(prompt: string): boolean {
+  return /^\s*<cross-session-message(?:\s[^>]*)?>[\s\S]*<\/cross-session-message>\s*$/.test(prompt);
+}
+
+const SYSTEM_REMINDER_CLOSE = '</system-reminder>';
+/** One complete reminder block. The attribute run stops at `<`, so a tag left
+ *  open in pasted text can't make the scan quadratic. */
+const SYSTEM_REMINDER_BLOCK = /<system-reminder(?:\s[^<>]*)?>[\s\S]*?<\/system-reminder>/g;
+
+/**
+ * The prompt the user typed, without the `<system-reminder>…</system-reminder>`
+ * blocks Claude Code's desktop app puts in front of it, such as which other
+ * local sessions are linked. UserPromptSubmit hooks receive them as
+ * part of the prompt (#2635), but they are the host's status, not the user's
+ * words: gated and explored on, they made every turn, a bare "yes" included,
+ * inject context about the reminder, and they hid a task notification, a
+ * subagent hand-back or a cross-session message behind them from
+ * {@link isTaskNotification}, {@link isAgentMessage} and
+ * {@link isCrossSessionMessage}. Every complete block is removed and the rest
+ * trimmed; a `<system-reminder>` the user only mentions, with no closing tag,
+ * stays.
+ */
+export function stripSystemReminders(prompt: string): string {
+  // Only the text up to the last closing tag can hold a complete block, and
+  // bounding the scan there keeps an unclosed tag from rescanning the tail.
+  const end = prompt.lastIndexOf(SYSTEM_REMINDER_CLOSE);
+  if (end < 0) return prompt.trim();
+  const head = prompt.slice(0, end + SYSTEM_REMINDER_CLOSE.length);
+  return (head.replace(SYSTEM_REMINDER_BLOCK, '\n') + prompt.slice(head.length)).trim();
 }

@@ -24,12 +24,13 @@ import {
   isImportableKind,
   CPP_DEFINE_SIGNATURE,
 } from './types';
-import { isBindingReceiverCall,  crossesKnownFamily, crossesCodeBoundary, resolveAmbiguousNameCeiling} from './gates';
+import { isBindingReceiverCall,  crossesKnownFamily, crossesCodeBoundary, resolveAmbiguousNameCeiling, sameLanguageFamily} from './gates';
 import { isExternalImport, resolveImportPath, importMappingsFromBindings, loadCppIncludeDirs, isBoundToOutOfRepoImport, importBindingTail, clearImportResolverMemos, ESM_IMPORT_LANGUAGES, jsModuleFile } from './import-resolver';
 import { gateSwiftTypeTarget, clearSwiftTypeVisibility } from './swift-type-visibility';
 import { gateTypeParameter, clearTypeParameterMemos } from './type-parameters';
 import { gateRustScope, clearRustScopeMemos } from './rust-scope';
 import { gateSuperSelfCall } from './super-self';
+import { gatePascalCall } from './pascal-scope';
 import { resurrectRefFromDroppedEdge } from './resurrect-ref';
 import { GO_TYPE_KINDS, isGoBareName, isGoUnknownQualified, goTypePositionTarget } from './go-type-visibility';
 import { ResolverPool, adaptiveEngageEnabled, minRefsForPool, shouldEngageAdaptively } from './resolver-pool';
@@ -114,6 +115,12 @@ const SUPERTYPE_DECLARING_KINDS = new Set<Node['kind']>([
   'class', 'struct', 'interface', 'trait', 'protocol', 'enum',
 ]);
 
+/** What a Pascal typecast's name resolves to: `TFoo(x)` casts, it doesn't call (see createEdges). */
+const PASCAL_CAST_TARGET_KINDS: ReadonlySet<string> = new Set(['class', 'struct', 'interface', 'enum', 'type_alias']);
+
+/** The values a TypeScript type may share its name with in its file, which a call or `new` of the name means. */
+const TYPE_COMPANION_VALUE_KINDS: ReadonlySet<string> = new Set(['function', 'class', 'component', 'constant', 'variable']);
+
 export class ReferenceResolver {
   private projectRoot: string;
   private queries: QueryBuilder;
@@ -162,6 +169,20 @@ export class ReferenceResolver {
   // Filesystem existence probes behind context.fileExists (paths not in knownFiles).
   private fileExistsMemo = new Map<string, boolean>();
   private knownFiles: Set<string> | null = null;
+  // Node names, the exact match getNodesByName makes; warmCaches loads it,
+  // isAbsentName answers from it. Unloaded, no name is absent.
+  private knownNames: Set<string> | null = null;
+  // name.toLowerCase() → nodes, for the case-insensitive name lookups the
+  // Pascal/VB.NET receivers make. Same stable window as nameCache.
+  private lowerNameCache: LRUCache<string, Node[]>;
+  // lang Type::method → matching method nodes, behind context.getMethodMatches.
+  private methodMatchCache: LRUCache<string, Node[]>;
+  // Per-(language, methodName) owner index for getMethodMatches: buckets a
+  // method name's candidates by their qualifiedName's last two segments so a
+  // (type, method) query is a lookup instead of an O(candidates) filter per
+  // methodMatchCache miss. Derived purely from node rows (stable through the
+  // resolution loop, same window nameCache relies on); dropped in clearCaches.
+  private methodOwnerIndexCache = new Map<string, Map<string, Node[]>>();
   // `getAllFiles` for the context: the framework detectors and synthesis
   // passes call it dozens of times per sync, each a full `files` read. Same
   // lifetime as nodesByKindCache; callers get a copy, so they may sort it.
@@ -197,6 +218,8 @@ export class ReferenceResolver {
     // file-ordered, so a small cache still hits nearly always.
     this.fileLinesCache = new LRUCache(contentLimit);
     this.nodeByIdCache = new LRUCache(Math.max(limit * 4, 20_000));
+    this.lowerNameCache = new LRUCache(limit);
+    this.methodMatchCache = new LRUCache(limit);
 
     this.context = this.createContext();
   }
@@ -370,6 +393,7 @@ export class ReferenceResolver {
   warmCaches(): void {
     if (this.cachesWarmed) return;
     this.knownFiles = new Set(this.queries.getAllFilePaths());
+    this.knownNames = new Set(this.queries.getAllNodeNames());
     this.cachesWarmed = true;
   }
 
@@ -418,6 +442,10 @@ export class ReferenceResolver {
     this.nodesByKindCache.clear();
     this.fileExistsMemo.clear();
     this.knownFiles = null;
+    this.knownNames = null;
+    this.lowerNameCache.clear();
+    this.methodMatchCache.clear();
+    this.methodOwnerIndexCache.clear();
     this.goModules = null;
     this.goPackageDirs.clear();
     this.goModuleByDir.clear();
@@ -644,6 +672,103 @@ export class ReferenceResolver {
         const result = this.queries.getNodesByQualifiedNameExact(qualifiedName);
         this.qualifiedNameCache.set(qualifiedName, result);
         return result;
+      },
+
+      // The set warmCaches loads (`SELECT DISTINCT name` via getAllNodeNames,
+      // the exact match getNodesByName makes); unloaded, no name is absent.
+      isAbsentName: (name: string) => this.knownNames !== null && !this.knownNames.has(name),
+
+      getMethodMatches: (typeName: string, methodName: string, language: Language) => {
+        const key = `${language} ${typeName}::${methodName}`;
+        const cached = this.methodMatchCache.get(key);
+        if (cached !== undefined) return cached;
+        let candidates = this.nameCache.get(methodName);
+        if (candidates === undefined) {
+          candidates = this.queries.getNodesByName(methodName);
+          this.nameCache.set(methodName, candidates);
+        }
+        const want = `${typeName}::${methodName}`;
+        let matches: Node[];
+        if (typeName.includes('::') || methodName.includes(':')) {
+          // Legacy linear filter for the shapes the owner index below can't
+          // key exactly: a multi-segment typeName (the endsWith test then
+          // spans more than two `::` segments) and ObjC selectors (whose
+          // single/empty-keyword colons defeat the segment split). Tiny
+          // populations; the per-key memo above still amortizes them.
+          matches = [];
+          for (const m of candidates) {
+            if (m.kind !== 'method') continue;
+            if (!sameLanguageFamily(m.language, language)) continue;
+            const qn = m.qualifiedName;
+            if (qn === want || qn.endsWith(`::${want}`)) matches.push(m);
+          }
+        } else {
+          // Owner index: the linear filter above is O(all same-named methods)
+          // per CACHE MISS, and on overload-heavy landscapes the distinct
+          // (type, method) key space is so large the per-key memo never
+          // amortizes — Swift's `init` has tens of thousands of candidates
+          // and the compiler repo measured 732µs per failing call, most of it
+          // this scan (re-entered once per supertype recursion level, too).
+          // Bucket each (language, methodName)'s candidates ONCE by the
+          // qualifiedName's last two `::` segments — exactly the span the
+          // `qn === want || qn.endsWith('::' + want)` predicate tests for a
+          // segment-clean typeName — then every query is a map lookup.
+          // Bucket insertion follows candidate order, so each bucket is
+          // byte-identical to what the linear filter produced.
+          const idxKey = `${language} ${methodName}`;
+          let ownerIndex = this.methodOwnerIndexCache.get(idxKey);
+          if (!ownerIndex) {
+            ownerIndex = new Map<string, Node[]>();
+            for (const m of candidates) {
+              if (m.kind !== 'method') continue;
+              if (!sameLanguageFamily(m.language, language)) continue;
+              const qn = m.qualifiedName;
+              const i2 = qn.lastIndexOf('::');
+              if (i2 < 0) continue; // single-segment qn can never match `T::m`
+              const i1 = qn.lastIndexOf('::', i2 - 1);
+              const bucketKey = i1 < 0 ? qn : qn.slice(i1 + 2);
+              const bucket = ownerIndex.get(bucketKey);
+              if (bucket) bucket.push(m);
+              else ownerIndex.set(bucketKey, [m]);
+            }
+            this.methodOwnerIndexCache.set(idxKey, ownerIndex);
+          }
+          matches = ownerIndex.get(want) ?? [];
+        }
+        this.methodMatchCache.set(key, matches);
+        return matches;
+      },
+
+      getNodesByLowerName: (lowerName: string) => {
+        const cached = this.lowerNameCache.get(lowerName);
+        if (cached !== undefined) return cached;
+        const result = this.queries.getNodesByLowerName(lowerName);
+        this.lowerNameCache.set(lowerName, result);
+        return result;
+      },
+
+      getNodeNamesOfKinds: (language, kinds) => this.queries.getNodeNamesOfKinds(language, kinds),
+
+      rememberNode: (node: Node) => {
+        if (!this.nodeByIdCache.has(node.id)) this.nodeByIdCache.set(node.id, node);
+      },
+
+      getSupertypeNodes: (id: string) => {
+        const nodes: Node[] = [];
+        for (const edge of this.queries.getOutgoingEdges(id, ['extends', 'implements'])) {
+          const target = this.nodeById(edge.target);
+          if (target) nodes.push(target);
+        }
+        return nodes;
+      },
+
+      getSuperclassNodes: (id: string) => {
+        const nodes: Node[] = [];
+        for (const edge of this.queries.getOutgoingEdges(id, ['extends'])) {
+          const target = this.nodeById(edge.target);
+          if (target) nodes.push(target);
+        }
+        return nodes;
       },
 
       getNodesByKind: (kind: Node['kind']) => {
@@ -1047,14 +1172,19 @@ export class ReferenceResolver {
   private applyResolveTail(resolved: ResolvedRef | null, ref: UnresolvedRef): ResolvedRef | null {
     if (!resolved && isBindingReceiverCall(ref)) ref.failureReason = 'unknown-receiver';
     if (!resolved || ref.referenceKind !== 'calls') return resolved;
+    // A Pascal call to data runs only a routine the data holds, in scope, and
+    // one to a routine nested in another comes only from inside that one (see
+    // gatePascalCall).
+    const call = ref.language === 'pascal' ? gatePascalCall(resolved, ref, this.context) : resolved;
+    if (!call) return null;
 
-    const target = this.nodeById(resolved.targetNodeId);
-    if (!target) return resolved;
+    const target = this.nodeById(call.targetNodeId);
+    if (!target) return call;
 
     const dot = ref.referenceName.lastIndexOf('.');
     const memberName = dot >= 0 ? ref.referenceName.slice(dot + 1) : null;
     const forwarded = resolveAliasBinding(target, memberName, this.context);
-    if (!forwarded || forwarded.id === resolved.targetNodeId) return resolved;
+    if (!forwarded || forwarded.id === call.targetNodeId) return call;
 
     return {
       ...resolved,
@@ -1372,6 +1502,27 @@ export class ReferenceResolver {
             kind = 'implements';
           }
         }
+      }
+
+      // A Go call whose callee is a type is a conversion — `Category(s)`,
+      // `(*Pair)(p)`, `model.Kind(3)` — which uses the type, and calls or
+      // instantiates nothing (#2581).
+      if (kind === 'calls' && ref.original.language === 'go') {
+        const targetNode = this.nodeById(ref.targetNodeId);
+        if (targetNode && GO_TYPE_KINDS.has(targetNode.kind)) kind = 'references';
+      }
+
+      // A Pascal call written with a bare name that resolves to a type is a
+      // typecast: `TButton(Sender).Caption`, `PInt64Rec(P)^.Lo`, `F :=
+      // TFoo(Obj)`. Delphi builds an object only through a constructor
+      // (`TFoo.Create`), so the code refers to the type and creates nothing.
+      if (
+        kind === 'calls' &&
+        ref.original.language === 'pascal' &&
+        !ref.original.referenceName.includes('.') &&
+        PASCAL_CAST_TARGET_KINDS.has(this.nodeById(ref.targetNodeId)?.kind ?? '')
+      ) {
+        kind = 'references';
       }
 
       // Promote "calls" to "instantiates" when the resolved target is a
@@ -2926,6 +3077,21 @@ export class ReferenceResolver {
           !ref.referenceName.includes('.') && !isGoBareName(ref, this.context)) return null;
     }
 
+    // A TypeScript interface or type alias is no value: nothing calls one or
+    // makes an instance of it. A strategy that found one by name meant the
+    // value its file declares beside it (`interface Ok` and `function Ok` in a
+    // result module); with none there, the name is a value from elsewhere
+    // that the project only types (`new Response()`, `new Worker()`), and
+    // links nothing.
+    if ((ref.referenceKind === 'calls' || ref.referenceKind === 'instantiates') && ESM_IMPORT_LANGUAGES.has(ref.language)) {
+      const target = this.nodeById(result.targetNodeId);
+      if (target && (target.kind === 'interface' || target.kind === 'type_alias')) {
+        const value = this.sameNamedValueOfType(target);
+        if (!value) return null;
+        result = { ...result, targetNodeId: value.id };
+      }
+    }
+
     // An `imports` reference names something importable — never a member that
     // only exists inside a type.
     if (ref.referenceKind === 'imports') {
@@ -2961,6 +3127,19 @@ export class ReferenceResolver {
   }
 
   /** The one supertype-kind node a TypeScript value shares its name and file with. */
+  /**
+   * The value a file declares beside a type of the same name — `export
+   * function Ok()` beside `export interface Ok`, a class merged with an
+   * interface — which a call or `new` written with the name reaches. The
+   * first by position; null when the file declares none.
+   */
+  private sameNamedValueOfType(type: Node): Node | null {
+    return this.context
+      .getNodesInFile(type.filePath)
+      .filter((n) => n.name === type.name && TYPE_COMPANION_VALUE_KINDS.has(n.kind))
+      .sort((a, b) => a.startLine - b.startLine || a.startColumn - b.startColumn)[0] ?? null;
+  }
+
   private sameNamedTypeOfValue(value: Node): Node | null {
     if (value.kind !== 'constant' && value.kind !== 'variable') return null;
     if (value.language !== 'typescript' && value.language !== 'tsx') return null;

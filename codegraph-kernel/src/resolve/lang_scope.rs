@@ -157,6 +157,7 @@ impl KernelResolver {
             kept.push(n);
         }
         if kotlin_call { kept = self.lexical_kotlin_members(kept, r)?; }
+        if ruby_bare { kept = self.ruby_methods_of_caller_kind(kept, r)?; }
         Ok((kept, shrank))
     }
 
@@ -561,7 +562,7 @@ impl KernelResolver {
 
     /// rubyAncestry: a class's qualified name, its superclasses', and those of
     /// every module mixed into any of them (at most 60).
-    fn ruby_ancestry(&mut self, qn: &str) -> Res<Rc<HashSet<String>>> {
+    pub(super) fn ruby_ancestry(&mut self, qn: &str) -> Res<Rc<HashSet<String>>> {
         if let Some(hit) = self.ruby_ancestry_memo.get(qn) {
             return Ok(hit.clone());
         }
