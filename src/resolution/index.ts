@@ -2077,7 +2077,8 @@ export class ReferenceResolver {
     // CODEGRAPH_RESOLVE_BATCH=<refs>.
     batchSize: number = (() => {
       const v = Number(process.env.CODEGRAPH_RESOLVE_BATCH);
-      return Number.isFinite(v) && v > 0 ? Math.floor(v) : 40_000;
+      const n = Math.floor(v);
+      return Number.isFinite(v) && n > 0 ? n : 40_000;
     })(),
     onSynthesisProgress?: (done: number, total: number) => void,
     // When provided, big batches fan out across a read-only resolver-worker
