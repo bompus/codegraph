@@ -36,6 +36,7 @@ import { GO_TYPE_KINDS, isGoBareName, isGoUnknownQualified, goTypePositionTarget
 import { ResolverPool, adaptiveEngageEnabled, minRefsForBulkLoad, minRefsForPool, shouldEngageAdaptively } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
 import { detectFrameworksWithSkips, getResolvingFrameworks } from './frameworks';
+import { clearDeclaredDependencies } from './frameworks/package-deps';
 import { collectSynthesisInputs, synthesizeCallbackEdges } from './callback-synthesizer';
 import { createYielder, type MaybeYield } from './cooperative-yield';
 import { MAX_SOURCE_FILE_SIZE_BYTES } from '../file-limits';
@@ -230,6 +231,12 @@ export class ReferenceResolver {
    */
   /** `persist: false` on a read-only connection: reuse detection skips without writing them. */
   initialize(persist = true): void {
+    // A full index resolves by the package.json files on disk now, as the
+    // fingerprint it stamps says, even in a process that read them earlier.
+    this.workspacePackages = undefined;
+    // Detection reads through the caches (file contents, existence probes,
+    // declared dependencies): clear them first, or a process that read the
+    // manifests earlier detects by what they said then (#2519).
     this.clearCaches();
     this.frameworksByLanguage.clear();
     this.frameworks = detectFrameworksWithSkips(this.context, this.queries, { persist });
@@ -468,6 +475,7 @@ export class ReferenceResolver {
       clearSwiftTypeVisibility(this.context);
       clearTypeParameterMemos(this.context);
       clearRustScopeMemos(this.context);
+      clearDeclaredDependencies(this.context);
     }
   }
 

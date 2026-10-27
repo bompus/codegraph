@@ -169,6 +169,12 @@ export interface SyncResult {
   definitionDelta?: string[];
   /** Files whose exported-name set changed (adds, drops, renames, re-exports, default moves). */
   exportDelta?: string[];
+  /**
+   * The frameworks extraction detected, when this sync had to detect them
+   * again because what detection read had changed (#2516). Absent when the
+   * cached detection still held.
+   */
+  detectedFrameworks?: string[];
 }
 
 /**
@@ -191,6 +197,27 @@ function readSourceOrStamp(fullPath: string): string | null {
   const { stats, bytes } = readBoundedSourceSync(fullPath);
   if (bytes === null) return oversizeStamp(stats.size);
   return isMpegTsBytes(fullPath, bytes) ? null : bytes.toString('utf8');
+}
+
+/**
+ * What framework detection found at a path, to tell later whether it changed:
+ * a file's size and modification time, a folder's sub-folders, or '-' when
+ * nothing is there.
+ */
+function diskSignature(fullPath: string, isFolder = false): string {
+  try {
+    if (isFolder) {
+      return fs.readdirSync(fullPath, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort()
+        .join('/');
+    }
+    const stats = fs.statSync(fullPath, { throwIfNoEntry: false });
+    return stats ? `${stats.size}:${stats.mtimeMs}` : '-';
+  } catch {
+    return '-';
+  }
 }
 
 /** Whether these bytes, read from `filePath`, are a `.ts` MPEG transport stream (#1910). */
@@ -1991,6 +2018,23 @@ export class ExtractionOrchestrator {
   private conventionInvalidatedFiles = new Set<string>();
   private pendingLiquidThemeRoots: Record<string, string | null> | null = null;
   /**
+   * What the last detection read, so a sync can tell when it went stale
+   * (#2516): the indexed source files it read or probed, which a sync's own
+   * change lists cover, and every other path with what was there then
+   * ({@link diskSignature}): the manifests, like `package.json`, that no sync
+   * reports. Null until detection runs.
+   */
+  private detectionInputs: { sourceFiles: Set<string>; diskPaths: Map<string, string> } | null = null;
+  /** Files were added or removed since the last detection: the file list it read is out of date. */
+  private detectionFileListChanged = false;
+  /**
+   * What detection read, by project-relative path, kept between detections: a
+   * source file until a sync changes it, any other path while its signature
+   * holds. Detecting again then reads only what changed, not the couple of
+   * hundred files some detectors sample (react-native-bridge reads up to 200).
+   */
+  private detectionReads = new Map<string, { full: string; signature: string; content?: string | null }>();
+  /**
    * Scope matcher for SCOPED syncs, memoized on the mtimes of the two root
    * files it is derived from (`codegraph.json`, `.gitignore`). See
    * {@link scopedSyncMatcher}.
@@ -2046,11 +2090,32 @@ export class ExtractionOrchestrator {
    * detection. Graph-query methods (getNodesByName etc.) return empty because
    * the DB hasn't been populated yet, but detect() only uses readFile,
    * fileExists, and getAllFiles, so that's fine.
+   *
+   * With `inputs`, every path a detector reads or probes is recorded there,
+   * and answered from {@link detectionReads} when it was read before.
    */
   private frameworkSourceContext: ResolutionContext | null = null;
 
-  private buildDetectionContext(files: string[]): ResolutionContext {
+  private buildDetectionContext(files: string[], inputs?: NonNullable<ExtractionOrchestrator['detectionInputs']>): ResolutionContext {
     const rootDir = this.rootDir;
+    const listed = inputs ? new Set(files) : null;
+    const reads = inputs ? this.detectionReads : null;
+    // What is at a path, once per path until a sync says it changed.
+    const probe = (relativePath: string): { full: string; signature: string; content?: string | null } | null => {
+      const rel = normalizePath(relativePath);
+      let known = reads?.get(rel);
+      if (!known) {
+        const full = validatePathWithinRoot(rootDir, relativePath);
+        if (!full) return null;
+        known = { full, signature: diskSignature(full) };
+        reads?.set(rel, known);
+      }
+      if (inputs) {
+        if (listed!.has(rel)) inputs.sourceFiles.add(rel);
+        else if (!inputs.diskPaths.has(rel)) inputs.diskPaths.set(rel, known.signature);
+      }
+      return known;
+    };
     return {
       getNodesInFile: () => [],
       getNodesByName: () => [],
@@ -2061,24 +2126,22 @@ export class ExtractionOrchestrator {
       getAllFiles: () => files,
       getProjectRoot: () => rootDir,
       fileExists: (relativePath: string) => {
-        const full = validatePathWithinRoot(rootDir, relativePath);
-        if (!full) return false;
-        try {
-          return fs.existsSync(full);
-        } catch {
-          return false;
-        }
+        const known = probe(relativePath);
+        return known !== null && known.signature !== '-';
       },
       readFile: (relativePath: string) => {
-        const full = validatePathWithinRoot(rootDir, relativePath);
-        if (!full) return null;
-        try {
-          // Framework detectors scan source by name; a file over the size
-          // limit was never indexed and must not be decoded here either (#1910).
-          return readBoundedSourceSync(full).bytes?.toString('utf8') ?? null;
-        } catch {
-          return null;
+        const known = probe(relativePath);
+        if (!known) return null;
+        if (known.content === undefined) {
+          try {
+            // Framework detectors scan source by name; a file over the size
+            // limit was never indexed and must not be decoded here either (#1910).
+            known.content = readBoundedSourceSync(known.full).bytes?.toString('utf8') ?? null;
+          } catch {
+            known.content = null;
+          }
         }
+        return known.content;
       },
       // Monorepo support — needed by framework detect()s that probe
       // subpackage manifests (e.g. fabric-view looking at
@@ -2089,6 +2152,11 @@ export class ExtractionOrchestrator {
           relativePath === '.' || relativePath === ''
             ? rootDir
             : path.join(rootDir, relativePath);
+        // A folder appearing or going changes what a monorepo probe sees.
+        if (inputs) {
+          const key = normalizePath(path.relative(rootDir, target)) + '/';
+          if (!inputs.diskPaths.has(key)) inputs.diskPaths.set(key, diskSignature(target, true));
+        }
         try {
           return readDirEntries(target)
             .filter((entry) => entry.isDirectory())
@@ -2103,20 +2171,33 @@ export class ExtractionOrchestrator {
   /**
    * Detect frameworks on demand using the current scanned files (or a fresh
    * scan if none are provided). Cached on the orchestrator so repeat calls
-   * inside a single run don't re-scan. A sync passes the files whose content
-   * it is about to re-index as `stale`; every other file's indexed hash is its
-   * current content, so detectors may reuse the skips recorded against it.
+   * inside a single run don't re-scan; a sync drops the cache when what it
+   * read has changed ({@link refreshFrameworkDetection}). A sync passes the
+   * files whose content it is about to re-index as `stale`; every other file's
+   * indexed hash is its current content, so detectors may reuse the skips
+   * recorded against it.
    */
   private ensureDetectedFrameworks(files?: string[], stale?: ReadonlySet<string>): string[] {
     if (this.detectedFrameworkNames !== null) return this.detectedFrameworkNames;
     const fileList = files ?? scanDirectory(this.rootDir);
-    const context = this.buildDetectionContext(fileList);
+    const inputs = { sourceFiles: new Set<string>(), diskPaths: new Map<string, string>() };
+    const context = this.buildDetectionContext(fileList, inputs);
+    this.detectionInputs = inputs;
+    this.detectionFileListChanged = false;
     this.detectedFrameworkNames = (
-      stale ? detectFrameworksWithSkips(context, this.queries, { stale }) : detectFrameworks(context)
+      stale
+        // A file a skip let the detector pass over still counts as read: editing it must detect again.
+        ? detectFrameworksWithSkips(context, this.queries, { stale, onSkipped: (file) => inputs.sourceFiles.add(file) })
+        : detectFrameworks(context)
     ).map((r) => r.name);
     // Route extractors resolve imports across the whole project, not just this run's files.
-    this.frameworkSourceContext = this.buildDetectionContext([...new Set([...this.queries.getAllFilePaths(), ...fileList])]);
-    this.gateFrameworksByApp();
+    const projectFiles = [...new Set([...this.queries.getAllFilePaths(), ...fileList])];
+    this.frameworkSourceContext = this.buildDetectionContext(projectFiles);
+    this.gateFrameworksByApp(this.buildDetectionContext(projectFiles, inputs));
+    // Keep only what this detection read.
+    for (const rel of this.detectionReads.keys()) {
+      if (!inputs.sourceFiles.has(rel) && !inputs.diskPaths.has(rel)) this.detectionReads.delete(rel);
+    }
     return this.detectedFrameworkNames;
   }
 
@@ -2128,10 +2209,11 @@ export class ExtractionOrchestrator {
    * unsampled package is not gated and its extractor runs in every package.
    * The sample comes from every indexed file, not only this run's, so a
    * scoped sync that re-detects from one changed file gates exactly as the
-   * full index did.
+   * full index did. `context` is the one detection recorded its reads through,
+   * so a manifest edit brings a new detection about.
    */
-  private gateFrameworksByApp(): void {
-    const declared = declaredDependencies(this.frameworkSourceContext!);
+  private gateFrameworksByApp(context: ResolutionContext): void {
+    const declared = declaredDependencies(context);
     this.gatedFrameworks = new Map();
     for (const name of this.detectedFrameworkNames ?? []) {
       const deps = getFrameworkResolver(name)?.appDependencies;
@@ -2190,8 +2272,12 @@ export class ExtractionOrchestrator {
   private dependenciesDeclaredIn(dir: string): Set<string> | null {
     if (this.manifestDependencies.has(dir)) return this.manifestDependencies.get(dir)!;
     let declared: Set<string> | null = null;
+    const manifest = path.join(this.rootDir, dir, 'package.json');
+    // Kept until the next detection, so an edit of this manifest must bring one about.
+    const rel = dir ? `${dir}/package.json` : 'package.json';
+    if (this.detectionInputs && !this.detectionInputs.diskPaths.has(rel)) this.detectionInputs.diskPaths.set(rel, diskSignature(manifest));
     try {
-      const pkg = JSON.parse(fs.readFileSync(path.join(this.rootDir, dir, 'package.json'), 'utf8')) as Record<string, unknown>;
+      const pkg = JSON.parse(fs.readFileSync(manifest, 'utf8')) as Record<string, unknown>;
       declared = new Set();
       for (const field of ['dependencies', 'devDependencies', 'peerDependencies']) {
         const group = pkg[field];
@@ -2200,6 +2286,43 @@ export class ExtractionOrchestrator {
     } catch { /* no or unreadable manifest */ }
     this.manifestDependencies.set(dir, declared);
     return declared;
+  }
+
+  /** The frameworks extraction last detected, or null before any detection. */
+  getDetectedFrameworkNames(): string[] | null {
+    return this.detectedFrameworkNames;
+  }
+
+  /**
+   * Bring framework detection up to date before a sync extracts `filesToIndex`
+   * (#2516). Detection is cached for the life of this orchestrator, so in a
+   * long-lived process (the MCP server's watcher) a framework that arrives
+   * mid-session, like Express in a new `package.json`, would otherwise be
+   * missing from every file synced after it. It runs again only when what it
+   * read changed: files were added or removed since, a source file it read is
+   * among those changed, or a manifest it read or probed changed on disk.
+   * Otherwise this costs a set lookup per changed file and a stat per manifest,
+   * and when it runs, it reads again only what changed ({@link detectionReads}).
+   *
+   * `scannedFiles` is a full reconcile's scan. A scoped sync never walks the
+   * project: the file list is the index's, which already holds this sync's
+   * removals, plus the files it adds. Returns the frameworks detected when
+   * detection ran.
+   */
+  private refreshFrameworkDetection(scannedFiles: string[] | null, filesToIndex: string[], addedFiles: string[], removedFiles: string[]): string[] | undefined {
+    for (const file of filesToIndex) this.detectionReads.delete(file);
+    for (const file of removedFiles) this.detectionReads.delete(file);
+    const inputs = this.detectionInputs;
+    let stale = this.detectedFrameworkNames === null || inputs === null || this.detectionFileListChanged ||
+      filesToIndex.some((f) => inputs.sourceFiles.has(f));
+    for (const [rel, signature] of inputs?.diskPaths ?? []) {
+      if (diskSignature(path.join(this.rootDir, rel), rel.endsWith('/')) === signature) continue;
+      stale = true;
+      this.detectionReads.delete(rel);
+    }
+    if (!stale) return undefined;
+    this.detectedFrameworkNames = null;
+    return this.ensureDetectedFrameworks(scannedFiles ?? [...this.queries.getAllFilePaths(), ...addedFiles], new Set(filesToIndex));
   }
 
   /**
@@ -2285,8 +2408,10 @@ export class ExtractionOrchestrator {
     // Names are passed to each parse call so framework-specific extractors
     // (route nodes, middleware, etc.) run after the tree-sitter pass.
     // Framework detection is reset each run so adding e.g. requirements.txt
-    // between runs is picked up without restarting the process.
+    // between runs is picked up without restarting the process. It reads
+    // everything afresh: no sync has told this process what changed on disk.
     this.detectedFrameworkNames = null;
+    this.detectionReads.clear();
     const tFw = Date.now();
     const frameworkNames = this.ensureDetectedFrameworks(files);
     if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] framework-detect: ${Date.now() - tFw}ms`);
@@ -3820,13 +3945,20 @@ export class ExtractionOrchestrator {
     }
 
     // File conventions can change without editing any page modules.
+    let detectedFrameworks: string[] | undefined;
     if (filesToIndex.length > 0 || filesRemoved > 0) {
-      const previous = this.detectedFrameworkNames ?? [];
       const hadFileRoutes = this.detectedFrameworkNames === null
         ? this.queries.getNodesByKind('route').some((n) => n.id.startsWith(`route:react-router:${n.filePath}:file:`))
-        : previous.includes('react-router-files');
-      this.detectedFrameworkNames = null;
-      const detected = this.ensureDetectedFrameworks(currentFiles, new Set(filesToIndex));
+        : this.detectedFrameworkNames.includes('react-router-files');
+      // The frameworks every file below is extracted with, current (#2516).
+      if (addedFilePaths.length > 0 || removedFilePaths.length > 0) this.detectionFileListChanged = true;
+      const tDetect = Date.now();
+      detectedFrameworks = this.refreshFrameworkDetection(
+        scopedPaths && scopedPaths.length > 0 ? null : currentFiles, filesToIndex, addedFilePaths, removedFilePaths);
+      if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
+        console.error(`[phase-timing] sync-framework-detect: ${Date.now() - tDetect}ms (${detectedFrameworks ? 'detected again' : 'unchanged'})`);
+      }
+      const detected = this.detectedFrameworkNames ?? [];
       for (const [framework, matches] of [
         ['solid-start', isSolidStartRoute], ['vike', isVikePage], ['qwik-city', isQwikCityRoute],
         ['waku', isWakuRouteFile], ['analog', isAnalogPage],
@@ -3840,12 +3972,6 @@ export class ExtractionOrchestrator {
           changedFilePaths.push(filePath);
           filesModified++;
         }
-      }
-      if (scopedPaths?.length) {
-        this.detectedFrameworkNames = [...new Set([
-          ...previous.filter((name) => name !== 'react-router-files'), ...detected,
-        ])];
-        this.gateFrameworksByApp();
       }
       if (hadFileRoutes !== detected.includes('react-router-files')) {
         const scope = this.scopedSyncMatcher();
@@ -3962,6 +4088,7 @@ export class ExtractionOrchestrator {
       ...(failedFilePaths.length > 0 ? { failedFilePaths } : {}),
       definitionDelta: definitionDelta.length > 0 ? definitionDelta : undefined,
       ...(exportDelta.length > 0 ? { exportDelta } : {}),
+      ...(detectedFrameworks ? { detectedFrameworks } : {}),
     };
   }
 

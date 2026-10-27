@@ -50,11 +50,17 @@ export class SynthSkips {
   private readonly recorded: Array<[string, string, string]> = [];
   private readonly hashes = new Map<string, string>();
 
-  constructor(private readonly known: Map<string, Set<string>>) {}
+  /** `onSkipped` hears of each file a skip answered for, so a caller can tell what the run depended on. */
+  constructor(
+    private readonly known: Map<string, Set<string>>,
+    private readonly onSkipped?: (file: string) => void,
+  ) {}
 
   /** True when `pass` skipped `file` at its current indexed content. */
   has(pass: string, file: string): boolean {
-    return this.known.get(pass)?.has(file) ?? false;
+    const skipped = this.known.get(pass)?.has(file) ?? false;
+    if (skipped) this.onSkipped?.(file);
+    return skipped;
   }
 
   /** Record that `pass` skipped `file` after reading exactly `content`. */

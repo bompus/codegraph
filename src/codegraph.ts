@@ -150,6 +150,24 @@ export interface IndexOptions {
 /** project_metadata key for the Python package-root digest (see sync). */
 const PYTHON_ROOTS_METADATA_KEY = 'python_root_fingerprint';
 const WORKSPACE_METADATA_KEY = 'js_workspace_fingerprint';
+/** Metadata key: the frameworks (sorted JSON names) the last full index extracted every file with. */
+const FRAMEWORKS_AT_INDEX_KEY = 'frameworks_at_index';
+/**
+ * Metadata key: `{ added, removed }` — the frameworks a sync detected since the
+ * last full index, against {@link FRAMEWORKS_AT_INDEX_KEY}; '' when none.
+ */
+const FRAMEWORKS_SINCE_INDEX_KEY = 'frameworks_since_index';
+
+/** A JSON list of names from metadata, or null when absent or unreadable. */
+function parseNameList(value: string | null): string[] | null {
+  if (!value) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) && parsed.every((n) => typeof n === 'string') ? parsed : null;
+  } catch {
+    return null;
+  }
+}
 
 export class CodeGraph {
   private db: DatabaseConnection;
@@ -855,6 +873,7 @@ export class CodeGraph {
         // extraction stamp (the bulk would still be stale). See extraction-version.ts.
         if (result.success) this.stampPythonRootFingerprint();
         if (result.success) this.stampWorkspaceFingerprint();
+        if (result.success) this.stampIndexedFrameworks();
 
         if (result.success && result.filesIndexed > 0) {
           try {
@@ -984,6 +1003,64 @@ export class CodeGraph {
     } catch { /* metadata is advisory */ }
   }
 
+  /** Record the frameworks a full index extracted every file with; none has come or gone since. */
+  private stampIndexedFrameworks(): void {
+    const names = this.orchestrator.getDetectedFrameworkNames();
+    if (names === null) return;
+    try {
+      this.queries.setMetadata(FRAMEWORKS_AT_INDEX_KEY, JSON.stringify([...names].sort()));
+      this.queries.setMetadata(FRAMEWORKS_SINCE_INDEX_KEY, '');
+    } catch { /* metadata is advisory */ }
+  }
+
+  /**
+   * A sync detected frameworks again because what detection read had changed
+   * (#2516): a framework arrived mid-session, like Express in a new
+   * `package.json`, or one left. Files the sync extracted were read with the
+   * new set already. The resolver detects again when its set differs, so
+   * resolution and the passes after it use the new one too. Files indexed
+   * before the change were extracted without it, so the change against the
+   * last full index is recorded for `codegraph status`, which recommends a
+   * re-index: re-extracting every file a framework can touch would mean
+   * re-parsing most of the project inside a watcher's sync.
+   */
+  private followDetectedFrameworks(detected: string[]): void {
+    const now = [...detected].sort();
+    const resolverNow = [...this.resolver.getDetectedFrameworks()].sort();
+    if (now.join('\0') !== resolverNow.join('\0')) this.resolver.initialize();
+    try {
+      const atIndex = parseNameList(this.queries.getMetadata(FRAMEWORKS_AT_INDEX_KEY));
+      if (!atIndex) return; // indexed before this was recorded: nothing to compare with
+      const added = now.filter((name) => !atIndex.includes(name));
+      const removed = atIndex.filter((name) => !now.includes(name));
+      const value = added.length > 0 || removed.length > 0 ? JSON.stringify({ added, removed }) : '';
+      if ((this.queries.getMetadata(FRAMEWORKS_SINCE_INDEX_KEY) ?? '') !== value) {
+        this.queries.setMetadata(FRAMEWORKS_SINCE_INDEX_KEY, value);
+      }
+    } catch { /* metadata is advisory */ }
+  }
+
+  /**
+   * The frameworks a sync detected since the last full index, against the ones
+   * that index extracted every file with (#2516): files indexed before the
+   * change were read without the frameworks added, and with the ones removed,
+   * so a full re-index brings them in line. Null when nothing changed, or for
+   * an index built before this was recorded.
+   */
+  getFrameworkChangesSinceIndex(): { added: string[]; removed: string[] } | null {
+    try {
+      const value = this.queries.getMetadata(FRAMEWORKS_SINCE_INDEX_KEY);
+      if (!value) return null;
+      const parsed = JSON.parse(value) as { added?: unknown; removed?: unknown };
+      const names = (list: unknown): string[] => (Array.isArray(list) ? list.filter((n): n is string => typeof n === 'string') : []);
+      const added = names(parsed.added);
+      const removed = names(parsed.removed);
+      return added.length > 0 || removed.length > 0 ? { added, removed } : null;
+    } catch {
+      return null;
+    }
+  }
+
   async sync(options: IndexOptions = {}): Promise<SyncResult> {
     if (options.requireComplete && process.env.CODEGRAPH_SYNC_RESYNTHESIS === '0') {
       throw new Error('Complete reconciliation requires synthesized-edge refresh to be enabled.');
@@ -1101,6 +1178,10 @@ export class CodeGraph {
             this.synthesisDirty.add(filePath);
           }
         });
+
+        // Frameworks detected again because what detection read changed: the
+        // passes below use the new set (#2516).
+        if (result.detectedFrameworks) this.followDetectedFrameworks(result.detectedFrameworks);
 
         // Fold the store phase's WAL BEFORE the post-store reads below
         // (resolution reads on the main thread) — same rationale as
