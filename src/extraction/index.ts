@@ -2460,6 +2460,7 @@ export class ExtractionOrchestrator {
             buffers: result.kernelBuffers,
             file: this.buildFileRecord(filePath, content, language, stats, nodeCount, result.errors),
             ...(result.unresolvedReferences.length > 0 ? { extraRefs: result.unresolvedReferences } : {}),
+            ...(result.nodes.length > 0 ? { extraNodes: result.nodes } : {}),
           });
         } else {
           storeWriter.send(this.buildFreshStoreBundle(filePath, content, language, stats, result));

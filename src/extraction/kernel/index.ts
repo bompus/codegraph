@@ -310,8 +310,12 @@ export function materializeKernelResult(
   );
   if (b.literalSource !== undefined) captureLiterals(b.literalSource, decoded.nodes);
   decoded.durationMs = result.durationMs;
-  // References read beside the tables (a CommonJS `require`) ride on the transport.
+  // References read beside the tables (a CommonJS `require`), then framework
+  // extract() output, ride on the transport — same append order as
+  // extractFromSource. So do the framework nodes and any merge warnings.
+  if (result.nodes.length > 0) decoded.nodes.push(...result.nodes);
   if (result.unresolvedReferences.length > 0) decoded.unresolvedReferences.push(...result.unresolvedReferences);
+  if (result.errors.length > 0) decoded.errors.push(...result.errors);
   return decoded;
 }
 

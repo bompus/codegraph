@@ -53,8 +53,11 @@ export interface KernelStoreBundle {
   language: Language;
   buffers: NonNullable<ExtractionResult['kernelBuffers']>;
   file: FileRecord;
-  /** References read beside the kernel's tables (a CommonJS `require`). */
+  /** References read beside the kernel's tables (a CommonJS `require`),
+   *  then framework extract() references, in transport order. */
   extraRefs?: ExtractionResult['unresolvedReferences'];
+  /** Framework extract() output nodes, appended after the kernel's. */
+  extraNodes?: ExtractionResult['nodes'];
 }
 
 /**

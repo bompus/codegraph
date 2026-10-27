@@ -25,6 +25,7 @@ import * as os from 'node:os';
 import { CodeGraph } from '../src';
 import { initGrammars, loadGrammarsForLanguages } from '../src/extraction/grammars';
 import { tryKernelExtractRaw } from '../src/extraction/kernel';
+import { applyFrameworkExtracts } from '../src/extraction/framework-extracts';
 import type { ExtractionResult } from '../src/types';
 
 const KERNEL_PATH = path.join(
@@ -94,6 +95,75 @@ describe.skipIf(!kernelBuilt || process.env.CODEGRAPH_KERNEL === '0')('kernel bu
     expect(nodes.length).toBe(raw!.counts.nodes);
     expect(nodes.map((n) => n.name)).toContain('target_fn');
     expect(nodes.map((n) => n.name)).toContain('Adapter');
+  });
+
+  it('framework extract() output on the buffer transport is stored after decode', async () => {
+    const source =
+      'from django.urls import path\n' +
+      'from . import views\n' +
+      '\n' +
+      'urlpatterns = [\n' +
+      '    path("orders/<int:order_id>/", views.order_detail, name="order-detail"),\n' +
+      ']\n';
+    const filePath = 'urls.py';
+    fs.writeFileSync(path.join(dir, filePath), source);
+
+    const raw = tryKernelExtractRaw(filePath, source, 'python');
+    expect(raw).not.toBeNull();
+    const transport: ExtractionResult = {
+      nodes: [],
+      edges: [],
+      unresolvedReferences: [],
+      errors: raw!.errors,
+      durationMs: 0,
+      kernelBuffers: raw!.buffers,
+      kernelCounts: raw!.counts,
+    };
+    // What parse-worker now does instead of falling back to decode:
+    // framework hooks run on (filePath, source) and append to the transport.
+    applyFrameworkExtracts(transport, filePath, source, 'python', ['django']);
+    const fwNodeCount = transport.nodes.length;
+    expect(fwNodeCount).toBeGreaterThan(0);
+    expect(transport.unresolvedReferences.length).toBeGreaterThan(0);
+
+    const stats = fs.statSync(path.join(dir, filePath));
+    const orchestrator = (cg as unknown as { orchestrator: { storeExtractionResult(f: string, c: string, l: string, s: fs.Stats, r: ExtractionResult): Promise<void> } }).orchestrator;
+    await orchestrator.storeExtractionResult(filePath, source, 'python', stats, transport);
+
+    // Kernel nodes + framework nodes both land — the appended transport
+    // arrays are pushed onto the decoded tables, not dropped.
+    const nodes = cg.getNodesInFile(filePath);
+    expect(nodes.length).toBe(raw!.counts.nodes + fwNodeCount);
+    expect(nodes.some((n) => n.name === 'order_detail' || n.kind === 'route' || n.filePath === filePath)).toBe(true);
+  });
+
+  it('materializeKernelResult appends framework nodes/refs after the kernel tables', async () => {
+    const { materializeKernelResult } = await import('../src/extraction/kernel');
+    const source =
+      'from django.urls import path\n' +
+      'urlpatterns = [path("a/", views.a)]\n';
+    const filePath = 'urls.py';
+
+    const raw = tryKernelExtractRaw(filePath, source, 'python');
+    expect(raw).not.toBeNull();
+    const transport: ExtractionResult = {
+      nodes: [],
+      edges: [],
+      unresolvedReferences: [],
+      errors: raw!.errors,
+      durationMs: 0,
+      kernelBuffers: raw!.buffers,
+      kernelCounts: raw!.counts,
+    };
+    applyFrameworkExtracts(transport, filePath, source, 'python', ['django']);
+    const fwNodes = transport.nodes.length;
+    const fwRefs = transport.unresolvedReferences.length;
+
+    const decoded = materializeKernelResult(transport, filePath, 'python');
+    expect(decoded.nodes.length).toBe(raw!.counts.nodes + fwNodes);
+    expect(decoded.unresolvedReferences.length).toBeGreaterThanOrEqual(fwRefs);
+    // Append order: framework entries come after the kernel's own.
+    expect(decoded.nodes.slice(raw!.counts.nodes)).toEqual(transport.nodes);
   });
 });
 

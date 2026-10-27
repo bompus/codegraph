@@ -76,6 +76,10 @@ function decodeKernelBundle(bundle: KernelStoreBundle): StoreBundle {
   if (bundle.buffers.literalSource !== undefined) {
     captureLiterals(bundle.buffers.literalSource, decoded.nodes);
   }
+  // Framework extract() output and CommonJS refs ride the transport; both
+  // append after the kernel's tables, the same order extractFromSource
+  // produces (kernel → CommonJS → framework refs; kernel → framework nodes).
+  if (bundle.extraNodes?.length) decoded.nodes.push(...bundle.extraNodes);
   if (bundle.extraRefs?.length) decoded.unresolvedReferences.push(...bundle.extraRefs);
   return finalizeStoreBundle(decoded, bundle.filePath, bundle.language, bundle.file);
 }
