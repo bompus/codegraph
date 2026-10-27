@@ -67,7 +67,7 @@ impl KernelResolver {
                 candidates: None,
                 file_path: declaration.file_path.clone(),
                 language: "kotlin".to_string(),
-                failure_reason: None,
+                failure_reason: None, generated: None,
             };
             let Some(tree) = self.parsed_tree(&source, &site) else {
                 continue;

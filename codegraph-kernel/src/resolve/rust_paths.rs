@@ -142,7 +142,7 @@ impl KernelResolver {
             line: 1,
             column: 0,
             candidates: None,
-            failure_reason: None,
+            failure_reason: None, generated: None,
         };
         let mut tree = self.parsed_tree(&source, &r)?;
         // pin-project exposes its struct declaration inside a macro token tree.

@@ -231,6 +231,9 @@ export interface ResolveRefIn {
   filePath: string;
   language: string;
   failureReason?: string;
+  /** files.generated at index time — bounds the name-match pool for
+   *  minified/codegen sources (see kernel GENERATED_NAME_POOL_CAP). */
+  generated?: boolean;
 }
 
 export interface KernelCandidateOut {

@@ -455,7 +455,7 @@ impl KernelResolver {
         let Some(source) = self.read_file(file) else { return !name.starts_with('_') };
         let site = ResolveRefIn { row_id: None, from_node_id: String::new(), reference_name: String::new(),
             reference_kind: "imports".to_string(), line: 1, column: 0, candidates: None,
-            file_path: file.to_string(), language: "python".to_string(), failure_reason: None };
+            file_path: file.to_string(), language: "python".to_string(), failure_reason: None, generated: None };
         let Some(tree) = self.parsed_tree(&source, &site) else { return !name.starts_with('_') };
         let mut names = HashSet::new();
         let mut literal = true;

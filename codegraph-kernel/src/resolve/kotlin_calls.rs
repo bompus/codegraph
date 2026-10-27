@@ -91,7 +91,7 @@ impl KernelResolver {
                         let call = re!(r"(?:^|[^\w$])([a-z_]\w*)\s*(?:<[^<>{}]*>)?\s*(?:\([^(){}]*\))?\s*$").captures(&pending).map(|m| m[1].to_string());
                         if let Some(call) = call.filter(|name| !matches!(name.as_str(), "if" | "else" | "for" | "while" | "do" | "when" | "try" | "catch" | "finally" | "init" | "get" | "set" | "constructor" | "fun" | "class" | "object" | "interface" | "return" | "by" | "lazy" | "apply" | "run" | "also" | "let" | "with" | "use")) {
                             if !type_lambdas { stack.push((line, vec![UNTYPED_LAMBDA.to_string()])); pending.clear(); continue; }
-                            let site = ResolveRefIn { row_id: None, from_node_id: String::new(), reference_name: call.clone(), reference_kind: "calls".to_string(), line, column: 0, candidates: None, file_path: file.to_string(), language: "kotlin".to_string(), failure_reason: None };
+                            let site = ResolveRefIn { row_id: None, from_node_id: String::new(), reference_name: call.clone(), reference_kind: "calls".to_string(), line, column: 0, candidates: None, file_path: file.to_string(), language: "kotlin".to_string(), failure_reason: None, generated: None };
                             let mut owners: HashSet<String> = stack.iter().flat_map(|(_, names): &(i64, Vec<String>)| names.iter().filter(|name| name.as_str() != "*").cloned()).collect();
                             // An explicit typed receiver also proves dispatch: m.single { ... }, m: Module.
                             // One shared pattern with the callee captured, not a pattern compiled per call name:
