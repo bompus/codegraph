@@ -29,7 +29,7 @@ use crate::native::{Error, Result};
 #[cfg(feature = "addon")]
 use napi_derive::napi;
 use regex::Regex;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
@@ -1126,13 +1126,14 @@ impl KernelResolver {
         }
         drop(stmt);
         let mut out = Vec::new();
-        for (row_id, from_node_id, reference_name, reference_kind, line, column, candidates, mut file_path, mut language, failure_reason, generated) in collected
+        for (row_id, from_node_id, reference_name, reference_kind, line, column, candidates, mut file_path, mut language, failure_reason, mut generated) in collected
         {
             // Denormalized fallback — mirrors UnresolvedRef construction in
             // resolveBatchYielding: `raw.filePath || nodePath`,
             // `raw.language || nodeLang` — falsy (empty) only; a stored
             // 'unknown' passes through unchanged.
-            if file_path.is_empty() || language.is_empty() {
+            let stored_path_empty = file_path.is_empty();
+            if stored_path_empty || language.is_empty() {
                 if let Some(node) = self.node_by_id(&from_node_id)? {
                     if file_path.is_empty() {
                         file_path = node.file_path.clone();
@@ -1141,6 +1142,12 @@ impl KernelResolver {
                         language = node.language.clone();
                     }
                 }
+            }
+            // The files.generated join could not match an empty stored
+            // path: look the flag up under the path the fallback supplied,
+            // as generatedPredicateFor does on the TS side.
+            if stored_path_empty && generated != Some(true) {
+                generated = self.file_generated(&file_path)?;
             }
             // Union with the path convention — same rule as
             // generatedPredicateFor on the TS side: the DB flag OR a
@@ -1161,6 +1168,20 @@ impl KernelResolver {
             });
         }
         Ok(out)
+    }
+
+    /// `SELECT generated FROM files WHERE path = ?` — the join's fallback
+    /// when a ref's stored file_path was empty (see read_pending_batch).
+    fn file_generated(&mut self, path: &str) -> Result<Option<bool>> {
+        if path.is_empty() {
+            return Ok(None);
+        }
+        let hit = self
+            .conn()?
+            .query_row("SELECT generated FROM files WHERE path = ?1", [path], |row| row.get::<_, i64>(0))
+            .optional()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(hit.map(|g| g != 0))
     }
 
     /// The `settle` stage — one verdict per ref in input order.
