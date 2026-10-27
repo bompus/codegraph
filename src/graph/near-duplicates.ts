@@ -99,10 +99,8 @@ export function jaccard(a: Set<number>, b: Set<number>): number {
   return common / (a.size + b.size - common);
 }
 
-/** The MinHash signature of a body, or null when it is too small to compare. */
-export function signature(body: string, ownName?: string): Uint32Array | null {
-  const set = shingles(body, ownName);
-  if (!set) return null;
+/** The MinHash signature of a shingle set. */
+export function signatureFromSet(set: Set<number>): Uint32Array {
   const sig = new Uint32Array(HASHES).fill(0xffffffff);
   for (const x of set) {
     for (let k = 0; k < HASHES; k++) {
@@ -111,6 +109,12 @@ export function signature(body: string, ownName?: string): Uint32Array | null {
     }
   }
   return sig;
+}
+
+/** The MinHash signature of a body, or null when it is too small to compare. */
+export function signature(body: string, ownName?: string): Uint32Array | null {
+  const set = shingles(body, ownName);
+  return set ? signatureFromSet(set) : null;
 }
 
 /** The share of hashes two signatures agree on: an estimate of their shingle overlap. */
@@ -165,10 +169,15 @@ export function refreshNearDuplicates(deps: NearDuplicateDeps): { signed: number
     stale.set(c.filePath, list);
   }
   const rows: Array<{ nodeId: string; nodeUpdatedAt: number; sig: Uint8Array }> = [];
+  // The shingle sets just computed, keyed by node id: scoring reuses them
+  // instead of re-tokenizing every body that lands in a candidate pair.
+  const freshSets = new Map<string, Set<number>>();
   for (const [filePath, bodies] of stale) {
     const lines = deps.readFile(filePath)?.split(/\r?\n/);
     for (const b of bodies) {
-      const sig = lines ? signature(lines.slice(b.startLine - 1, b.endLine).join('\n'), b.name) : null;
+      const set = lines ? shingles(lines.slice(b.startLine - 1, b.endLine).join('\n'), b.name) : null;
+      const sig = set ? signatureFromSet(set) : null;
+      if (set) freshSets.set(b.id, set);
       rows.push({ nodeId: b.id, nodeUpdatedAt: b.updatedAt, sig: sig ? new Uint8Array(sig.buffer) : new Uint8Array(0) });
     }
   }
@@ -177,7 +186,7 @@ export function refreshNearDuplicates(deps: NearDuplicateDeps): { signed: number
   queries.upsertMinhash(rows);
   queries.deleteMinhash(drop);
   if (rows.length === 0 && drop.length === 0 && !deps.force) return { signed: 0, pairs: null, rescored: 0 };
-  const { kept, rescored } = pairNearDuplicates(deps);
+  const { kept, rescored } = pairNearDuplicates(deps, freshSets);
   return { signed: rows.length, pairs: kept, rescored };
 }
 
@@ -216,7 +225,7 @@ export function forEachBandBucket(
 }
 
 /** LSH over the stored signatures, one band at a time so memory stays linear in the bodies. */
-function pairNearDuplicates(deps: NearDuplicateDeps): { kept: number; rescored: number } {
+function pairNearDuplicates(deps: NearDuplicateDeps, freshSets?: ReadonlyMap<string, Set<number>>): { kept: number; rescored: number } {
   const { queries } = deps;
   // Every signature in one scan (rowid order), then each band's buckets from
   // the bytes in memory: sixteen SQL scans with a per-row substr and base64
@@ -256,8 +265,11 @@ function pairNearDuplicates(deps: NearDuplicateDeps): { kept: number; rescored: 
       const row = queries.minhashByRowid(rowid);
       if (!row) return null;
       const node = queries.getNodeById(row.nodeId);
-      const text = node ? lines(node.filePath)?.slice(node.startLine - 1, node.endLine).join('\n') : undefined;
-      hit = { nodeId: row.nodeId, sig: asSignature(row.sig), set: text ? shingles(text, node!.name) : null };
+      // A set signed this refresh is already in memory; only unchanged bodies
+      // pay the tokenize pass.
+      const cached = node ? freshSets?.get(node.id) : undefined;
+      const text = !cached && node ? lines(node.filePath)?.slice(node.startLine - 1, node.endLine).join('\n') : undefined;
+      hit = { nodeId: row.nodeId, sig: asSignature(row.sig), set: cached ?? (text ? shingles(text, node!.name) : null) };
       sigs.set(rowid, hit);
     }
     return hit;

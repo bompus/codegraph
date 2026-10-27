@@ -57,7 +57,7 @@ port.on('message', (msg: InMessage) => {
         const created = createDatabase(msg.dbPath, { readOnly: true });
         db = created.db;
         db.pragma('busy_timeout = 5000');
-        db.pragma('cache_size = -32000');
+        db.pragma('cache_size = -16000');
         const tDb = Date.now();
         queries = new QueryBuilder(db);
         resolver = new ReferenceResolver(msg.projectRoot, queries);
@@ -102,7 +102,7 @@ port.on('message', (msg: InMessage) => {
         const reopened = createDatabase(dbPath, { readOnly: true });
         db = reopened.db;
         db.pragma('busy_timeout = 5000');
-        db.pragma('cache_size = -32000');
+        db.pragma('cache_size = -16000');
         queries.rebind(db);
         // A snapshot refreshed after the prerequisite phase: every supertype
         // edge the rest of the run reads is in it, so the kernel walks them.
