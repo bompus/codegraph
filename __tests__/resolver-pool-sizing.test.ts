@@ -28,9 +28,10 @@ function size(opts: Partial<Parameters<typeof ResolverPool.resolvePoolSize>[0]>)
 }
 
 describe('ResolverPool.resolvePoolSize', () => {
-  it('big dev box: CPU-capped at the long-standing 6', () => {
-    expect(size({})).toBe(6);
-    expect(size({ availableParallelism: 11 })).toBe(6);
+  it('big dev box: CPU-capped at ap−1 up to the 12-worker ceiling', () => {
+    expect(size({})).toBe(7);
+    expect(size({ availableParallelism: 11 })).toBe(10);
+    expect(size({ availableParallelism: 24 })).toBe(12);
   });
 
   it('true 2-core box gets NO pool — sequential measured faster there (§7a.1: 853s vs 1150s)', () => {
@@ -47,9 +48,9 @@ describe('ResolverPool.resolvePoolSize', () => {
 
   it('per-worker estimate is floored (small DBs) and capped (huge DBs)', () => {
     // Small DB: floor 256MB/worker — memory cap = 16GB*0.7/256MB = 43 → CPU wins.
-    expect(size({ dbSizeBytes: 10 * MB })).toBe(6);
-    // Monster DB: cap 1.5GB/worker — 16GB*0.7/1.5GB = 7 → CPU still wins at 6.
-    expect(size({ dbSizeBytes: 40 * GB })).toBe(6);
+    expect(size({ dbSizeBytes: 10 * MB })).toBe(7);
+    // Monster DB: cap 1.5GB/worker — 16GB*0.7/1.5GB = 7 → ties ap−1 at 7.
+    expect(size({ dbSizeBytes: 40 * GB })).toBe(7);
     // Same monster DB, tight memory: 4GB*0.7/1.5GB = 1 → below 2 → no pool.
     expect(size({ dbSizeBytes: 40 * GB, memoryBudget: 4 * GB })).toBeNull();
   });
@@ -62,7 +63,7 @@ describe('ResolverPool.resolvePoolSize', () => {
     expect(size({ explicit: '0' })).toBeNull();
     expect(size({ explicit: '3', memoryBudget: 512 * MB })).toBe(3); // override skips the memory term
     expect(size({ explicit: '64' })).toBe(16);
-    expect(size({ explicit: 'nonsense' })).toBe(6); // unparseable → computed path
+    expect(size({ explicit: 'nonsense' })).toBe(7); // unparseable → computed path
   });
 });
 

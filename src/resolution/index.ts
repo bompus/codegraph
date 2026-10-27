@@ -2067,7 +2067,19 @@ export class ReferenceResolver {
    */
   async resolveAndPersistBatched(
     onProgress?: (current: number, total: number) => void,
-    batchSize: number = 5000,
+    // Pages of pending refs. Resolution semantics are batch-boundary
+    // semantics (a batch's own edges are never visible to its refs), so a
+    // bigger page changes nothing — but each boundary is a full pipeline
+    // drain: workers wait for ordered admission, the main thread waits for
+    // the batch's slowest chunk. 40k shrunk the supabase corpus's exposed
+    // wait ~55% (settle 8.1s→3.7s, index 19.6s→16.0s); 100k regressed
+    // (persist spans got heavier than the saved boundaries). Override:
+    // CODEGRAPH_RESOLVE_BATCH=<refs>.
+    batchSize: number = (() => {
+      const v = Number(process.env.CODEGRAPH_RESOLVE_BATCH);
+      const n = Math.floor(v);
+      return Number.isFinite(v) && n > 0 ? n : 40_000;
+    })(),
     onSynthesisProgress?: (done: number, total: number) => void,
     // When provided, big batches fan out across a read-only resolver-worker
     // pool with results admitted in canonical order (see resolver-pool.ts).
@@ -2276,16 +2288,19 @@ export class ReferenceResolver {
     // pending rows forward.
     let prevRemaining = Number.POSITIVE_INFINITY;
 
-    // Cadence for the worker connection recycling below — ~8 batches
-    // ≈ 40k refs between recycles keeps the WAL shallow at kernel scale
-    // while a small sync never recycles at all. (25 recovered only half
-    // the write tax — the WAL re-deepened between recycles; reopens are
-    // sub-millisecond so the shorter cadence is ~free.)
-    const RECYCLE_EVERY_BATCHES = (() => {
+    // Cadence for the worker connection recycling below — ~40k refs between
+    // recycles keeps the WAL shallow at kernel scale while a small sync
+    // never recycles at all. (25 batches recovered only half the write tax —
+    // the WAL re-deepened between recycles; reopens are sub-millisecond so
+    // the shorter cadence is ~free.) Counted in refs, not batches: the
+    // batch-page default grew to 40k and batch-counting would stretch the
+    // cadence 8×. CODEGRAPH_POOL_RECYCLE_EVERY still reads as "batches" of
+    // 5000 refs for back-compat.
+    const RECYCLE_EVERY_REFS = (() => {
       const v = Number(process.env.CODEGRAPH_POOL_RECYCLE_EVERY);
-      return Number.isFinite(v) && v > 0 ? Math.floor(v) : 8;
+      return (Number.isFinite(v) && v > 0 ? Math.floor(v) : 8) * 5_000;
     })();
-    let batchesSinceRecycle = 0;
+    let refsSinceRecycle = 0;
 
     // Fan-out result of ResolverPool.resolveBatch, settled (never rejecting)
     // so a fan-out begun before the previous batch's persist can't produce an
@@ -2315,7 +2330,7 @@ export class ReferenceResolver {
           : stale;
         if (!fresh) throw new Error('snapshot copy failed');
         await pool.recycleWorkers(fresh);
-        batchesSinceRecycle = 0;
+        refsSinceRecycle = 0;
         if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
           console.error(`[pool-timing] kernel snapshot refreshed after the prerequisite phase: ${fresh} (${Date.now() - tLp}ms)`);
         }
@@ -2557,11 +2572,13 @@ export class ReferenceResolver {
       // operations — the §7a.6 writes-under-readers finding (deletes
       // 42.6s → 118.8s from 0 to 4 attached readers; an aggressive valve
       // recovered the writes but paid +129s in full-park folds). Releasing
-      // the read marks every ~25 batches lets the existing checkpoints
+      // the read marks every ~40k resolved refs lets the existing checkpoints
       // advance instead, at ~milliseconds of reopen cost. A failed recycle
-      // downgrades to the main-thread kernel permanently, as a failed fan-out does.
-      if (pool && poolReady && ++batchesSinceRecycle >= RECYCLE_EVERY_BATCHES) {
-        batchesSinceRecycle = 0;
+      // downgrades to the main-thread kernel permanently, as a failed fan-out
+      // does.
+      refsSinceRecycle += batch.refs.length;
+      if (pool && poolReady && refsSinceRecycle >= RECYCLE_EVERY_REFS) {
+        refsSinceRecycle = 0;
         tLp = Date.now();
         try {
           await pool.recycleWorkers();

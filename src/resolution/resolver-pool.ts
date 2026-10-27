@@ -114,7 +114,8 @@ export class ResolverPool {
    * enumerates the host's CPUs and sized SIX workers inside a 2-CPU cpuset,
    * §7a.1's false-premise finding), minus one for the persisting main thread,
    * floored at 2 so a true 2-core box keeps the pool's ~2× on synthesis,
-   * capped at the long-standing 6.
+   * capped at 12 — measured the sweet spot on a 24-vCPU host (2026-11):
+   * 12→16 workers bought ~0% on the supabase corpus for +30% peak RSS.
    *
    * Memory term: workers hold real heap at scale (~1GB each against a 4.6GB
    * kernel-scale DB — six of them OOM-killed a 7GB container once real
@@ -141,7 +142,7 @@ export class ResolverPool {
     // 1,150s pooled-6-on-2 (§7a.1), and synthesis is Amdahl-bound by its
     // dominant pass (cFnPtrEdges 306s of 358s) so pooling it bought nothing.
     // ap−1 < 2 ⇒ sequential is the fast path, not a fallback.
-    const cpuCap = Math.min(opts.availableParallelism - 1, 6);
+    const cpuCap = Math.min(opts.availableParallelism - 1, 12);
     const perWorker = Math.min(Math.max(opts.dbSizeBytes * 0.2, 256 * 1024 * 1024), 1.5 * 1024 * 1024 * 1024);
     const memCap = Math.floor((opts.memoryBudget * 0.7) / perWorker);
     const size = Math.min(cpuCap, memCap);

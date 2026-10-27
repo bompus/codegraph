@@ -101,3 +101,7 @@ Reports node/edge/file counts, the active SQLite backend, and the journal mode. 
 ## What gets indexed
 
 Every file whose extension maps to a [supported language](/codegraph/reference/languages/), minus dependency/build directories excluded by default (`node_modules`, `vendor`, `dist`, …), anything your `.gitignore` excludes, and files over 1 MB. See [Configuration](/codegraph/getting-started/configuration/).
+
+## Indexing performance tunables
+
+Indexing resolves references in pages of 40,000 at a time (`CODEGRAPH_RESOLVE_BATCH` overrides) across a worker pool that sizes itself to your cores and free memory (cap 12; `CODEGRAPH_RESOLVE_WORKERS` sets the count explicitly, `0` disables the pool). Larger pages and more workers trade peak memory for wall time; on a constrained host, lowering either bounds the index's memory footprint.
