@@ -1134,13 +1134,25 @@ export class CodeGraph {
             // member reference through any binding (`LIST.includes(x)` after
             // `import { LIST } from './constants'`), then re-resolve that set.
             // On a sync where no failed ref matches, this is a few indexed
-            // lookups.
+            // lookups. The keys are the names whose bindings actually changed
+            // (the definition delta) plus the changed files' module keys: a
+            // failed ref keyed by a name whose repo-wide node set is untouched
+            // resolves exactly as before, so retrying it can only redo the
+            // miss. On a settings-style file with hundreds of untouched names,
+            // keying by every name the file carries made this hundreds of
+            // pointless re-resolutions per sync.
             const tRetry = Date.now();
             edgesBeforeRetry = this.queries.getMaxEdgeId();
-            const retryable = this.queries.getRetryableFailedReferences([...new Set([
-              ...this.queries.getNodeNamesByFiles(result.changedFilePaths),
-              ...result.changedFilePaths.flatMap(moduleReferenceKeys),
-            ])]);
+            const retryNames = result.definitionDelta ?? [];
+            const retryKeys = retryNames.length > 0 || (result.addedFilePaths?.length ?? 0) > 0
+              ? [...new Set([
+                ...retryNames,
+                ...result.changedFilePaths.flatMap(moduleReferenceKeys),
+              ])]
+              : [];
+            const retryable = retryKeys.length > 0
+              ? this.queries.getRetryableFailedReferences(retryKeys)
+              : [];
             // A scoped package that a `tsconfig` path or a workspace package maps
             // to an added file (`@excalidraw/common` to `packages/common/src/
             // index.ts`) waits under its last segment, which that file's keys
