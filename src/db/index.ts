@@ -30,14 +30,24 @@ export { NodeSqliteUnavailableError } from './node-sqlite';
  * on a writer, so this timeout only governs cross-process write contention
  * (e.g. the git-hook `codegraph sync` running while the MCP server writes).
  */
-function configureConnection(db: SqliteDatabase, readOnly = false): void {
+function configureConnection(db: SqliteDatabase, readOnly = false, compact = false): void {
   db.pragma('busy_timeout = 5000');      // MUST be first — see above
   db.pragma('foreign_keys = ON');
   if (!readOnly) db.pragma('journal_mode = WAL');       // node:sqlite supports WAL on every platform
   db.pragma('synchronous = NORMAL');     // safe with WAL mode
-  db.pragma('cache_size = -64000');      // 64 MB page cache
+  if (compact) {
+    // Pooled query workers: each holds its own connection, so per-connection
+    // caches multiply across the pool (and every process's RSS counts the
+    // same shared file pages again). A small page cache plus no private mmap
+    // keeps the pool's summed footprint near the daemon's own; hot pages still
+    // land in the OS page cache on the first read.
+    db.pragma('cache_size = -16384');    // 16 MB page cache
+    db.pragma('mmap_size = 0');          // no private memory-mapped I/O
+  } else {
+    db.pragma('cache_size = -64000');    // 64 MB page cache
+    db.pragma('mmap_size = 268435456');  // 256 MB memory-mapped I/O
+  }
   db.pragma('temp_store = MEMORY');      // temp tables in memory
-  db.pragma('mmap_size = 268435456');    // 256 MB memory-mapped I/O
   // Without a journal_size_limit the -wal file never shrinks below its
   // high-water mark while a connection lives: checkpoints fold frames back but
   // leave the file at full size, so one giant deferred-sync WAL stays giant
@@ -191,7 +201,7 @@ export class DatabaseConnection {
    * liveness watchdog kills the process before the index commits, every time
    * it starts (#1887). Reads stay correct meanwhile, only slower.
    */
-  static open(dbPath: string, options: { readOnly?: boolean; deferIndexRecovery?: boolean } = {}): DatabaseConnection {
+  static open(dbPath: string, options: { readOnly?: boolean; deferIndexRecovery?: boolean; compactConnection?: boolean } = {}): DatabaseConnection {
     if (!fs.existsSync(dbPath)) {
       throw new Error(`Database not found: ${dbPath}`);
     }
@@ -205,9 +215,9 @@ export class DatabaseConnection {
     db: SqliteDatabase,
     backend: SqliteBackend,
     dbPath: string,
-    options: { readOnly?: boolean; deferIndexRecovery?: boolean },
+    options: { readOnly?: boolean; deferIndexRecovery?: boolean; compactConnection?: boolean },
   ): DatabaseConnection {
-    configureConnection(db, options.readOnly);
+    configureConnection(db, options.readOnly, options.compactConnection);
 
     // Detect FTS5 availability for search fallback (#1532)
     let fts5Available = true;

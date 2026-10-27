@@ -45,6 +45,10 @@ The launcher can replace a daemon from an older release when its hello confirms 
 
 `CODEGRAPH_DAEMON_INSTALL_CHECK_MS` sets the installation-check interval in milliseconds. It defaults to `30000`; `0` disables the check.
 
+## Concurrent reads
+
+Read-heavy tool calls run on a pool of worker threads inside the server, each with its own SQLite read connection, so a burst of concurrent calls serves in parallel instead of starving the transport. The pool keeps a few workers warm ahead of demand and grows to `clamp(cores − 1, 1, 16)` under load. `CODEGRAPH_QUERY_POOL_SIZE` sets the cap (`0` serves every read on the server's own thread), `CODEGRAPH_QUERY_POOL_WARM` sets the warm floor (`0` grows only on demand), and `CODEGRAPH_QUERY_IDLE_RETIRE_MS` sets how long an idle worker lives before it is retired down to one (`0` never retires; default 60 seconds).
+
 ## The other tools
 
 Seven more tools exist and stay fully functional, but are **unlisted by default** — everything they return already arrives inline on a `codegraph_explore` response (its blast-radius section, the relationship map, a symbol's body and its callee list):
