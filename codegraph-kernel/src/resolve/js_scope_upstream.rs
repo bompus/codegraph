@@ -315,6 +315,13 @@ impl KernelResolver {
             (n.start_line - 1).max(0) as usize,
             super::names::js_unit_to_byte(line, n.start_column.max(0) as usize),
         );
+        // The declarator walk below depends only on the candidate — the ref
+        // enters only through `visible(scope, point)`. Memoize the walk so a
+        // name with hundreds of same-file candidates pays the parent-chain
+        // climb once, not once per ref (minified bundles are the hot case).
+        if let Some(&hit) = self.js_decl_scope_memo.get(&n.id) {
+            return hit.map(|scope| visible(scope, point));
+        }
         let mut current = tree
             .root_node()
             .descendant_for_point_range(declaration, declaration);
@@ -328,10 +335,13 @@ impl KernelResolver {
                     .child_by_field_name("name")
                     .is_some_and(|name| source.text()[name.start_byte()..name.end_byte()] == n.name)
             {
-                return Some(visible(binding_scope(node), point));
+                let scope = binding_scope(node);
+                self.js_decl_scope_memo.insert(n.id.clone(), Some(scope));
+                return Some(visible(scope, point));
             }
             current = node.parent();
         }
+        self.js_decl_scope_memo.insert(n.id.clone(), None);
         None
     }
 

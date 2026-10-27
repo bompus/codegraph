@@ -769,6 +769,10 @@ pub struct KernelResolver {
     manifest_external_memo: HashMap<String, Rc<HashSet<String>>>,
     /// lexicalScopeOf, by candidate id: the scoping function body's lines.
     lexical_scope_memo: HashMap<String, Option<(i64, i64)>>,
+    /// jsDeclarationReachable's candidate-side walk, by candidate id.
+    /// Some(Some(s)): declarator found, scope s. Some(None): found,
+    /// global scope (always visible). None: no declarator — verdict None.
+    js_decl_scope_memo: HashMap<String, Option<Option<(tree_sitter::Point, tree_sitter::Point)>>>,
     language_type_scope_memo: HashMap<String, Rc<language_type_scope::LanguageTypeScope>>,
     scala_package_object_membership_memo: HashMap<String, Option<(String, i64, i64)>>,
     cpp_default_declaration_memo: HashMap<String, declarations_upstream::CppDefaultDeclarationIndex>,
@@ -978,6 +982,7 @@ impl KernelResolver {
             manifest_own_memo: HashMap::new(),
             manifest_external_memo: HashMap::new(),
             lexical_scope_memo: HashMap::new(),
+            js_decl_scope_memo: HashMap::new(),
             language_type_scope_memo: HashMap::new(),
             scala_package_object_membership_memo: HashMap::new(),
             cpp_default_declaration_memo: HashMap::new(),
