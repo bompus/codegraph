@@ -917,10 +917,17 @@ impl KernelResolver {
     /// `this.container.classList.toggle()`); None for a call written bare or
     /// not found.
     pub(super) fn bare_call_receiver(&mut self, r: &ResolveRefIn) -> Res<Option<(Rc<SourceFile>, String)>> {
-        // The answer depends only on the ref, but is asked once per same-file
-        // candidate — memoize by the ref's address (cleared per chunk loop,
-        // so a reallocated Vec can never reuse an entry).
-        let key = r as *const ResolveRefIn as usize;
+        // The answer depends only on the ref's fields, but is asked once per
+        // same-file candidate — memoize on a content hash of them (no alloc,
+        // no pointer aliasing, dedupes identical refs across a chunk too).
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        r.file_path.hash(&mut h);
+        r.from_node_id.hash(&mut h);
+        r.reference_name.hash(&mut h);
+        r.line.hash(&mut h);
+        r.column.hash(&mut h);
+        let key = h.finish();
         if let Some(hit) = self.bare_receiver_memo.get(&key) {
             return Ok(hit.clone());
         }

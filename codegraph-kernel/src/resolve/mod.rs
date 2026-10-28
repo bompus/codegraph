@@ -776,11 +776,10 @@ pub struct KernelResolver {
     /// is_lexically_reachable's `bare` regex, by reference_name — refs are
     /// evaluated in per-ref loops, so one entry covers a whole loop.
     bare_name_memo: Option<(String, bool)>,
-    /// bare_call_receiver's answer per ref (the same `&r` reaches it once per
-    /// same-file candidate). Keyed by the ref's address, which is stable for
-    /// a chunk's Vec; cleared at every chunk loop so a reallocated Vec can
-    /// never hit a previous chunk's entry.
-    bare_receiver_memo: HashMap<usize, Option<(Rc<SourceFile>, String)>>,
+    /// bare_call_receiver's answer per ref (the same question is asked once
+    /// per same-file candidate). Keyed on a content hash of the ref's
+    /// fields — identical key means identical input, so no clearing needed.
+    bare_receiver_memo: HashMap<u64, Option<(Rc<SourceFile>, String)>>,
     /// is_generated_file per path — the >256-pool scans run its ~25
     /// regexes once per candidate; pools share few unique paths.
     gen_path_memo: HashMap<String, bool>,
@@ -1219,7 +1218,6 @@ impl KernelResolver {
     #[cfg_attr(feature = "addon", napi)]
     pub fn resolve_chunk(&mut self, refs: Vec<ResolveRefIn>) -> Result<Vec<ResolveOutcome>> {
         let mut out = Vec::with_capacity(refs.len());
-        self.bare_receiver_memo.clear();
         for r in refs {
             let t0 = PROF_ON.then(std::time::Instant::now);
             let mut o = match per_ref(&r, ResolveOutcome::unresolved(), || self.resolve_ref(&r)) {
@@ -1280,7 +1278,6 @@ impl KernelResolver {
     #[cfg_attr(feature = "addon", napi)]
     pub fn resolve_deferred_this_members(&mut self, refs: Vec<ResolveRefIn>) -> Result<Vec<ResolveOutcome>> {
         let mut out = Vec::with_capacity(refs.len());
-        self.bare_receiver_memo.clear();
         for r in refs {
             if !is_migrated_language(&r.language) {
                 out.push(ResolveOutcome::unresolved());
@@ -1302,7 +1299,6 @@ impl KernelResolver {
     #[cfg_attr(feature = "addon", napi)]
     pub fn resolve_deferred_chains(&mut self, refs: Vec<ResolveRefIn>) -> Result<Vec<ResolveOutcome>> {
         let mut out = Vec::with_capacity(refs.len());
-        self.bare_receiver_memo.clear();
         for r in refs {
             if !is_migrated_language(&r.language) {
                 out.push(ResolveOutcome::unresolved());
