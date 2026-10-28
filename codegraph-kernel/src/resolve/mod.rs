@@ -1217,6 +1217,10 @@ impl KernelResolver {
     /// The `settle` stage — one verdict per ref in input order.
     #[cfg_attr(feature = "addon", napi)]
     pub fn resolve_chunk(&mut self, refs: Vec<ResolveRefIn>) -> Result<Vec<ResolveOutcome>> {
+        // Memos carry only intra-batch value; bounding them per entry point
+        // also drops the Rc<SourceFile>s bare_receiver_memo pins.
+        self.bare_receiver_memo.clear();
+        self.gen_path_memo.clear();
         let mut out = Vec::with_capacity(refs.len());
         for r in refs {
             let t0 = PROF_ON.then(std::time::Instant::now);
@@ -1277,6 +1281,8 @@ impl KernelResolver {
     /// run after the main pass wrote every implements/extends edge.
     #[cfg_attr(feature = "addon", napi)]
     pub fn resolve_deferred_this_members(&mut self, refs: Vec<ResolveRefIn>) -> Result<Vec<ResolveOutcome>> {
+        self.bare_receiver_memo.clear();
+        self.gen_path_memo.clear();
         let mut out = Vec::with_capacity(refs.len());
         for r in refs {
             if !is_migrated_language(&r.language) {
@@ -1298,6 +1304,8 @@ impl KernelResolver {
     /// every other chain through the dotted arm, then the language gate.
     #[cfg_attr(feature = "addon", napi)]
     pub fn resolve_deferred_chains(&mut self, refs: Vec<ResolveRefIn>) -> Result<Vec<ResolveOutcome>> {
+        self.bare_receiver_memo.clear();
+        self.gen_path_memo.clear();
         let mut out = Vec::with_capacity(refs.len());
         for r in refs {
             if !is_migrated_language(&r.language) {
