@@ -1246,6 +1246,10 @@ const HTTP_GATE = /\b(?:fetch|\$fetch|ofetch|axios|ky|got|useFetch|useSWR)\b|\.\
 const QUEUE_GATE = /\.\s*add\s*\(|@Processor\s*\(|\bnew\s+Worker\s*[<(]|\.\s*process\s*\(/;
 const EVENT_GATE = /\.\s*(?:emit|emitAsync|on|once)\s*\(|@OnEvent\s*\(|@SubscribeMessage\s*\(/;
 
+export function hasCrossTierPattern(content: string): boolean {
+  return HTTP_GATE.test(content) || QUEUE_GATE.test(content) || EVENT_GATE.test(content);
+}
+
 /** Marks an edge whose target is an external endpoint node the merge creates (see endpointNodesFor). */
 export const HTTP_EXTERNAL = 'http-external';
 

@@ -176,6 +176,29 @@ describe('synthesized edges on incremental sync', () => {
     await expect(cg.sync({ requireComplete: true })).rejects.toThrow('requires synthesized-edge refresh');
   });
 
+  it('skips re-synthesis for an edit that touches no synthesized wiring or input pattern', async () => {
+    write('src/util.ts', 'export function add(a: number, b: number) {\n  return a + b;\n}\n');
+    await cg.sync({ requireComplete: true });
+    const resolver = (cg as unknown as { resolver: { synthesisRuns: number } }).resolver;
+    const before = resolver.synthesisRuns;
+    write('src/util.ts', 'export function add(a: number, b: number) {\n  // sum\n  return a + b;\n}\n');
+    await cg.sync({ requireComplete: true });
+    expect(resolver.synthesisRuns).toBe(before);
+    // Edges the skipped run left alone are still served.
+    expect(callees('publish')).toContain('onSaved');
+    expect(callees('loadRepo')).toContain('GET https://api.github.com/repos/${…}');
+  });
+
+  it('re-synthesizes when an edited file matches an input pattern it had no edge for', async () => {
+    write('src/ticker.ts', "import { bus } from './bus';\n\nexport function tick() {\n  return 1;\n}\n");
+    await cg.sync({ requireComplete: true });
+    const resolver = (cg as unknown as { resolver: { synthesisRuns: number } }).resolver;
+    const before = resolver.synthesisRuns;
+    write('src/ticker.ts', "import { bus } from './bus';\n\nexport function tick() {\n  bus.emit('tick', 1);\n}\n");
+    await cg.sync({ requireComplete: true });
+    expect(resolver.synthesisRuns).toBeGreaterThan(before);
+  });
+
   it('acknowledges current wiring across every refresh-ending sequence of up to three events', async () => {
     process.env.CODEGRAPH_SYNTH_REFRESH_MS = '60000';
     const attached = "import { bus } from './bus';\nimport { onSaved } from './handlers';\nexport function wire() { bus.on('saved', onSaved); }\n";
@@ -202,4 +225,43 @@ describe('synthesized edges on incremental sync', () => {
     }
     expect(failures).toEqual([]);
   }, 20000);
+});
+
+describe('synthesis gate on JSX definition deltas', () => {
+  let dir: string;
+  let cg: CodeGraph;
+  const write = (rel: string, body: string) => {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), body);
+  };
+  const callees = (fn: string) => {
+    const node = cg.getNodesByName(fn).find((n) => n.kind === 'function')!;
+    return cg.getCallees(node.id).map((c) => c.node.name).sort();
+  };
+
+  beforeEach(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-resynth-jsx-'));
+    write('src/App.tsx', "import { Team } from './components';\n\nexport function App() {\n  return <Team />;\n}\n");
+    write('src/components.ts', 'export {};\n');
+    cg = CodeGraph.initSync(dir, { config: { include: ['**/*.{ts,tsx}'], exclude: [] } });
+    await cg.indexAll();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    syncBuiltinESMExports();
+    try { cg.close(); } catch { /* ignore */ }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('re-synthesizes when a changed file adds a component a tag elsewhere names', async () => {
+    const resolver = (cg as unknown as { resolver: { synthesisRuns: number } }).resolver;
+    const before = resolver.synthesisRuns;
+    // Non-pattern content (a .ts file, no markup, not a barrel): only the
+    // definition delta — `Team` is a JSX child candidate — can gate this in.
+    write('src/components.ts', "const label = 'team';\nexport function Team() {\n  return label;\n}\n");
+    await cg.sync({ requireComplete: true });
+    expect(resolver.synthesisRuns).toBeGreaterThan(before);
+    expect(callees('App')).toContain('Team');
+  });
 });

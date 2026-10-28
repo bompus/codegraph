@@ -432,6 +432,22 @@ CREATE TABLE synth_skips (
       `);
     },
   },
+  {
+    version: 23,
+    description:
+      'Add synthesis_inputs — files whose content fed the last synthesis run, so a later sync can tell an input was removed',
+    up: (db) => {
+      // DDL only. No backfill: the rows come from file CONTENT the migration
+      // cannot see, so the table stays empty until the next synthesis run and
+      // the gate falls back on the edge-touching check until then. Keep in
+      // lockstep with schema.sql.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS synthesis_inputs (
+          file_path TEXT PRIMARY KEY REFERENCES files(path) ON DELETE CASCADE
+        );
+      `);
+    },
+  },
 ];
 
 /**

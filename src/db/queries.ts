@@ -5733,6 +5733,56 @@ export class QueryBuilder {
     return Number(r.changes ?? 0);
   }
 
+  /** Must run before file replacement/deletion cascades the endpoint edges. */
+  hasSynthesizedEdgesTouchingFile(filePath: string): boolean {
+    const owned = "CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '$.synthesizedBy') END IS NOT NULL";
+    for (const endpoint of ['source', 'target']) {
+      if (this.db.prepare(`SELECT 1 FROM nodes n JOIN edges e ON e.${endpoint} = n.id
+        WHERE n.file_path = ? AND ${owned} LIMIT 1`).get(filePath)) return true;
+    }
+    // Wiring often lives in a third file, with neither endpoint in it.
+    return !!this.db.prepare(`SELECT 1 FROM edges e WHERE ${owned}
+      AND CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '$.registeredAt') END >= ?
+      AND CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '$.registeredAt') END < ? LIMIT 1`
+    ).get(`${filePath}:`, `${filePath};`);
+  }
+
+  /**
+   * Every file carrying or registering synthesized edges — the bulk form of
+   * hasSynthesizedEdgesTouchingFile for a sync that checks many files: one
+   * edges scan instead of one per file.
+   */
+  filesTouchingSynthesizedEdges(): Set<string> {
+    const owned = "CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '$.synthesizedBy') END IS NOT NULL";
+    const registeredAt = "CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '$.registeredAt') END";
+    const rows = this.db.prepare(
+      `SELECT DISTINCT n.file_path AS f FROM nodes n JOIN edges e ON e.source = n.id OR e.target = n.id WHERE ${owned}
+       UNION SELECT DISTINCT rtrim(rtrim(rtrim(rtrim(${registeredAt}, '0123456789'), ':'), '0123456789'), ':') AS f
+       FROM edges e WHERE ${owned} AND ${registeredAt} IS NOT NULL`
+    ).all() as { f: string }[];
+    return new Set(rows.map((r) => r.f));
+  }
+
+  /**
+   * Whether this file's content fed the last completed synthesis run. Asked
+   * BEFORE the file row deletes: the input row cascades away with it.
+   */
+  wasSynthesisInput(filePath: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM synthesis_inputs WHERE file_path = ?').get(filePath);
+  }
+
+  /** Replace the synthesis-input set with the files a completed run read. */
+  replaceSynthesisInputs(files: readonly string[]): void {
+    const tx = this.db.transaction((list: readonly string[]) => {
+      this.db.exec('DELETE FROM synthesis_inputs');
+      const insert = this.db.prepare(
+        'INSERT OR IGNORE INTO synthesis_inputs(file_path) SELECT path FROM files WHERE path = ?'
+      );
+      for (const f of list) insert.run(f);
+    });
+    tx(files);
+  }
+
   /**
    * Reconcile stored synthesized edges with the set a refresh just emitted,
    * keyed on the idx_edges_identity columns. Kept edges stay put — unlike

@@ -1062,8 +1062,25 @@ export class CodeGraph {
         const pythonFilesBefore = this.pythonFilePaths();
         const watchRoutes = this.resolver.hasNavigationRouters();
         let routesBefore: Node[] | null = null;
-        const result = await this.orchestrator.sync(options.onProgress, options.paths, backpressure, () => {
+        // Files touching synthesized edges, snapshotted once on first use: a
+        // per-file lookup would rescan the edges table for every changed file.
+        let touchedBySynthesis: Set<string> | null = null;
+        const touchesSynthesis = (p: string) =>
+          (touchedBySynthesis ??= this.queries.filesTouchingSynthesizedEdges()).has(p);
+        const result = await this.orchestrator.sync(options.onProgress, options.paths, backpressure, (filePath, content) => {
           if (watchRoutes && routesBefore === null) routesBefore = this.queries.getNodesByKind('route');
+          // A changed file only dirties synthesis when it carried synthesized
+          // wiring (read BEFORE replacement cascades its edges), its last-seen
+          // content fed a pass (the input row is still here pre-delete; edges
+          // may already be gone, e.g. a channel dropped over the fan-out cap),
+          // or its new content still feeds a pass — the unconditional mark cost
+          // a full resynthesis on every save. Removed files get the same check.
+          if (process.env.CODEGRAPH_SYNC_RESYNTHESIS !== '0' &&
+            (touchesSynthesis(filePath) ||
+              this.queries.wasSynthesisInput(filePath) ||
+              (content !== undefined && resolution().mayFeedSynthesis(filePath, content)))) {
+            this.synthesisDirty.add(filePath);
+          }
         });
 
         // Fold the store phase's WAL BEFORE the post-store reads below
@@ -1458,8 +1475,24 @@ export class CodeGraph {
         const pureRemoval = !filesChanged && result.filesRemoved > 0;
         const resynthesis = (scopedChange || pureRemoval) && process.env.CODEGRAPH_SYNC_RESYNTHESIS !== '0';
         if (resynthesis) {
-          for (const p of result.changedFilePaths ?? []) this.synthesisDirty.add(p);
-          for (const p of result.removedFilePaths ?? []) this.synthesisDirty.add(p);
+          // A removed file's endpoint nodes are gone by now, but registrations
+          // it held still name it in edge metadata until reconcile — that is
+          // #138/#197's case exactly, and hasSynthesizedEdgesTouchingFile's
+          // registeredAt leg still answers it.
+          for (const p of result.removedFilePaths ?? []) {
+            if (touchesSynthesis(p)) this.synthesisDirty.add(p);
+          }
+          // A component a tag in an unchanged file may render: `<Team />` links
+          // to the `Team` this sync adds. A component with no markup of its own
+          // (`return null`, a wrapper) matches none of the input patterns; the
+          // definition delta gates it instead. Removing one needs no check: a
+          // component a tag rendered had synthesized edges into its file.
+          if (result.definitionDelta && result.changedFilePaths) {
+            const delta = new Set(result.definitionDelta);
+            if (this.queries.getNodesByFiles(result.changedFilePaths).some((n) => delta.has(n.name) && resolution().isJsxChildCandidate(n))) {
+              for (const p of result.changedFilePaths) this.synthesisDirty.add(p);
+            }
+          }
         }
 
         // Refs the scoped path deferred to the passes below are still pending
@@ -1504,6 +1537,7 @@ export class CodeGraph {
           result.pendingRefsUnresolved = recovery.stats.unresolved;
           if (this.resolver.synthesisRuns > synthesisRuns) {
             this.queries.reconcileSynthesizedEdges(this.resolver.lastSynthesizedEdges);
+            this.resolver.lastSynthesizedEdges = [];
             this.synthesisDirty.clear();
           } else if (this.synthesisDirty.size > 0) {
             // Refresh attempted and failed: drop the stale synthesized edges,
@@ -1904,6 +1938,11 @@ export class CodeGraph {
       const edges = await this.resolver.resynthesize((current, total) =>
         onProgress?.({ phase: 'linking', current, total }));
       const { deleted, updated } = this.queries.reconcileSynthesizedEdges(this.resolver.lastSynthesizedEdges);
+      // The emitted set and the warm caches a daemon's pass just filled are
+      // dead weight until the next rebuild — drop them rather than let the
+      // daemon's heap hold a whole-graph working set at idle.
+      this.resolver.lastSynthesizedEdges = [];
+      this.resolver.clearCaches();
       this.lastSynthesisMs = Date.now() - t;
       if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] sync-resynthesis: ${Date.now() - t}ms (${files.length} files, ${deleted} pruned, ${updated} updated, ${edges} synthesized)`);
     } catch (error) {

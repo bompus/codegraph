@@ -36,7 +36,7 @@ import { GO_TYPE_KINDS, isGoBareName, isGoUnknownQualified, goTypePositionTarget
 import { ResolverPool, adaptiveEngageEnabled, minRefsForPool, shouldEngageAdaptively } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
 import { detectFrameworksWithSkips, getResolvingFrameworks } from './frameworks';
-import { synthesizeCallbackEdges } from './callback-synthesizer';
+import { collectSynthesisInputs, synthesizeCallbackEdges } from './callback-synthesizer';
 import { createYielder, type MaybeYield } from './cooperative-yield';
 import { MAX_SOURCE_FILE_SIZE_BYTES } from '../file-limits';
 import { loadProjectAliases, loadScopedAliases, scopedAliasesForFile, type AliasMap, type AliasScope } from './path-aliases';
@@ -104,6 +104,7 @@ function cppConstructorForType(type: Node, queries: QueryBuilder): Node | null {
 
 // Re-export types
 export * from './types';
+export { hasSynthesisPattern, isJsxChildCandidate, mayFeedSynthesis } from './callback-synthesizer';
 
 /**
  * Reference Resolver
@@ -418,7 +419,9 @@ export class ReferenceResolver {
     this.clearCaches();
     const emitted: { edges?: Edge[] } = {};
     const edges = await synthesizeCallbackEdges(this.queries, this.context, onProgress, undefined, undefined, emitted);
+    this.synthesisRuns++;
     this.lastSynthesizedEdges = emitted.edges ?? [];
+    this.queries.replaceSynthesisInputs(collectSynthesisInputs(this.context));
     this.queries.setSynthesisPending(false);
     return edges;
   }
@@ -2850,6 +2853,7 @@ export class ReferenceResolver {
       );
       this.synthesisRuns++;
       this.lastSynthesizedEdges = emitted.edges ?? [];
+      this.queries.replaceSynthesisInputs(collectSynthesisInputs(this.context));
       this.queries.setSynthesisPending(false);
     } catch {
       // synthesis is additive and optional; ignore failures
