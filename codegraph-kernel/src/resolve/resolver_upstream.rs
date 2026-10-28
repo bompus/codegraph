@@ -177,8 +177,10 @@ impl KernelResolver {
         {
             return Ok(None);
         }
-        let key = format!("local:{}", n.id);
-        if let Some(hit) = self.lexical_scope_memo.get(&key) {
+        // Own memo keyed on n.id — the shared lexical_scope_memo needed a
+        // "local:"-prefixed format! key (a String alloc per call) only for
+        // namespacing.
+        if let Some(hit) = self.local_decl_scope_memo.get(n.id.as_str()) {
             return Ok(*hit);
         }
         let scope = self
@@ -194,7 +196,7 @@ impl KernelResolver {
             })
             .min_by_key(|f| f.end_line - f.start_line)
             .map(|f| (f.start_line, f.end_line));
-        self.lexical_scope_memo.insert(key, scope);
+        self.local_decl_scope_memo.insert(n.id.clone(), scope);
         Ok(scope)
     }
 

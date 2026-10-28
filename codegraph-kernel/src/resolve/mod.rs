@@ -783,6 +783,9 @@ pub struct KernelResolver {
     /// is_generated_file per path — the >256-pool scans run its ~25
     /// regexes once per candidate; pools share few unique paths.
     gen_path_memo: HashMap<String, bool>,
+    /// local_declaration_scope, by candidate id — its own map so the key
+    /// needs no "local:"-prefixed format! alloc.
+    local_decl_scope_memo: HashMap<String, Option<(i64, i64)>>,
     language_type_scope_memo: HashMap<String, Rc<language_type_scope::LanguageTypeScope>>,
     scala_package_object_membership_memo: HashMap<String, Option<(String, i64, i64)>>,
     cpp_default_declaration_memo: HashMap<String, declarations_upstream::CppDefaultDeclarationIndex>,
@@ -996,6 +999,7 @@ impl KernelResolver {
             bare_name_memo: None,
             bare_receiver_memo: HashMap::new(),
             gen_path_memo: HashMap::new(),
+            local_decl_scope_memo: HashMap::new(),
             language_type_scope_memo: HashMap::new(),
             scala_package_object_membership_memo: HashMap::new(),
             cpp_default_declaration_memo: HashMap::new(),
