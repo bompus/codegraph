@@ -40,7 +40,7 @@ import { vueRouterLinkEdges } from './vue-router-synthesizer';
 import { angularTemplateEdges } from './angular-template-synthesizer';
 import { svelteKitLinkEdges, svelteKitPageComponentEdges } from './sveltekit-synthesizer';
 import { createYielder, type MaybeYield } from './cooperative-yield';
-import { crossTierEdges, endpointNodesFor, testRequestEdges } from './tier-synthesizer';
+import { crossTierEdges, endpointNodesFor, hasCrossTierPattern, hasTestRequestPattern, testRequestEdges } from './tier-synthesizer';
 import { enclosingFn, enclosingValue, makeLineAt, matchBalanced } from './synth-utils';
 import { rnModuleMethods } from './frameworks/react-native';
 import { resolveImportPath } from './import-resolver';
@@ -7118,6 +7118,83 @@ export interface SynthPassDef {
 }
 
 const ALWAYS = (): boolean => true;
+
+/** Conservative input gates for SYNTH_PASSES; keep these in sync when adding a pass. */
+export function hasSynthesisPattern(filePath: string, content: string): boolean {
+  // These passes consume declarations/layouts as well as dispatch sites. A
+  // header or markup edit can change a channel whose endpoints live elsewhere.
+  if (/\.(?:vue|svelte|dfm|fmx|nix|xml)$/.test(filePath)) return true;
+  if (/\.(?:c|h|cc|cpp|cxx|hpp|hh|hxx|cppm|ipp|inl|tcc|def|inc|tbl)$/i.test(filePath) &&
+    /\b(?:struct|union|typedef|virtual|override)\b|#\s*(?:include|define|if)|=|->|\[/.test(content)) return true;
+  if (/\b(?:class|interface|protocol|trait|impl|extends|implements|expect|actual)\b/.test(content)) return true;
+  // Drupal hook wiring lives in .module/.install/.theme/.inc and *_alter / invokeAll sites.
+  if (/\.(?:module|install|theme|inc)$/.test(filePath) || /\b(?:invokeAll|module_implements|drupal_alter|module_invoke)\s*\(/.test(content)) return true;
+  // Every Go file: besides the declarations the interface passes read, a call
+  // through a func field, or a function put in one, can sit in any of them.
+  if (/\.go$/.test(filePath)) return true;
+  if (hasCrossTierPattern(content) || hasTestRequestPattern(filePath, content)) return true;
+  if (/\b(?:render|build|setState|defineStore|createStore|createApi|Store|href|sendEvent|sendEventWithName)\b|<\/|\/>/.test(content)) return true;
+  // A wrapper renders the component it wraps (jsxEdges), in a file with no markup of its own too.
+  if (WRAPPER_CALL_RE.test(content)) return true;
+  // windowMessageEdges (postMessage/addEventListener) and ngrxEdges (dispatch/ofType/@ngrx).
+  if (/\bpostMessage\s*\(|@ngrx|\bofType\s*\(|\bcreateEffect\s*\(/.test(content)) return true;
+  // rnDynamicModuleEdges / fabric / expo passes read the native-module names.
+  if (/\b(?:NativeModules|TurboModuleRegistry|requireNativeModule|NativeEventEmitter)\b/.test(content)) return true;
+  if (/\.(?:forEach|append|add|push|insert|fire|dispatchEvent|addListener|Use|GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|Any|Handle)\s*\(/.test(content)) return true;
+  if (/[\w$]\s*\[\s*[A-Za-z_$]/.test(content) || /\b(?:dispatch|commit)\s*\(/.test(content)) return true;
+  const patterns = [THUNK_DECL_RE, CELERY_TASK_DECORATOR_RE, CELERY_DISPATCH_RE,
+    SPRING_LISTENER_ANNO_RE, SPRING_APP_LISTENER_RE, SPRING_PUBLISH_RE,
+    MEDIATR_HANDLER_BASE_RE, MEDIATR_DISPATCH_RE, SIDEKIQ_WORKER_RE, SIDEKIQ_DISPATCH_RE,
+    SIDEKIQ_JOBS_ENQUEUE_RE, SIDEKIQ_JOBS_ENQUEUE_TIMED_RE, SIDEKIQ_PUSH_RE,
+    ERLANG_CALLBACK_DECL_RE, ERLANG_DISPATCH_RE, LARAVEL_DISPATCH_RE, ARKUI_EMITTER_CALL_RE,
+    ARKUI_ROUTER_RE];
+  for (const re of patterns) {
+    re.lastIndex = 0;
+    const matches = re.test(content);
+    re.lastIndex = 0;
+    if (matches) return true;
+  }
+  // Field-backed observers use method-name gates rather than fixed call names.
+  return (content.match(/[A-Za-z_$][\w$]*/g) ?? []).some(
+    (name) => REGISTRAR_NAME.test(name) || DISPATCHER_NAME.test(name)
+  );
+}
+
+const SYNTH_MODULE_FILE = /\.(?:[cm]?jsx|tsx|vue|svelte|astro)$/;
+// Re-exports only (`export {X} from`, `export *`): the barrel shapes that
+// rewire which module a name resolves through. `export type` carries no
+// synthesized-edge endpoint; a local `export const`/definition is covered by
+// the definition delta instead.
+const RE_EXPORT_LINE = /^\s*export\s+(?!type\b)(?:\*|\{[^}]*\}\s*from\b)/;
+
+/**
+ * Whether an edited file can feed a synthesis pass — the input gates above,
+ * plus the two shapes `wasSynthesisInput` tracked upstream that carry no
+ * pattern of their own: a markup-capable module (a tag or lazy() can name its
+ * component), and a barrel whose re-export lines rewire which module a
+ * tag resolves to. Files that only export plain values stay out: changing
+ * them can't move an edge's endpoint.
+ */
+export function mayFeedSynthesis(filePath: string, content: string): boolean {
+  if (hasSynthesisPattern(filePath, content)) return true;
+  if (SYNTH_MODULE_FILE.test(filePath)) return true;
+  const lines = content.split('\n').filter((l) => l.trim() !== '');
+  return lines.length > 0 && lines.filter((l) => RE_EXPORT_LINE.test(l)).length / lines.length > 0.6;
+}
+
+/**
+ * The files a completed synthesis run could have consumed — recorded into
+ * synthesis_inputs so a later sync knows a file was an input even after its
+ * edges dropped out (a channel crossing the fan-out cap) or the file is gone.
+ */
+export function collectSynthesisInputs(ctx: ResolutionContext): string[] {
+  const inputs: string[] = [];
+  for (const file of ctx.getAllFiles()) {
+    const content = ctx.readFile(file);
+    if (content && mayFeedSynthesis(file, content)) inputs.push(file);
+  }
+  return inputs;
+}
 
 /**
  * The independent passes, in MERGE ORDER — the first-seen dedup in

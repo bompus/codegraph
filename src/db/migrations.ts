@@ -10,7 +10,7 @@ import { referenceNameTail, MEMBER_TAIL_SQL, MODULE_PARKED_SQL } from './referen
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 22;
+export const CURRENT_SCHEMA_VERSION = 23;
 
 /**
  * Migration definition
@@ -429,6 +429,22 @@ CREATE TABLE synth_skips (
       if (!db.prepare("SELECT 1 FROM pragma_table_info('unresolved_refs') WHERE name = 'name_tail'").get()) return;
       db.exec(`
         CREATE INDEX IF NOT EXISTS idx_unresolved_failed_module_member ON unresolved_refs(status, ${MEMBER_TAIL_SQL}) WHERE ${MODULE_PARKED_SQL};
+      `);
+    },
+  },
+  {
+    version: 23,
+    description:
+      'Add synthesis_inputs — files whose content fed the last synthesis run, so a later sync can tell an input was removed',
+    up: (db) => {
+      // DDL only. No backfill: the rows come from file CONTENT the migration
+      // cannot see, so the table stays empty until the next synthesis run and
+      // the gate falls back on the edge-touching check until then. Keep in
+      // lockstep with schema.sql.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS synthesis_inputs (
+          file_path TEXT PRIMARY KEY REFERENCES files(path) ON DELETE CASCADE
+        );
       `);
     },
   },

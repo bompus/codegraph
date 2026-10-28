@@ -303,3 +303,9 @@ CREATE TABLE IF NOT EXISTS synth_skips (
     content_hash TEXT NOT NULL,
     passes TEXT NOT NULL -- space-separated pass names
 ) WITHOUT ROWID;
+
+-- Files whose last-seen content fed a synthesis pass, so a later sync can tell
+-- an input was removed or dropped its pattern after its edges are already gone.
+CREATE TABLE IF NOT EXISTS synthesis_inputs (
+    file_path TEXT PRIMARY KEY REFERENCES files(path) ON DELETE CASCADE
+);
