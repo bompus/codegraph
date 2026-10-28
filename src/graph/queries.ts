@@ -44,13 +44,11 @@ export class GraphQueryManager {
 
     // Get incoming references (things that reference this node)
     const incomingEdges = this.queries.getIncomingEdges(nodeId);
+    const nonContainsIncoming = incomingEdges.filter((e) => e.kind !== 'contains');
+    const incomingSources = this.queries.getNodesByIds(nonContainsIncoming.map((e) => e.source));
     const incomingRefs: Array<{ node: Node; edge: Edge }> = [];
-    for (const edge of incomingEdges) {
-      // Skip containment edges (already in ancestors)
-      if (edge.kind === 'contains') {
-        continue;
-      }
-      const node = this.queries.getNodeById(edge.source);
+    for (const edge of nonContainsIncoming) {
+      const node = incomingSources.get(edge.source);
       if (node) {
         incomingRefs.push({ node, edge });
       }
@@ -58,13 +56,11 @@ export class GraphQueryManager {
 
     // Get outgoing references (things this node references)
     const outgoingEdges = this.queries.getOutgoingEdges(nodeId);
+    const nonContainsOutgoing = outgoingEdges.filter((e) => e.kind !== 'contains');
+    const outgoingTargets = this.queries.getNodesByIds(nonContainsOutgoing.map((e) => e.target));
     const outgoingRefs: Array<{ node: Node; edge: Edge }> = [];
-    for (const edge of outgoingEdges) {
-      // Skip containment edges (already in children)
-      if (edge.kind === 'contains') {
-        continue;
-      }
-      const node = this.queries.getNodeById(edge.target);
+    for (const edge of nonContainsOutgoing) {
+      const node = outgoingTargets.get(edge.target);
       if (node) {
         outgoingRefs.push({ node, edge });
       }
@@ -73,13 +69,12 @@ export class GraphQueryManager {
     // Get type information (type_of, returns edges)
     const types: Node[] = [];
     const typeEdgeKinds: EdgeKind[] = ['type_of', 'returns'];
-    for (const kind of typeEdgeKinds) {
-      const typeEdges = this.queries.getOutgoingEdges(nodeId, [kind]);
-      for (const edge of typeEdges) {
-        const typeNode = this.queries.getNodeById(edge.target);
-        if (typeNode && !types.some((t) => t.id === typeNode.id)) {
-          types.push(typeNode);
-        }
+    const typeEdges = typeEdgeKinds.flatMap((kind) => this.queries.getOutgoingEdges(nodeId, [kind]));
+    const typeNodes = this.queries.getNodesByIds(typeEdges.map((e) => e.target));
+    for (const edge of typeEdges) {
+      const typeNode = typeNodes.get(edge.target);
+      if (typeNode && !types.some((t) => t.id === typeNode.id)) {
+        types.push(typeNode);
       }
     }
 
@@ -88,8 +83,9 @@ export class GraphQueryManager {
     const fileNode = ancestors.find((a) => a.kind === 'file');
     if (fileNode) {
       const importEdges = this.queries.getOutgoingEdges(fileNode.id, ['imports']);
+      const importNodes = this.queries.getNodesByIds(importEdges.map((e) => e.target));
       for (const edge of importEdges) {
-        const importNode = this.queries.getNodeById(edge.target);
+        const importNode = importNodes.get(edge.target);
         if (importNode) {
           imports.push(importNode);
         }
