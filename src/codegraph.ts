@@ -1475,7 +1475,6 @@ export class CodeGraph {
           const synthesisRuns = this.resolver.synthesisRuns;
           if (this.synthesisDirty.size > 0) {
             this.queries.setSynthesisPending(true);
-            this.queries.deleteAllSynthesizedEdges();
           }
           options.onProgress?.({
             phase: 'resolving',
@@ -1503,7 +1502,15 @@ export class CodeGraph {
           result.pendingRefsProcessed = recovery.stats.total;
           result.pendingRefsResolved = recovery.stats.resolved;
           result.pendingRefsUnresolved = recovery.stats.unresolved;
-          if (this.resolver.synthesisRuns > synthesisRuns) this.synthesisDirty.clear();
+          if (this.resolver.synthesisRuns > synthesisRuns) {
+            this.queries.reconcileSynthesizedEdges(this.resolver.lastSynthesizedEdges);
+            this.synthesisDirty.clear();
+          } else if (this.synthesisDirty.size > 0) {
+            // Refresh attempted and failed: drop the stale synthesized edges,
+            // the same end-state deleting them up front produced — readers
+            // see missing edges, never wrong ones, until the retry lands.
+            this.queries.deleteAllSynthesizedEdges();
+          }
         }
 
         // Python attribute types read from OTHER files — a factory's return, a
@@ -1894,12 +1901,16 @@ export class CodeGraph {
       // Cleared by resynthesize once it completes. Until then the next sync,
       // in this process or after a restart, retries the rebuild.
       this.queries.setSynthesisPending(true);
-      const dropped = this.queries.deleteAllSynthesizedEdges();
       const edges = await this.resolver.resynthesize((current, total) =>
         onProgress?.({ phase: 'linking', current, total }));
+      const { deleted, updated } = this.queries.reconcileSynthesizedEdges(this.resolver.lastSynthesizedEdges);
       this.lastSynthesisMs = Date.now() - t;
-      if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] sync-resynthesis: ${Date.now() - t}ms (${files.length} files, ${dropped} dropped, ${edges} synthesized)`);
+      if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] sync-resynthesis: ${Date.now() - t}ms (${files.length} files, ${deleted} pruned, ${updated} updated, ${edges} synthesized)`);
     } catch (error) {
+      // A mid-run failure leaves stored edges stale and newly-inserted ones
+      // partial — drop them all, the same end-state delete-then-rebuild left
+      // behind on failure: readers see missing edges, never wrong ones.
+      this.queries.deleteAllSynthesizedEdges();
       for (const file of files) this.synthesisDirty.add(file);
       if (requireComplete) throw new Error('Reconciliation did not complete synthesized-edge refresh.', { cause: error });
       logWarn('Synthesized-edge refresh failed; the next sync retries it', { error: String(error) });
