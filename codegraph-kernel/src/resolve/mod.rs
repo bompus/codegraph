@@ -591,6 +591,7 @@ mod fields;
 mod rust_impls;
 mod ts_known;
 mod go_asserted;
+mod go_value;
 mod method_call;
 mod pipeline;
 mod file_refs;
@@ -687,6 +688,17 @@ pub struct KernelResolver {
     rust_typed_refs: HashSet<i64>,
     /// rustTraitOf, by method id → the enclosing trait node's id.
     rust_trait_of_memo: HashMap<String, Option<String>>,
+    /// goDotImports, by file path.
+    go_dot_imports_memo: HashMap<String, fields::GoDotImports>,
+    /// A Go bound-receiver arm proved the receiver has no project method —
+    /// the miss is terminal, not a name-match candidate (`goHasNoProjectMethods`,
+    /// declared-type literals, field-chain and asserted-outside vetoes).
+    go_mc_terminal: bool,
+    /// The receiver is an asserted local whose type a function declares —
+    /// no index type answers, and upstream's strategy-3 name match applies.
+    go_mc_untyped_local: bool,
+    /// goAliasTarget, by type node id.
+    go_alias_target_memo: HashMap<String, fields::GoAliasTarget>,
     /// javaSupertypesOf, by type name.
     java_supers_memo: HashMap<String, Rc<Vec<String>>>,
     /// phpSupertypeQns, by declaration id.
@@ -954,6 +966,10 @@ impl KernelResolver {
             rust_trait_memo: HashMap::new(),
             rust_typed_refs: HashSet::new(),
             rust_trait_of_memo: HashMap::new(),
+            go_dot_imports_memo: HashMap::new(),
+            go_mc_terminal: false,
+            go_mc_untyped_local: false,
+            go_alias_target_memo: HashMap::new(),
             java_supers_memo: HashMap::new(),
             php_supers_memo: HashMap::new(),
             vb: vbnet::VbMemo::default(),

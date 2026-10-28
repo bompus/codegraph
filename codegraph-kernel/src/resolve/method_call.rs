@@ -687,7 +687,35 @@ impl KernelResolver {
 
         if inferable {
             if r.language == "go" {
-                if let Some(verdict) = self.go_asserted_member(&object_or_class, &method_name, r)? { return Ok(verdict); }
+                if let Some(verdict) = self.go_asserted_member(&object_or_class, &method_name, r)? {
+                    if verdict.is_none() { self.go_mc_terminal = true; }
+                    return Ok(verdict);
+                }
+                // A package-level value's spec types its method calls
+                // (`var level = Level(2)` → `level.Label()` on Level).
+                if !object_or_class.contains('.') {
+                    if let Some(verdict) = self.match_go_package_value_call(&object_or_class, &method_name, r)? {
+                        return Ok(verdict);
+                    }
+                    // The declared type settles the call when it is readable:
+                    // a literal (`[]Gomega`) or a type no project package
+                    // declares methods on means no project method answers.
+                    if let Some(decl) = self.go_local_declaration_at(
+                        object_or_class.clone(), r.file_path.clone(), r.line, r.column)?
+                    {
+                        match &decl.declared_type {
+                            Some(text) => {
+                                if Self::go_named_type(text).is_none()
+                                    || matches!(self.go_written_type(text, r)?, Some(super::go_asserted::GoAsserted::Outside))
+                                {
+                                    self.go_mc_terminal = true;
+                                    return Ok(None);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             }
             // A PHP `instanceof` branch narrows the receiver inside its body.
             if let Some(t) = probe!(r, "mc:guarded", self.infer_guarded_receiver(&object_or_class, r)?) {
@@ -803,7 +831,16 @@ if inferred.is_none() && r.language == "dart" {
                     bsite.line = b.line;
                 }
                 let member = self.match_bound_type_member(&t, &method_name, &bsite)?;
-                if member.is_none() && r.language == "kotlin" {
+                if member.is_none() && r.language == "go" {
+                    // A Go standard method name the declared type lacks is no
+                    // other type's (`err.Error()`, `context.Done()`); any
+                    // other name goes on to name matching, as one on a
+                    // receiver of unread type does.
+                    if super::call_shape::is_std_method("go", &method_name) {
+                        self.go_mc_terminal = true;
+                        return Ok(None);
+                    }
+                } else if member.is_none() && r.language == "kotlin" {
                     // An extension function is no member of the receiver's class, and in a
                     // package its qualified name does not say which class it extends.
                     let hit = super::kotlin_receiver::KotlinReceiverHit { ty: t.clone(), site: bsite, heuristic: false };
@@ -814,9 +851,11 @@ if inferred.is_none() && r.language == "dart" {
             }
         }
 
-        // Go 2-hop field chain — exclusive branch.
+        // Go 2-hop field chain — exclusive branch; its miss is terminal.
         if r.language == "go" && dotted && object_or_class.contains('.') {
-            return self.match_go_field_chain_call(&object_or_class, &method_name, r);
+            let hit = self.match_go_field_chain_call(&object_or_class, &method_name, r)?;
+            if hit.is_none() { self.go_mc_terminal = true; }
+            return Ok(hit);
         }
         // rust field/self arms: rust is unmigrated — dead.
         // this.field arms: `this.` receivers are excluded by the claim gate —
@@ -850,6 +889,15 @@ if inferred.is_none() && r.language == "dart" {
             return self.match_bound_type_member(&object_or_class, &method_name, r);
         }
         Ok(None)
+    }
+
+    /// Whether the bound-receiver miss is a local the index cannot type —
+    /// upstream's strategy-3 name match runs for it (`ctx`, bound from an
+    /// assertion to a type a function declares); every other miss —
+    /// terminal arms included — is refused. Clears both markers either way.
+    fn take_go_mc_untyped(&mut self) -> bool {
+        self.go_mc_terminal = false;
+        std::mem::take(&mut self.go_mc_untyped_local)
     }
 
     /// matchMethodCall(ref, context, requireReceiverEvidence=false) — the
@@ -1511,7 +1559,11 @@ if inferred.is_none() && r.language == "dart" {
                     None => None,
                 });
             }
-            return Ok(probe!(r, "brc:match_method_call", self.match_method_call(r)?));
+            let hit = probe!(r, "brc:match_method_call", self.match_method_call(r)?);
+            if hit.is_none() && r.language == "go" && self.take_go_mc_untyped() {
+                return self.match_method_call_free(r);
+            }
+            return Ok(hit);
         }
 
         if binding.as_ref().is_some_and(|b| b.kind == "import") {
@@ -1588,6 +1640,9 @@ if inferred.is_none() && r.language == "dart" {
         }
         if let Some(c) = probe!(r, "brc:match_method_call", self.match_method_call(r)?) {
             return Ok(Some(c));
+        }
+        if r.language == "go" && self.take_go_mc_untyped() {
+            return self.match_method_call_free(r);
         }
         if binding.kind == "param" {
             return Ok(None);

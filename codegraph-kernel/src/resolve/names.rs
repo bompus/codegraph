@@ -497,7 +497,7 @@ impl KernelResolver {
 
     /// The name in a Go file's `package` clause (the first line that starts
     /// with `package`, outside block comments).
-    fn go_package_clause(&mut self, file: &str) -> Option<String> {
+    pub(super) fn go_package_clause(&mut self, file: &str) -> Option<String> {
         let lines = self.read_file(file)?;
         let mut in_block = false;
         for line in lines.iter() {

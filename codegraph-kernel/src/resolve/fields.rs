@@ -60,7 +60,10 @@ impl KernelResolver {
                     continue;
                 };
                 // The package directory that declares the field's type: the
-                // imported package for `pkg.Type`, else the struct's own.
+                // imported package for `pkg.Type`; for a bare name the
+                // struct's own package or one its file dot-imports — none of
+                // the project's for a name only an outside package can give
+                // the file.
                 let pkg_dir = if raw_type.contains('.') {
                     let pkg = raw_type.split('.').next().unwrap_or("");
                     match self.go_imported_package_dir(&s.file_path, pkg)? {
@@ -68,7 +71,10 @@ impl KernelResolver {
                         None => continue,
                     }
                 } else {
-                    pos_dirname(&s.file_path).to_string()
+                    match self.go_bare_type_dir(&raw_type, &s.file_path)? {
+                        Some(dir) => dir,
+                        None => continue,
+                    }
                 };
                 let Some(field_type) = raw_type.split('.').next_back() else {
                     continue;
@@ -81,12 +87,174 @@ impl KernelResolver {
                 {
                     continue;
                 }
+                // Nor is an alias of an outside type (`ctx Ctx` with
+                // `type Ctx = context.Context`): read in the struct's file.
+                if matches!(
+                    self.go_written_type(&raw_type, &r.clone().at(&s))?,
+                    Some(super::go_asserted::GoAsserted::Outside)
+                ) {
+                    continue;
+                }
                 if let Some(c) = self.go_method_in_package(field_type, method, &pkg_dir, r)? {
                     return Ok(Some(c));
                 }
             }
         }
         Ok(None)
+    }
+
+    /// goDotImports (name-matcher.ts): the project package directories
+    /// `file_path` dot-imports (`import . "…"`), whether a dot import lies
+    /// outside the project's modules, and — only when an outside one does —
+    /// the names the file's own `type` declarations use.
+    pub(super) fn go_dot_imports(&mut self, file_path: &str) -> Res<GoDotImports> {
+        if let Some(hit) = self.go_dot_imports_memo.get(file_path) {
+            return Ok(hit.clone());
+        }
+        let mut found = GoDotImports::default();
+        if std::env::var_os("CODEGRAPH_KERNEL_DEBUG_GO").is_some() {
+            eprintln!("[go-dots] {file_path} imports: {:?}", self.import_mappings(file_path)?.iter().map(|i| format!("{}={}", i.local_name, i.source)).collect::<Vec<_>>());
+        }
+        for import in self.import_mappings(file_path)?.iter().filter(|i| i.local_name == ".") {
+            if let Some(dir) = self.go_package_dir(&import.source, file_path) {
+                found.dirs.push(dir);
+            } else if !import.source.starts_with('.') && !import.source.contains("/internal/") {
+                found.outside = true;
+            }
+        }
+        if found.outside {
+            let mut types = HashSet::new();
+            if let Some(lines) = self.read_file(file_path) {
+                for line in lines.iter() {
+                    for m in re!(r"(?:^|[^\w.])type\s+([A-Za-z_]\w*)").captures_iter(&strip_line_comments(line)) {
+                        types.insert(m[1].to_string());
+                    }
+                }
+            }
+            found.types = types;
+        }
+        self.go_dot_imports_memo.insert(file_path.to_string(), found.clone());
+        Ok(found)
+    }
+
+    /// goPackageTypes (name-matcher.ts): the Go type declarations named
+    /// `name` in the package at `dir`.
+    pub(super) fn go_package_types(&mut self, name: &str, dir: &str) -> Res<Vec<Arc<KNode>>> {
+        Ok(self.nodes_by_name(name)?.iter()
+            .filter(|n| n.language == "go"
+                && matches!(n.kind.as_str(), "struct" | "interface" | "type_alias")
+                && pos_dirname(&n.file_path) == dir)
+            .cloned().collect())
+    }
+
+    /// goBareTypeDir (name-matcher.ts): the package directory Go reads a
+    /// bare type name from — the file's own package, else a package of the
+    /// project the file dot-imports that declares it. `None` for an
+    /// exported name only a package from outside the project can give the
+    /// file (`. "github.com/onsi/gomega"`): no type of the project's. The
+    /// file's own package when no package declares the name — a type the
+    /// index doesn't hold, like one a function declares.
+    pub(super) fn go_bare_type_dir(&mut self, name: &str, file_path: &str) -> Res<Option<String>> {
+        let own = pos_dirname(file_path).to_string();
+        let dots = self.go_dot_imports(file_path)?;
+        if std::env::var_os("CODEGRAPH_KERNEL_DEBUG_GO").is_some() {
+            eprintln!("[go-bare] {name} in {file_path}: own={own} dirs={:?} outside={} types={:?}", dots.dirs, dots.outside, dots.types);
+        }
+        if (dots.dirs.is_empty() && !dots.outside) || !self.go_package_types(name, &own)?.is_empty() {
+            return Ok(Some(own));
+        }
+        for dir in &dots.dirs {
+            if !self.go_package_types(name, dir)?.is_empty() {
+                return Ok(Some(dir.clone()));
+            }
+        }
+        if !dots.outside || !re!(r"^[A-Z]\w*$").is_match(name) {
+            return Ok(Some(own));
+        }
+        Ok(dots.types.contains(name).then_some(own))
+    }
+
+    /// goAliasTarget (name-matcher.ts): the project type a `type X = T`
+    /// declaration names — `Null` when X is no project type's (a builtin or
+    /// a type from outside the modules), `Unknown` when the node is no alias
+    /// or its target can't be read.
+    pub(super) fn go_alias_target(&mut self, type_node: &KNode) -> Res<GoAliasTarget> {
+        if type_node.kind != "type_alias" {
+            return Ok(GoAliasTarget::Unknown);
+        }
+        if let Some(hit) = self.go_alias_target_memo.get(&type_node.id) {
+            return Ok(hit.clone());
+        }
+        let Some(lines) = self.read_file(&type_node.file_path) else {
+            return Ok(GoAliasTarget::Unknown);
+        };
+        // From the alias's name, where the node starts, to the end of its type.
+        let decl = lines.iter()
+            .skip((type_node.start_line - 1).max(0) as usize)
+            .take((type_node.end_line - type_node.start_line + 1).max(0) as usize)
+            .enumerate()
+            .map(|(i, l)| {
+                let s = if i == 0 { &l[type_node.start_column.max(0) as usize..] } else { l.as_str() };
+                strip_line_comments(s).to_string()
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let decl = re!(r"/\*.*?\*/").replace_all(&decl, "");
+        // `Name =` or `Name[T any] =`; a defined type has no `=` there.
+        let head = re!(r"^\s*[A-Za-z_]\w*\s*(?:\[[^\]]*\])?\s*=").captures(&decl);
+        let target = match head {
+            None => GoAliasTarget::Unknown,
+            Some(head) => {
+                let m = re!(r"^\s*(?:\*\s*)?([A-Za-z_]\w*)(?:\s*\.\s*([A-Za-z_]\w*))?\s*(?:\[.*\])?\s*;?\s*$")
+                    .captures(&decl[head.get(0).unwrap().end()..]);
+                match m {
+                    None => GoAliasTarget::Null,
+                    Some(m) => {
+                        let (bare, name) = match m.get(2) {
+                            Some(second) => (false, second.as_str().to_string()),
+                            None => (true, m[1].to_string()),
+                        };
+                        let pkg_dir = if bare {
+                            self.go_bare_type_dir(&name, &type_node.file_path)?
+                        } else {
+                            self.go_imported_package_dir(&type_node.file_path, &m[1])?
+                        };
+                        match pkg_dir {
+                            Some(dir) if !bare || !GO_BUILTIN_FIELD_TYPES.contains(name.as_str()) => {
+                                GoAliasTarget::Target(name, dir)
+                            }
+                            _ => GoAliasTarget::Null,
+                        }
+                    }
+                }
+            }
+        };
+        self.go_alias_target_memo.insert(type_node.id.clone(), target.clone());
+        Ok(target)
+    }
+
+    /// goDotImportedSupertype (name-matcher.ts): what a Go embedding written
+    /// bare (`*Manager`) names — the type of the package the file
+    /// dot-imports that declares it, not another package's namesake, and
+    /// nothing for a name only a package from outside the project can give
+    /// the file. `None` vetoes the pick; `Some` gives the node to use,
+    /// which may be `cand` unchanged.
+    pub(super) fn go_dot_imported_supertype(&mut self, cand: &Arc<KNode>, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        if !re!(r"^[A-Za-z_]\w*$").is_match(&r.reference_name) {
+            return Ok(Some(cand.clone()));
+        }
+        let own = pos_dirname(&r.file_path).to_string();
+        let Some(dir) = self.go_bare_type_dir(&r.reference_name, &r.file_path)? else {
+            return Ok(None);
+        };
+        if dir == own || self.go_written_qualifier(r)?.is_some() {
+            return Ok(Some(cand.clone()));
+        }
+        if pos_dirname(&cand.file_path) == dir {
+            return Ok(Some(cand.clone()));
+        }
+        let types = self.go_package_types(&r.reference_name, &dir)?;
+        Ok(prefer_call_site_file(types, &r.file_path).into_iter().next().or_else(|| Some(cand.clone())))
     }
 
     /// The module directory of the package `file_path` imports as `pkg`:
@@ -161,7 +329,9 @@ impl KernelResolver {
             return Ok(self.go_imported_package_dir(file, pkg)?
                 .map(|dir| (name.to_string(), dir)));
         }
-        Ok(Some((named.to_string(), pos_dirname(file).to_string())))
+        // A bare type name reads from the file's own package or one it
+        // dot-imports (goBareTypeDir): `None` when it can't be told.
+        Ok(self.go_bare_type_dir(named, file)?.map(|dir| (named.to_string(), dir)))
     }
 
     /// A named term in an interface is a supertype only if its declaration
@@ -1522,6 +1692,28 @@ struct FieldSite<'a> {
 /// What follows a field's type when the field holds an array of it: `[]`, after any type arguments.
 fn ts_array_suffix_re() -> Rc<Regex> {
     re!(r"^\s*(?:<[^;=(){}<>]*(?:<[^;=(){}<>]*>[^;=(){}<>]*)*>)?\s*\[\s*\]")
+}
+
+/// goDotImports' answer (name-matcher.ts).
+#[derive(Clone, Default)]
+pub(super) struct GoDotImports {
+    pub(super) dirs: Vec<String>,
+    pub(super) outside: bool,
+    pub(super) types: HashSet<String>,
+}
+
+/// goAliasTarget's answer (name-matcher.ts).
+#[derive(Clone)]
+pub(super) enum GoAliasTarget {
+    /// A project type the alias names (`name`, package `dir`). Carried for
+    /// the callers that follow an alias to its type (the unread-file and
+    /// indexed-receiver Go ports); the alias-outside check only reads Null.
+    #[allow(dead_code)]
+    Target(String, String),
+    /// No project type — a builtin or a type from outside the modules.
+    Null,
+    /// Not a type alias, or its target can't be read.
+    Unknown,
 }
 
 /// A TypeScript class-field declaration found by `ts_field_decl`.

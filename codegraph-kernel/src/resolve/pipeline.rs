@@ -705,8 +705,11 @@ if super::lang_scope::is_dart_member_read(r) {
                 } else if let Some(imp) = self.go_ref_qualifier(r)? {
                     self.go_package_dir(&imp.source, &r.file_path)
                 } else if self.go_written_qualifier(r)?.is_none() {
-                    Some(pos_dirname(&r.file_path).to_string())
+                    self.go_bare_type_dir(name, &r.file_path)?
                 } else { None };
+                if std::env::var_os("CODEGRAPH_KERNEL_DEBUG_GO").is_some() {
+                    eprintln!("[go-gate] {} {} in {} cand={}:{} pkg={:?}", r.reference_name, r.reference_kind, r.file_path, cand.node.kind, cand.node.file_path, package);
+                }
                 if let Some(package) = package {
                     let types: Vec<_> = self.nodes_by_name(name)?.iter()
                         .filter(|n| n.language == "go" && matches!(n.kind.as_str(), "struct" | "interface" | "type_alias")
@@ -733,6 +736,13 @@ if super::lang_scope::is_dart_member_read(r) {
         }
         if self.is_bound_to_out_of_repo_import(r)? {
             return Ok(None);
+        }
+        // One embedded bare that only a package the file dot-imports
+        // declares is that package's, not a namesake as near the file
+        // (goDotImportedSupertype).
+        if r.language == "go" {
+            let Some(node) = self.go_dot_imported_supertype(&cand.node, r)? else { return Ok(None); };
+            cand.node = node;
         }
         Ok(Some(cand))
     }
@@ -1062,6 +1072,9 @@ if super::lang_scope::is_dart_member_read(r) {
     /// resolveOneInner's bare slice (a name with no separator).
     pub(super) fn resolve_bare_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
         if let Some(result) = self.go_assertion_call(r)? {
+            return match result { Some(candidate) => self.finish_pre_framework(r, candidate), None => Ok(self.refused()) };
+        }
+        if let Some(result) = self.match_go_expr_call(r)? {
             return match result { Some(candidate) => self.finish_pre_framework(r, candidate), None => Ok(self.refused()) };
         }
         if let Some(result) = self.cpp_complex_call(r)? {

@@ -32,7 +32,7 @@ import { gateRustScope, clearRustScopeMemos } from './rust-scope';
 import { gateSuperSelfCall } from './super-self';
 import { gatePascalCall } from './pascal-scope';
 import { resurrectRefFromDroppedEdge } from './resurrect-ref';
-import { GO_TYPE_KINDS, isGoBareName, isGoUnknownQualified, goTypePositionTarget } from './go-type-visibility';
+import { GO_TYPE_KINDS, isGoBareName, isGoUnknownQualified, goTypePositionTarget, goDotImportedSupertype } from './go-type-visibility';
 import { ResolverPool, adaptiveEngageEnabled, minRefsForPool, shouldEngageAdaptively } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
 import { detectFrameworksWithSkips, getResolvingFrameworks } from './frameworks';
@@ -3174,9 +3174,14 @@ export class ReferenceResolver {
     }
 
     // An `imports` reference names something importable — never a member that
-    // only exists inside a type.
+    // only exists inside a type, nor its own import statement. A module path
+    // that names no file (`./missing`, `stdio.h`, `pkg.mod`, a C# `using` of
+    // an outside namespace) reaches the statement by its qualified name; as an
+    // edge to itself it is never retried, while a failed ref is retried by the
+    // sync that adds the file it names.
     if (ref.referenceKind === 'imports') {
       const target = this.nodeById(result.targetNodeId);
+      if (target?.kind === 'import' && target.filePath === ref.filePath) return null;
       return target && !isImportableKind(target.kind) ? null : result;
     }
 
@@ -3204,6 +3209,14 @@ export class ReferenceResolver {
       result = { ...result, targetNodeId: type.id };
     }
     if (isBoundToOutOfRepoImport(ref, this.context)) return null;
+    // A Go type embedded through a package (`clientv3.KV`) is that package's.
+    // When the package is none of the file's imports as indexed (clientv3
+    // imported unaliased as `go.etcd.io/etcd/client/v3`), a type found by its
+    // bare name is some other package's namesake.
+    if (ref.language === 'go' && isGoUnknownQualified(ref, this.context)) return null;
+    // One embedded bare that only a package the file dot-imports declares is
+    // that package's, not a namesake as near the file.
+    if (ref.language === 'go') return goDotImportedSupertype(result, ref, this.context);
     return result;
   }
 
