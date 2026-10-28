@@ -1729,6 +1729,7 @@ impl KernelResolver {
         // chain arm types each link's return by name instead.
         if call_chain_re().is_match(&r.reference_name) {
             if let Some(hit) = self.match_call_chain(r)? {
+                self.mark_rust_typed(r);
                 return Ok(Some(Some(hit)));
             }
         }
@@ -1793,7 +1794,10 @@ impl KernelResolver {
                 }
                 if base.kind() == "call_expression" && base.child_by_field_name("function")
                     .is_some_and(|f| matches!(f.kind(), "scoped_identifier" | "generic_function")) {
-                    if let Some(hit) = self.match_call_chain(r)? { return Ok(Some(Some(hit))); }
+                    if let Some(hit) = self.match_call_chain(r)? {
+                        self.mark_rust_typed(r);
+                        return Ok(Some(Some(hit)));
+                    }
                 }
                 return Ok(Some(None));
             }
@@ -1866,6 +1870,9 @@ impl KernelResolver {
             }
         }
         let node = self.rust_method_on(&written, &method, r, 0)?;
+        if node.is_some() {
+            self.mark_rust_typed(r);
+        }
         Ok(Some(node.map(|node| KCand {
             node,
             confidence: 0.9,

@@ -304,6 +304,41 @@ impl KernelResolver {
         Ok(is_trait)
     }
 
+    /// Mark that a Rust typed-receiver path resolved `r` (RUST_TYPED_REFS).
+    pub(super) fn mark_rust_typed(&mut self, r: &ResolveRefIn) {
+        if let Some(id) = r.row_id {
+            self.rust_typed_refs.insert(id);
+        }
+    }
+
+    /// rustTraitOf (name-matcher.ts): the `trait` node `Owner::method`'s
+    /// owner names when it encloses the method's lines, else None.
+    pub(super) fn rust_trait_of(&mut self, candidate: &KNode) -> Res<Option<Arc<KNode>>> {
+        if let Some(hit) = self.rust_trait_of_memo.get(&candidate.id) {
+            return Ok(match hit {
+                Some(id) => self.node_by_id(id)?,
+                None => None,
+            });
+        }
+        let owner = candidate
+            .qualified_name
+            .rsplit_once("::")
+            .map(|(q, _)| q.rsplit("::").next().unwrap_or(""))
+            .unwrap_or("");
+        let found = if owner.is_empty() {
+            None
+        } else {
+            self.nodes_in_file(&candidate.file_path)?.iter().find(|n| {
+                n.kind == "trait" && n.name == owner
+                    && n.start_line <= candidate.start_line
+                    && n.end_line >= candidate.start_line
+            }).cloned()
+        };
+        self.rust_trait_of_memo
+            .insert(candidate.id.clone(), found.as_ref().map(|t| t.id.clone()));
+        Ok(found)
+    }
+
     /// isCrossFileReachable (name-matcher.ts).
     pub(super) fn is_cross_file_reachable(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
         if r.language != "markdown"
@@ -388,6 +423,18 @@ impl KernelResolver {
                 return Ok(true);
             }
             if self.is_rust_trait_impl_method(candidate)? {
+                return Ok(true);
+            }
+            // A method a trait declares carries no `pub` of its own: it is
+            // the trait's, reached through a value whose type the call's
+            // receiver declares (rust_written_call marks the ref typed). A
+            // guess by its name alone stays out.
+            if candidate.kind == "method"
+                && r.row_id.is_some_and(|id| self.rust_typed_refs.contains(&id))
+                && self
+                    .rust_trait_of(candidate)?
+                    .is_none_or(|t| t.visibility.as_deref() != Some("private"))
+            {
                 return Ok(true);
             }
             let owner = rust_module_dir(&candidate.file_path);

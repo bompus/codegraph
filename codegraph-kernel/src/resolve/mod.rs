@@ -681,6 +681,12 @@ pub struct KernelResolver {
     /// cppProjectScopeNames: every name a C or C++ qualifier may start with in this project.
     cpp_scope_names: Option<Rc<HashSet<String>>>,
     rust_trait_memo: HashMap<String, bool>,
+    /// RUST_TYPED_REFS (name-matcher.ts): refs a Rust typed-receiver path
+    /// resolved, by row id — a trait-declared method such a ref lands on is
+    /// the trait's, not a name guess.
+    rust_typed_refs: HashSet<i64>,
+    /// rustTraitOf, by method id → the enclosing trait node's id.
+    rust_trait_of_memo: HashMap<String, Option<String>>,
     /// javaSupertypesOf, by type name.
     java_supers_memo: HashMap<String, Rc<Vec<String>>>,
     /// phpSupertypeQns, by declaration id.
@@ -946,6 +952,8 @@ impl KernelResolver {
             cpp_macro_arguments_memo: HashMap::new(),
             cpp_scope_names: None,
             rust_trait_memo: HashMap::new(),
+            rust_typed_refs: HashSet::new(),
+            rust_trait_of_memo: HashMap::new(),
             java_supers_memo: HashMap::new(),
             php_supers_memo: HashMap::new(),
             vb: vbnet::VbMemo::default(),

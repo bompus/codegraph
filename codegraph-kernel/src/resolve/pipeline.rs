@@ -1192,10 +1192,6 @@ if super::lang_scope::is_dart_member_read(r) {
         // package-level value in another file is not an unknown package name.
         if r.language == "go" && !is_binding_receiver_call(r) && self.go_written_qualifier(r)?.is_some() && self.go_ref_qualifier(r)?.is_none() { return Ok(ResolveOutcome::unresolved()); }
         if !self.name_post_guard(&winner,r)? { return Ok(ResolveOutcome::unresolved()); }
-        // A definition its language makes file- or library-local cannot be
-        // what a name in another file means, whichever strategy chose it —
-        // name-matcher.ts isVisibleAcrossFiles at index.ts:1867 (#1730).
-        if !self.is_visible_across_files(&winner.node, r)? { return Ok(ResolveOutcome::unresolved()); }
         if winner.node.id == r.from_node_id && is_inheritance_ref(&r.reference_kind) {
             let Some(other) = self.other_supertype_named(r)? else { return Ok(ResolveOutcome::unresolved()); }; winner=other;
         }
@@ -1227,6 +1223,22 @@ if r.language == "dart" && r.reference_kind == "references"
                     };
                 }
             }
+        }
+        // A definition its language makes file- or library-local cannot be
+        // what a name in another file means, whichever strategy chose it —
+        // name-matcher.ts isVisibleAcrossFiles at index.ts:1867 (#1730), run
+        // on the node after supertype/overload/alias retargets the way
+        // upstream vets the target matchReference reports. Only a name-match
+        // pick is vetted: upstream's import, file-path and framework results
+        // never reach that guard, and an import pick's alias forward can
+        // legitimately land on an unexported module member.
+        if !matches!(winner.resolved_by, "import" | "framework" | "file-path")
+            && !self.is_visible_across_files(&winner.node, r)?
+        {
+            if std::env::var_os("CODEGRAPH_KERNEL_DEBUG_VIS").is_some() {
+                eprintln!("[vis-veto] {} {:?} via={} -> {}:{} {}:{}", r.reference_name, r.reference_kind, winner.resolved_by, winner.node.id, winner.node.kind, winner.node.file_path, winner.node.start_line);
+            }
+            return Ok(ResolveOutcome::unresolved());
         }
         Ok(ResolveOutcome::resolved(
             &winner.node,
