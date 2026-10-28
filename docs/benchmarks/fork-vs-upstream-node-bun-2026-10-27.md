@@ -150,7 +150,7 @@ Of 76 comparisons the fork is better in 57, shows no clear change in 10 and is w
 
 ## Follow-up merges
 
-Four pull requests landed on `fork/consolidated` after the tables above were generated, each measured on its stacked branch build against the same upstream numbers on the same host. The scorecard above reflects the pre-follow-up tree; the current head is `891e1966`.
+Pull requests landed on `fork/consolidated` after the tables above were generated, each measured on its stacked branch build against the same upstream numbers on the same host. The scorecard above reflects the pre-follow-up tree; the current head is `d9bd974c`.
 
 | PR | Merge commit | Change | Measured result |
 |---|---|---|---|
@@ -158,5 +158,9 @@ Four pull requests landed on `fork/consolidated` after the tables above were gen
 | [#559](https://github.com/bompus/codegraph/pull/559) | `e28058d3` | Sync retry keyed by the definition delta instead of every changed name | pretix-Bun one-file sync 1.27 → 0.68 s against upstream-Bun ~1.13 s — the sync loss became a ~40% win |
 | [#560](https://github.com/bompus/codegraph/pull/560) | `c01c4a71` | Query-pool warm floor, await-ready grace, compact read-only worker connections | n8n busy RSS 4.54 → 3.10 GiB on Node (−20% vs upstream's 3.85) and → 1.24 GiB on Bun (−64%); gin 8-explore wave ~88 ms Node / ~75 ms Bun against upstream ~114/153 ms; Bun cold first explore 6.06 s → 164 ms |
 | [#561](https://github.com/bompus/codegraph/pull/561) | `891e1966` | Resolver-worker SQLite cache 32 → 16 MiB; near-duplicate pair scoring reuses signing-time shingle sets | ~200 MB index RSS reclaimed, timing neutral; near-duplicate phase on pretix 458 → 284 ms, bringing pretix-Bun index within ~2% of upstream |
+| [#562](https://github.com/bompus/codegraph/pull/562) | `483180b7` | Post-merge benchmark/README refresh (this section) | Documentation only |
+| [#563](https://github.com/bompus/codegraph/pull/563) | `6b2e7ae1` | Kernel flat-buffer extraction restored when framework `extract()` hooks are configured — hooks run in parse workers, extras ride the transport | pretix exact graph parity (32799/73404/165700); n8n Node index RSS 8.26 → 7.41 GiB (−10%) |
+| [#564](https://github.com/bompus/codegraph/pull/564) | `96afc781` | README revision bump + framework fast-path accounting | Documentation only |
+| [#565](https://github.com/bompus/codegraph/pull/565) | `d9bd974c` | Exact/fuzzy name-match pools decline past 256 when the source file is generated or ≥75% of the pool is generated artifacts — never a truncated winner | pretix exact parity held; pathological ~950 ms resolve chunks bounded to ≤250 ms; overall batch wall flat (~19 k spread-out vendored-JS refs) |
 
-What is left on the board after the merges: pretix-Bun index (~+2%, the 0.5 s settle tail plus ~1.4 s of serial post-phases — at the measured optimum of the tuning explored), the pretix and supabase-Bun index-memory cells (the 12 in-process worker heaps that buy the index-time wins), and a ~0% gin file-watcher cell inside noise. Everything else in the 9-cell loss list is now a win: pretix-Bun sync (#559), n8n busy-MCP memory (#560) and the gin concurrent-explore wave (#560).
+What is left on the board after the merges: pretix-Bun index (~+2%, the 0.5 s settle tail plus ~1.4 s of serial post-phases — at the measured optimum of the tuning explored), the pretix and supabase-Bun index-memory cells (the 12 in-process worker heaps that buy the index-time wins), a ~0% gin file-watcher cell inside noise, and the diffuse per-candidate gate cost on vendored JS that keeps pretix's largest resolve batch at ~2.7 s. Everything else in the 9-cell loss list is now a win: pretix-Bun sync (#559), n8n busy-MCP memory (#560) and the gin concurrent-explore wave (#560).
