@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, onTestFinished, vi } from 'vitest';
 import { execFileSync, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as net from 'net';
@@ -59,6 +59,22 @@ function startDetachedProcess(): number {
   });
   return pid;
 }
+
+/**
+ * Same allowance daemon-lock-holder.test.ts makes: each OS lookup gets a
+ * minute, not the 5 s production default — on a loaded runner PowerShell can
+ * take longer to start, and a timed-out Windows lookup returns no command
+ * line, flipping 'not-running' verdicts to 'unverified'.
+ */
+const LOOKUP_ENV = 'CODEGRAPH_PROCESS_LOOKUP_TIMEOUT_MS';
+const savedLookupTimeout = process.env[LOOKUP_ENV];
+beforeAll(() => {
+  process.env[LOOKUP_ENV] = '60000';
+});
+afterAll(() => {
+  if (savedLookupTimeout === undefined) delete process.env[LOOKUP_ENV];
+  else process.env[LOOKUP_ENV] = savedLookupTimeout;
+});
 
 describe('daemon-registry', () => {
   let tmpHome: string;
