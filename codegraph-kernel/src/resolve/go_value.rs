@@ -199,7 +199,12 @@ impl KernelResolver {
         if self.go_package_types(&name, &pkg_dir)?.is_empty() {
             return Ok(None);
         }
-        Ok(Some(self.go_method_in_package(&name, method, &pkg_dir, r)?))
+        // Upstream resolves the package-value arm at the typed-receiver
+        // confidence, 0.9.
+        Ok(Some(self.go_method_in_package(&name, method, &pkg_dir, r)?.map(|mut c| {
+            c.confidence = 0.9;
+            c
+        })))
     }
 
     /// The type an expression's source text spells (`goReceiverChainType`,
