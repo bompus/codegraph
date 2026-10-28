@@ -1,12 +1,12 @@
 # Fork against upstream CodeGraph on Node.js and Bun, 2026-10-27
 
-Upstream `main` at `69af19ac` against `fork/consolidated` at `0ee0116c`, each on Node.js 24.22.1 and on Bun 1.4.4, over seven corpora, the MCP server and command-line startup. It repeats the [2026-10-18 run](fork-vs-upstream-node-bun-2026-10-18.md) with the same scripts and the same pinned corpora on the current builds. Index and sync figures were re-measured 2026-10-27 on the same host after the ambient-scan rework, the resolve-pipeline change and the work-stealing dispatch change described in [The supabase resolution regression](#the-supabase-resolution-regression); MCP, CLI and explore cells are unchanged by resolution-path changes and carry the earlier 2026-10-27 measurements at `bc27fdb4`. The README's "Measured results" quote this page.
+Upstream `main` at `69af19ac` against `fork/consolidated` at `0ee0116c`, each on Node.js 24.22.1 and on Bun 1.4.4, over seven corpora, the MCP server and command-line startup. It repeats the [2026-10-18 run](fork-vs-upstream-node-bun-2026-10-18.md) with the same scripts and the same pinned corpora on the current builds. Index and sync figures were re-measured **2026-10-28** on the same host at `de5a7b80` — upstream `69af19ac` unchanged — stacking the ambient-scan rework, the resolve-pipeline and work-stealing changes, and the #566–#575 resolver/explore follow-ups described in [Follow-up merges](#follow-up-merges); MCP, CLI and explore cells are unchanged by resolution-path changes and carry the earlier 2026-10-27 measurements at `bc27fdb4`. The README's "Measured results" quote this page.
 
 ## Method
 
 The scripts are in [`scripts/benchmarks/runtime/`](../../scripts/benchmarks/runtime/): `run-index-sync.sh`, `run-mcp.sh` and `run-cli.sh`, with the four arms below. `adapt-flat-output.mjs` stages the flat output for `render-charts.mjs`, which computes every table, the heatmap and the README card from the raw rows.
 
-- **Builds.** Upstream `main` at `69af19ac` — the commit the fork's default branch is reconciled through — and the fork at `0ee0116c` for index and sync, `bc27fdb4` for MCP, CLI and explore cells. The fork contains every upstream commit through `69af19ac` plus its own work. `bc27fdb4` carried a memo on the per-file ambient-scope scan (without it the fork's supabase index never completed — see [The supabase resolution regression](#the-supabase-resolution-regression)); `eed3d34f` added the text-tokenizer port and the resolve-batch/pool-pipeline change described there; `0ee0116c` adds the work-stealing dispatch, early batch fan-out and fire-and-forget worker recycling described in the same section. Each build was installed with `npm ci`, with the native kernel built from source, and built with `npm run build`.
+- **Builds.** Upstream `main` at `69af19ac` — the commit the fork's default branch is reconciled through — and the fork at `de5a7b80` for index and sync, `bc27fdb4` for MCP, CLI and explore cells. The fork contains every upstream commit through `69af19ac` plus its own work. `bc27fdb4` carried a memo on the per-file ambient-scope scan (without it the fork's supabase index never completed — see [The supabase resolution regression](#the-supabase-resolution-regression)); `eed3d34f` added the text-tokenizer port and the resolve-batch/pool-pipeline change described there; `0ee0116c` adds the work-stealing dispatch, early batch fan-out and fire-and-forget worker recycling described in the same section. Each build was installed with `npm ci`, with the native kernel built from source, and built with `npm run build`.
 - **Arms.**
 
   | Arm | Command |
@@ -39,24 +39,24 @@ Time and peak memory, median of two.
 
 | Corpus | Upstream, Node | Fork, Node | Fork, Bun | Upstream, Bun |
 | --- | --- | --- | --- | --- |
-| gin | 0.96 s, 558 MiB | 1.02 s, 399 MiB | 0.88 s, 308 MiB | 0.96 s, 618 MiB |
-| Alamofire | 1.35 s, 879 MiB | 1.41 s, 891 MiB | 0.94 s, 881 MiB | 1.35 s, 974 MiB |
-| pretix | 9.04 s, 3.29 GiB | 8.14 s, 4.17 GiB | 7.49 s, 3.79 GiB | 7.20 s, 2.89 GiB |
-| CPython | 55.0 s, 7.15 GiB | 25.2 s, 5.90 GiB | 25.1 s, 5.39 GiB | 51.0 s, 6.92 GiB |
-| discourse | 19.6 s, 4.07 GiB | 13.7 s, 3.92 GiB | 12.1 s, 2.97 GiB | 18.0 s, 4.25 GiB |
-| supabase | 18.2 s, 4.86 GiB | 15.5 s, 5.45 GiB | 14.6 s, 4.73 GiB | 16.4 s, 4.02 GiB |
-| n8n | 74.9 s, 12.39 GiB | 49.5 s, 8.26 GiB | 45.2 s, 8.28 GiB | 59.4 s, 9.23 GiB |
+| gin | 0.96 s, 567 MiB | 1.02 s, 381 MiB | 0.91 s, 310 MiB | 0.77 s, 587 MiB |
+| Alamofire | 1.42 s, 817 MiB | 1.19 s, 1.05 GiB | 1.01 s, 887 MiB | 1.38 s, 976 MiB |
+| pretix | 9.69 s, 2.92 GiB | 7.48 s, 3.97 GiB | 7.15 s, 3.85 GiB | 7.20 s, 2.88 GiB |
+| CPython | 53.7 s, 6.21 GiB | 25.5 s, 5.64 GiB | 25.6 s, 5.41 GiB | 52.8 s, 7.50 GiB |
+| discourse | 21.7 s, 3.59 GiB | 13.2 s, 3.58 GiB | 12.4 s, 2.98 GiB | 19.8 s, 4.15 GiB |
+| supabase | 19.6 s, 4.23 GiB | 15.6 s, 4.83 GiB | 14.5 s, 4.63 GiB | 16.8 s, 4.10 GiB |
+| n8n | 83.0 s, 11.00 GiB | 49.4 s, 7.65 GiB | 46.6 s, 8.43 GiB | 60.5 s, 9.54 GiB |
 
 Graph size. Node and edge counts match across runtimes for each build; database sizes are from the Node runs:
 
 | Corpus | Upstream nodes / edges / database | Fork nodes / edges / database |
 | --- | --- | --- |
-| gin | 2,660 / 7,908 / 8.5 MiB | 3,089 / 8,404 / 10.1 MiB |
-| Alamofire | 4,600 / 12,516 / 16.2 MiB | 5,614 / 13,682 / 18.3 MiB |
-| pretix | 32,781 / 79,684 / 115 MiB | 32,797 / 73,402 / 138 MiB |
-| CPython | 167,332 / 615,244 / 492 MiB | 167,923 / 603,861 / 573 MiB |
+| gin | 2,660 / 7,908 / 9 MiB | 3,089 / 8,404 / 10 MiB |
+| Alamofire | 4,600 / 12,516 / 16 MiB | 5,614 / 13,682 / 18 MiB |
+| pretix | 32,783 / 79,686 / 115 MiB | 32,799 / 73,404 / 138 MiB |
+| CPython | 167,332 / 615,244 / 492 MiB | 167,923 / 603,830 / 573 MiB |
 | discourse | 163,411 / 309,678 / 389 MiB | 168,110 / 308,849 / 432 MiB |
-| supabase | 114,440 / 292,126 / 335 MiB | 152,274 / 327,838 / 460 MiB |
+| supabase | 114,440 / 292,126 / 335 MiB | 152,274 / 327,837 / 460 MiB |
 | n8n | 315,422 / 1,239,920 / 1.43 GiB | 328,519 / 1,233,163 / 1.67 GiB |
 
 The edge counts differ because the builds resolve differently: the fork adds Markdown, route and dispatch links, and declines call links it cannot confirm. The timings compare the cost of building each build's own graph, not the same graph.
@@ -67,16 +67,16 @@ Median of four (two syncs per run, two runs).
 
 | Corpus | Upstream, Node | Fork, Node | Fork, Bun | Upstream, Bun |
 | --- | --- | --- | --- | --- |
-| gin | 0.47 s | 0.40 s | 0.29 s | 0.29 s |
-| Alamofire | 0.48 s | 0.29 s | 0.18 s | 0.31 s |
-| pretix | 1.62 s | 1.55 s | 1.27 s | 1.13 s |
-| CPython | 5.35 s | 2.38 s | 1.66 s | 3.93 s |
-| discourse | 4.78 s | 2.37 s | 1.77 s | 3.23 s |
-| supabase | 4.58 s | 2.76 s | 1.95 s | 6.69 s |
-| n8n | 11.6 s | 9.07 s | 8.10 s | 8.68 s |
+| gin | 0.34 s | 0.27 s | 0.19 s | 0.21 s |
+| Alamofire | 0.42 s | 0.27 s | 0.17 s | 0.29 s |
+| pretix | 1.56 s | 0.86 s | 0.60 s | 1.11 s |
+| CPython | 6.01 s | 2.65 s | 1.72 s | 4.14 s |
+| discourse | 1.19 s | 1.75 s | 1.20 s | 0.92 s |
+| supabase | 8.17 s | 3.05 s | 1.94 s | 6.70 s |
+| n8n | 11.6 s | 3.29 s | 2.45 s | 9.17 s |
 
 
-Upstream's supabase sync, which failed with `FOREIGN KEY constraint failed` in every prior run, now completes ([colbymchenry/codegraph#2565](https://github.com/colbymchenry/codegraph/issues/2565) was fixed upstream on 2026-10-19). Its two passes differ widely on Node (1.05 s then 8.1 s); the 4.58 s figure is the median of the four, and against that spread the comparison counts as no clear change rather than a fork win.
+Upstream's supabase sync completes since upstream fixed [colbymchenry/codegraph#2565](https://github.com/colbymchenry/codegraph/issues/2565) on 2026-10-19. Its spread stays wide (8.17 s median of four this run, against 4.58 s last run), so that comparison still counts as a fork win only at its own wide spread. Two new losing cells appeared in the 2026-10-28 re-measure: **discourse sync** — the fork takes 1.75 s against upstream's 1.19 s on Node and 1.20 s against 0.92 s on Bun, outside spread in every sample — and **gin index** — 1.02 s against 0.96 s on Node and 0.91 s against 0.77 s on Bun, ~0.05–0.14 s of fixed fork overhead on a 119-file index. Both are real and stand as the remaining regression cells; every other index and sync cell is a fork win or a tie.
 
 ## The supabase resolution regression
 
@@ -150,7 +150,7 @@ Of 76 comparisons the fork is better in 57, shows no clear change in 10 and is w
 
 ## Follow-up merges
 
-Pull requests landed on `fork/consolidated` after the tables above were generated, each measured on its stacked branch build against the same upstream numbers on the same host. The scorecard above reflects the pre-follow-up tree; the current head is `645abbb8`.
+Pull requests landed on `fork/consolidated` after the tables above were generated, each measured on its stacked branch build against the same upstream numbers on the same host. The index and sync tables above were regenerated 2026-10-28 at the current head, `de5a7b80`.
 
 | PR | Merge commit | Change | Measured result |
 |---|---|---|---|
@@ -169,5 +169,8 @@ Pull requests landed on `fork/consolidated` after the tables above were generate
 | [#570](https://github.com/bompus/codegraph/pull/570) | `e31b8947` | `bare_call_receiver` memoized on a content hash of ref-identifying fields; `is_generated_file`'s ~25 regexes memoized per unique path; both memos cleared at each batch boundary | pretix exact parity; with #571–#572, settle 4.57 → ~3.5 s (−23%; 3.2–3.7 s across two profiled index runs) |
 | [#571](https://github.com/bompus/codegraph/pull/571) | `dfb8866f` | `local_declaration_scope` memo keyed by node id in its own map — drops the `format!` alloc the shared map needed for namespacing | parity 8/8; with #570/#572, settle 4.57 → ~3.5 s |
 | [#572](https://github.com/bompus/codegraph/pull/572) | `645abbb8` | `apply_language_gate` filters in place (`retain`) — drops a `Vec<Arc<KNode>>` alloc per ref | parity 8/8; timing-neutral alloc shave |
+| [#573](https://github.com/bompus/codegraph/pull/573) | `77c82438` | This follow-up table through #572 | Documentation only |
+| [#574](https://github.com/bompus/codegraph/pull/574) | `a42f5cb8` | `callerTests` batches its per-hop caller lookups (one query per hop instead of one per candidate) | 50 focused tests green; explore-path N+1→2 queries per hop |
+| [#575](https://github.com/bompus/codegraph/pull/575) | `de5a7b80` | `daemon-registry` and `mcp-daemon` suites get the 60 s process-lookup allowance `daemon-lock-holder` already had — Windows PowerShell `Get-CimInstance` can exceed the production 5 s default | 43 tests green; three prior Windows lifecycle flakes on unrelated PRs explained, none were code regressions |
 
-What is left on the board after the merges: pretix-Bun index (~+2%, the 0.5 s settle tail plus ~1.4 s of serial post-phases — at the measured optimum of the tuning explored), the pretix and supabase-Bun index-memory cells (the 12 in-process worker heaps that buy the index-time wins), a ~0% gin file-watcher cell inside noise, and the still-diffuse per-candidate gate cost on vendored JS — #569–#572 cut pretix's resolution settle 4.73 → ~3.5 s (−26%, median of two profiled runs) but the residual is spread across many small gates rather than one dominant one. Everything else in the 9-cell loss list is now a win: pretix-Bun sync (#559), n8n busy-MCP memory (#560) and the gin concurrent-explore wave (#560).
+What is left on the board at `de5a7b80`, after the 2026-10-28 re-measure above: **gin index** (+6% Node / +18% Bun — ~0.05–0.14 s of fixed fork overhead on a 119-file index, outside spread every sample) and **discourse sync** (+47% Node / +31% Bun — ~0.3–0.6 s, outside spread every sample) are the only remaining loss cells. pretix-Bun index — the former last residual — is now a tie (7.15 s vs 7.20 s). The pretix and supabase index-memory cells remain the disclosed trade (12 in-process worker heaps), though the fork now peaks *lower* than upstream on CPython, discourse-Bun, n8n and gin. The still-diffuse per-candidate gate cost is bounded — #569–#572 cut pretix's resolution settle 4.73 → ~3.5 s (−26%) — and #574 batched the last measured explore-path N+1. Sync wins widened sharply this run (n8n-Node 9.07 → 3.29 s, pretix-Node 1.55 → 0.86 s).
