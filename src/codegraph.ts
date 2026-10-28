@@ -2824,6 +2824,14 @@ export class CodeGraph {
   }
 
   /**
+   * Depth-1 callers for many targets in two queries — the batch form of
+   * getCallers(id, 1), for bounded fan-in walks like callerTests.
+   */
+  getCallersMany(nodeIds: readonly string[]): Array<{ node: Node; edge: Edge }> {
+    return this.traverser.getCallersMany(nodeIds);
+  }
+
+  /**
    * Get callees of a function/method
    *
    * @param nodeId - ID of the function/method node

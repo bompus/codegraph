@@ -294,6 +294,29 @@ export class GraphTraverser {
     return result;
   }
 
+  /**
+   * Depth-1 callers for MANY targets in two round-trips — one incoming-edges
+   * query + one getNodesByIds — instead of a getCallers(id, 1) pair per id.
+   * Same kind list as getCallersRecursive; a caller repeats once per target it
+   * calls, matching separate per-node calls, and once per target at most.
+   */
+  getCallersMany(nodeIds: readonly string[]): Array<{ node: Node; edge: Edge }> {
+    if (nodeIds.length === 0) return [];
+    const incoming = this.queries.getIncomingEdgesTo(nodeIds, ['calls', 'references', 'imports', 'instantiates', 'navigates']);
+    const nodes = this.queries.getNodesByIds(incoming.map((e) => e.source));
+    const reported = new Set<string>();
+    const out: Array<{ node: Node; edge: Edge }> = [];
+    for (const edge of incoming) {
+      const node = nodes.get(edge.source);
+      if (!node) continue;
+      const key = `${edge.target}${edge.source}`;
+      if (reported.has(key)) continue;
+      reported.add(key);
+      out.push({ node, edge });
+    }
+    return out;
+  }
+
   private getCallersRecursive(
     nodeId: string,
     maxDepth: number,

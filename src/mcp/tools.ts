@@ -4559,17 +4559,18 @@ export class ToolHandler {
     for (let hop = 2; hop <= MAX_HOPS && frontier.length > 0 && budget > 0; hop++) {
       const next: Array<{ node: Node; edge: Edge }> = [];
       const found: Array<{ node: Node; edge: Edge }> = [];
-      for (const { node } of frontier) {
-        if (budget-- <= 0) break;
-        let callers: Array<{ node: Node; edge: Edge }> = [];
-        try { callers = cg.getCallers(node.id); } catch { continue; }
-        for (const c of callers) {
-          const n = c?.node;
-          if (!n || visited.has(n.id)) continue;
-          visited.add(n.id);
-          if (isTestPath(n.filePath)) found.push(c);
-          else next.push(c);
-        }
+      // One batched depth-1 callers query per hop instead of a getCallers
+      // round-trip per frontier node; the same 64-node budget bounds it.
+      const ids = frontier.slice(0, budget).map((f) => f.node.id);
+      budget -= ids.length;
+      let pairs: Array<{ node: Node; edge: Edge }> = [];
+      try { pairs = cg.getCallersMany(ids); } catch { pairs = []; }
+      for (const c of pairs) {
+        const n = c?.node;
+        if (!n || visited.has(n.id)) continue;
+        visited.add(n.id);
+        if (isTestPath(n.filePath)) found.push(c);
+        else next.push(c);
       }
       if (found.length > 0) return { callers: found, exhausted: budget <= 0 };
       frontier = next;
