@@ -2243,7 +2243,7 @@ export class ReferenceResolver {
       // private inode — its own -shm — over extraction-static tables.
       // Preflight the decline gates first so a host that can't carry a pool
       // doesn't fold+copy a multi-GB snapshot it would never use.
-      if (ResolverPool.preflight(parallel.dbPath) === null) return null;
+      if (ResolverPool.preflight(parallel.dbPath, total) === null) return null;
       // Once workers attach, NO rusqlite conn may share the live -shm — not
       // even the main-thread kernel conn (only same-thread conns are
       // serialized). Close it BEFORE the snapshot fold and BEFORE workers
@@ -2262,7 +2262,7 @@ export class ReferenceResolver {
       // Workers resolve only through a snapshot kernel.
       if (kernelDbPath === null) return null;
       snapshotComplete = supertypesPersisted();
-      const p = ResolverPool.tryCreate(parallel.dbPath, this.projectRoot, kernelDbPath, snapshotComplete);
+      const p = ResolverPool.tryCreate(parallel.dbPath, this.projectRoot, kernelDbPath, snapshotComplete, total);
       p?.ready().then(
         () => {
           if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[pool-timing] pool ready after ${Date.now() - t0}ms`);
