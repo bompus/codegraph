@@ -1049,6 +1049,7 @@ impl KernelResolver {
     #[cfg_attr(feature = "addon", napi)]
     pub fn close(&mut self) {
         self.debug_stats("close");
+        prof_dump("close");
         self.release_conn();
         self.table.take();
         self.file_cache.clear();
