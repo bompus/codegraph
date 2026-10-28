@@ -5735,7 +5735,10 @@ export class QueryBuilder {
 
   /** Must run before file replacement/deletion cascades the endpoint edges. */
   hasSynthesizedEdgesTouchingFile(filePath: string): boolean {
-    const owned = "CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '$.synthesizedBy') END IS NOT NULL";
+    // provenance narrows the scan through idx_edges_provenance before the
+    // per-row json_extract — 'heuristic' is a strict superset of
+    // synthesizedBy, so the owned predicate still decides.
+    const owned = "e.provenance = 'heuristic' AND CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '$.synthesizedBy') END IS NOT NULL";
     for (const endpoint of ['source', 'target']) {
       if (this.db.prepare(`SELECT 1 FROM nodes n JOIN edges e ON e.${endpoint} = n.id
         WHERE n.file_path = ? AND ${owned} LIMIT 1`).get(filePath)) return true;
@@ -5753,11 +5756,12 @@ export class QueryBuilder {
    * edges scan instead of one per file.
    */
   filesTouchingSynthesizedEdges(): Set<string> {
-    const owned = "CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '$.synthesizedBy') END IS NOT NULL";
+    const owned = "e.provenance = 'heuristic' AND CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '$.synthesizedBy') END IS NOT NULL";
     const registeredAt = "CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '$.registeredAt') END";
     const rows = this.db.prepare(
-      `SELECT DISTINCT n.file_path AS f FROM nodes n JOIN edges e ON e.source = n.id OR e.target = n.id WHERE ${owned}
-       UNION SELECT DISTINCT rtrim(rtrim(rtrim(rtrim(${registeredAt}, '0123456789'), ':'), '0123456789'), ':') AS f
+      `SELECT n.file_path AS f FROM edges e JOIN nodes n ON n.id = e.source WHERE ${owned}
+       UNION SELECT n.file_path AS f FROM edges e JOIN nodes n ON n.id = e.target WHERE ${owned}
+       UNION SELECT rtrim(rtrim(rtrim(rtrim(${registeredAt}, '0123456789'), ':'), '0123456789'), ':') AS f
        FROM edges e WHERE ${owned} AND ${registeredAt} IS NOT NULL`
     ).all() as { f: string }[];
     return new Set(rows.map((r) => r.f));

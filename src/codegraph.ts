@@ -1062,11 +1062,16 @@ export class CodeGraph {
         const pythonFilesBefore = this.pythonFilePaths();
         const watchRoutes = this.resolver.hasNavigationRouters();
         let routesBefore: Node[] | null = null;
-        // Files touching synthesized edges, snapshotted once on first use: a
-        // per-file lookup would rescan the edges table for every changed file.
+        // Files touching synthesized edges: per-file indexed probes while few
+        // files are checked, one memoized bulk set past that — a one-file
+        // watch sync should not pay even a narrowed scan of the synthesized
+        // edge set.
         let touchedBySynthesis: Set<string> | null = null;
+        let synthChecks = 0;
         const touchesSynthesis = (p: string) =>
-          (touchedBySynthesis ??= this.queries.filesTouchingSynthesizedEdges()).has(p);
+          touchedBySynthesis === null && ++synthChecks <= 64
+            ? this.queries.hasSynthesizedEdgesTouchingFile(p)
+            : (touchedBySynthesis ??= this.queries.filesTouchingSynthesizedEdges()).has(p);
         const result = await this.orchestrator.sync(options.onProgress, options.paths, backpressure, (filePath, content) => {
           if (watchRoutes && routesBefore === null) routesBefore = this.queries.getNodesByKind('route');
           // A changed file only dirties synthesis when it carried synthesized
