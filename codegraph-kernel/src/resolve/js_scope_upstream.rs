@@ -49,6 +49,12 @@ fn visible(scope: Option<(Point, Point)>, point: Point) -> bool {
     scope.is_none_or(|(start, end)| point >= start && point <= end)
 }
 
+/// jsDeclarationReachable's memoized walk result per (candidate, ref
+/// language). Some(Some(s)): declarator found, scope s. Some(None):
+/// found, global scope (always visible). None: no declarator — verdict
+/// None.
+pub(super) type JsDeclScope = Option<Option<(Point, Point)>>;
+
 impl KernelResolver {
     /// Parse embedded scripts with the original file's byte and line positions.
     pub(super) fn js_binding_tree(&mut self, source: &Rc<SourceFile>, r: &ResolveRefIn) -> Option<Rc<tree_sitter::Tree>> {
@@ -315,6 +321,17 @@ impl KernelResolver {
             (n.start_line - 1).max(0) as usize,
             super::names::js_unit_to_byte(line, n.start_column.max(0) as usize),
         );
+        // The declarator walk below depends only on the candidate — the ref
+        // enters only through `visible(scope, point)`. Memoize the walk so a
+        // name with hundreds of same-file candidates pays the parent-chain
+        // climb once, not once per ref (minified bundles are the hot case).
+        // Keyed by ref language too: parsed_tree picks its parser from
+        // r.language, so the same candidate walks a different tree under
+        // typescript vs javascript refs (review on #566).
+        let memo_key = (n.id.clone(), r.language.clone());
+        if let Some(&hit) = self.js_decl_scope_memo.get(&memo_key) {
+            return hit.map(|scope| visible(scope, point));
+        }
         let mut current = tree
             .root_node()
             .descendant_for_point_range(declaration, declaration);
@@ -328,10 +345,13 @@ impl KernelResolver {
                     .child_by_field_name("name")
                     .is_some_and(|name| source.text()[name.start_byte()..name.end_byte()] == n.name)
             {
-                return Some(visible(binding_scope(node), point));
+                let scope = binding_scope(node);
+                self.js_decl_scope_memo.insert(memo_key.clone(), Some(scope));
+                return Some(visible(scope, point));
             }
             current = node.parent();
         }
+        self.js_decl_scope_memo.insert(memo_key, None);
         None
     }
 
