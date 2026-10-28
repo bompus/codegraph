@@ -946,7 +946,11 @@ export class CodeGraph {
         return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
       }
       try {
-        return this.orchestrator.indexFiles(filePaths);
+        // Awaited, so the write lock is held until the files are stored, as
+        // indexAll and sync hold it: returned unawaited, the promise left the
+        // `try` at once and the `finally` let the lock go as soon as indexing
+        // started, so another process could write meanwhile (#2845).
+        return await this.orchestrator.indexFiles(filePaths);
       } finally {
         this.fileLock.release();
       }
