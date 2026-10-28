@@ -950,13 +950,68 @@ impl KernelResolver {
         }
         if self.is_cross_file_reachable(&best, r)? {
             let proximity = compute_path_proximity(&r.file_path, &best.file_path);
+            let confidence = if self.is_decisive_same_file_match(&best, r, &candidates)? {
+                0.9
+            } else if proximity >= 30 {
+                0.7
+            } else {
+                0.4
+            };
             return Ok(Some(KCand {
                 node: best,
-                confidence: if proximity >= 30 { 0.7 } else { 0.4 },
+                confidence,
                 resolved_by: "exact-match",
             }));
         }
         Ok(None)
+    }
+
+    /// Whether `findBestMatch` picked `best` because it is THE definition in
+    /// the call site's own file, so the edge deserves a same-file confidence
+    /// rather than the directory-proximity one. Proximity measures shared
+    /// folders, so a same-file match in a shallow path scored 0.4 like a guess
+    /// across unrelated modules. Decisive only when:
+    /// - `best` is the ONLY same-file candidate — several are separated by
+    ///   line distance, which is not evidence;
+    /// - a member of a type, module or namespace belongs to one the caller is
+    ///   inside — a bare call does not reach a sibling class's method just
+    ///   because it is written in that file. A method's owner is always such a
+    ///   scope; another kind's is judged when the file declares it as anything
+    ///   but a function; and
+    /// - `best` is not the caller itself.
+    ///
+    /// (name-matcher.ts isDecisiveSameFileMatch, upstream cde4cd74.)
+    fn is_decisive_same_file_match(
+        &self,
+        best: &Arc<KNode>,
+        r: &ResolveRefIn,
+        candidates: &[Arc<KNode>],
+    ) -> Res<bool> {
+        if best.file_path != r.file_path || best.id == r.from_node_id {
+            return Ok(false);
+        }
+        if candidates.iter().any(|c| c.id != best.id && c.file_path == r.file_path) {
+            return Ok(false);
+        }
+        let sep = best.qualified_name.rfind("::").unwrap_or(0);
+        if sep == 0 {
+            return Ok(best.kind != "method");
+        }
+        let owner = &best.qualified_name[..sep];
+        if best.kind != "method" {
+            let declared = self.nodes_in_file(&best.file_path)?;
+            if declared
+                .iter()
+                .filter(|n| n.qualified_name == owner)
+                .all(|n| n.kind == "function" || n.kind == "method")
+            {
+                return Ok(true);
+            }
+        }
+        let Some(from) = self.node_by_id(&r.from_node_id)? else {
+            return Ok(false);
+        };
+        Ok(from.qualified_name == owner || from.qualified_name.starts_with(&format!("{owner}::")))
     }
 
     /// The candidates a PHP `$this->m()` / `self::m()` / `parent::m()` call
