@@ -94,19 +94,19 @@ Worth documenting because the README's earlier "ties on supabase" line hid a cli
 
 ## MCP server
 
-`codegraph serve --mcp` on n8n; memory and CPU summed over the server and the daemon it starts. Median of two runs per arm.
+`codegraph serve --mcp` on n8n; memory and CPU summed over the server and the daemon it starts. Re-measured 2026-10-28 at `5784e289` on a clean single-writer pass (mirrored order; Bun arms are the median of two samples, Node arms a single pass) — the earlier rows here carried `bc27fdb4`, before #560, #577 and the sync-gate work.
 
 | Measure | Upstream, Node | Fork, Node | Fork, Bun | Upstream, Bun |
 | --- | --- | --- | --- | --- |
-| `initialize` answered | 114 ms | 52 ms | 38 ms | 64 ms |
-| Start to first explore answer | 2.95 s | 2.64 s | 2.19 s | 2.43 s |
-| Warm explore, median | 242 ms | 131 ms | 107 ms | 211 ms |
-| Warm explore, p90 | 285 ms | 169 ms | 154 ms | 249 ms |
-| 8 concurrent explores | 2.40 s | 1.91 s | 1.63 s | 1.97 s |
-| Memory while busy | 3.85 GiB | 4.54 GiB | 3.50 GiB | 3.50 GiB |
-| Edited file re-indexed | 1.15 s | 766 ms | 511 ms | 943 ms |
-| Memory at idle | 4.40 GiB | 3.58 GiB | 1.37 GiB | 3.40 GiB |
-| CPU at idle | 0.40% | 0.33% | 0.25% | 0.49% |
+| `initialize` answered | 113 ms | 57 ms | 40 ms | 65 ms |
+| Start to first explore answer | 2.98 s | 2.81 s | 2.30 s | 2.50 s |
+| Warm explore, median | 247 ms | 140 ms | 121 ms | 209 ms |
+| Warm explore, p90 | 289 ms | 179 ms | 168 ms | 250 ms |
+| 8 concurrent explores | 2.43 s | 2.02 s | 1.77 s | 1.97 s |
+| Memory while busy | 3.83 GiB | 2.95 GiB | 1.23 GiB | 3.58 GiB |
+| Edited file re-indexed | 1.20 s | 1.97 s | 1.86 s | 0.97 s |
+| Memory at idle | 4.36 GiB | 4.21 GiB | 2.95 GiB | 3.40 GiB |
+| CPU at idle | 0.43% | 0.22% | 0.30% | 0.46% |
 
 And on gin, same protocol:
 
@@ -122,7 +122,7 @@ And on gin, same protocol:
 | Memory at idle | 934 MiB | 722 MiB | 510 MiB | 764 MiB |
 | CPU at idle | 0.17% | 0.10% | 0.25% | 0.45% |
 
-The fork-Node server's busy memory on n8n (4.54 GiB against upstream's 3.85) is the one MCP regression this run — the server keeps the larger graph resident. Its idle footprint is still lower on every arm. On gin the fork is slower only on the 8-explore wave on both runtimes (+18% Node, +5% Bun); warm single queries stay ahead.
+The clean re-measure clears the old busy-memory regression (fork-Node 4.54 GiB at `bc27fdb4` → **2.95 GiB** now, against upstream's 3.83 — #560's query-pool compaction) and the fork idles *lower* on every arm. Its new flag is **Edited file re-indexed**: ~1.9 s against upstream's ~1.0 s on both runtimes — but that cell measures the #580 gate's own `filesTouchingSynthesizedEdges()` scan (~1.98 s over 1.23 M edges on this db), not resynthesis work; [#581](https://github.com/bompus/codegraph/pull/581) narrows it through `idx_edges_provenance` to ~4–32 ms. On gin the fork is slower only on the 8-explore wave on both runtimes (+18% Node, +5% Bun); warm single queries stay ahead.
 
 ## CLI startup
 
@@ -175,5 +175,10 @@ Pull requests landed on `fork/consolidated` after the tables above were generate
 | [#573](https://github.com/bompus/codegraph/pull/573) | `77c82438` | This follow-up table through #572 | Documentation only |
 | [#574](https://github.com/bompus/codegraph/pull/574) | `a42f5cb8` | `callerTests` batches its per-hop caller lookups (one query per hop instead of one per candidate) | 50 focused tests green; explore-path N+1→2 queries per hop |
 | [#575](https://github.com/bompus/codegraph/pull/575) | `de5a7b80` | `daemon-registry` and `mcp-daemon` suites get the 60 s process-lookup allowance `daemon-lock-holder` already had — Windows PowerShell `Get-CimInstance` can exceed the production 5 s default | 43 tests green; three prior Windows lifecycle flakes on unrelated PRs explained, none were code regressions |
+| [#576](https://github.com/bompus/codegraph/pull/576) | `76529b1a` | The index/sync re-measure documented above | Documentation only |
+| [#577](https://github.com/bompus/codegraph/pull/577) | `705a9abe` | Sync publish reconciles stored synthesized edges against the refreshed set instead of delete-all + reinsert; `synth_skips` skips the write when the merged row is identical (failure paths keep drop-all semantics) | discourse one-file sync: filesystem outputs 35.8k → 2.8k sectors (upstream 4.6k); changed DB pages 1,386 → 80 (upstream 71) — row churn below upstream's |
+| [#578](https://github.com/bompus/codegraph/pull/578) | `4eb68d2f` | Resolver pool sized to pending refs (`ceil(refs/25k)`, floor 2), not just cores — a 12th worker earns its ~180 MB isolate only when the ref load feeds it | pretix index 7.5 s @ 3.26–3.31 GiB vs 7.4 s @ 3.94 GiB — same wall, −0.64 GiB (−16%) |
+| [#579](https://github.com/bompus/codegraph/pull/579) | `dd02b58a` | Benchmark host descriptor written by `arms.sh` and carried through the chart pipeline; `--host` remains the fallback for old runs | Documentation only |
+| [#580](https://github.com/bompus/codegraph/pull/580) | `5784e289` | A sync marks a file synthesis-dirty only when it can feed or invalidate a pass — existing synthesized wiring (one memoized lookup), the `synthesis_inputs` table (checked pre-delete so removals and pattern-dropping edits still refresh), content patterns covering every pass incl. the fork-only four and Sidekiq `Jobs.enqueue*`/`Client.push` forms, markup-capable modules, value re-export barrels, and JSX component-definition deltas | benign discourse edit 1.64 s / 654 MB → **1.14 s / 537 MB** (disabled-refresh floor 0.93 s / 446 MB); 39/39 gate tests green; the n8n watchSync cell then surfaced the check's own scan cost — fixed in [#581](https://github.com/bompus/codegraph/pull/581) |
 
-What is left on the board at `de5a7b80`, after the 2026-10-28 re-measure above: **gin index** (+6% Node / +18% Bun — ~0.05–0.14 s of fixed fork overhead on a 119-file index, outside spread every sample) and **discourse sync** (+47% Node / +31% Bun — ~0.3–0.6 s, outside spread every sample) are the only remaining loss cells. pretix-Bun index — the former last residual — is now a tie (7.15 s vs 7.20 s). The pretix and supabase index-memory cells remain the disclosed trade (12 in-process worker heaps), though the fork now peaks *lower* than upstream on CPython, discourse-Bun, n8n and gin. The still-diffuse per-candidate gate cost is bounded — #569–#572 cut pretix's resolution settle 4.73 → ~3.5 s (−26%) — and #574 batched the last measured explore-path N+1. Sync wins widened sharply this run (n8n-Node 9.07 → 3.29 s, pretix-Node 1.55 → 0.86 s).
+What is left on the board at `5784e289`, after the 2026-10-28 re-measure above and the clean n8n pass below: **gin index** (+6% Node / +18% Bun — ~0.05–0.14 s of fixed fork overhead on a 119-file index, outside spread every sample) is the last index-time loss cell. The discourse-sync loss is closed by #580 (1.14 s against upstream's ~1.1 s). The n8n watchSync row below shows the fork at ~1.9 s against ~0.97 s — but the gap is not resynthesis work: the gate's own `filesTouchingSynthesizedEdges()` check scanned all 1.23 M edges with a per-row `json_extract` (~1.98 s measured on the n8n db). [#581](https://github.com/bompus/codegraph/pull/581) narrows every leg through `idx_edges_provenance` (~22k rows) and takes small syncs off the bulk path entirely — the check costs 32 ms bulk / 4 ms per-file on the same db. pretix and supabase index memory remain the disclosed trade; the fork peaks *lower* than upstream on CPython, discourse-Bun, n8n and gin.
