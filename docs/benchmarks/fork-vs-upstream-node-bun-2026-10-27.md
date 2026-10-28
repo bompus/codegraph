@@ -136,17 +136,20 @@ The fork-Node server's busy memory on n8n (4.54 GiB against upstream's 3.85) is 
 
 ## Every result at a glance
 
-![Heatmap of the fork's change against upstream for index time, peak memory and one-file sync on seven repositories, the MCP server on n8n and gin, and command-line startup, on Node and on Bun. Lower is better; cells inside the comparison's own run-to-run spread are marked no clear change.](fork-vs-upstream-heatmap-2026-10-27.svg?v=4)
+![Heatmap of the fork's change against upstream for index time, peak memory and one-file sync on seven repositories, the MCP server on n8n and gin, and command-line startup, on Node and on Bun. Lower is better; cells inside the comparison's own run-to-run spread are marked no clear change.](fork-vs-upstream-heatmap-2026-10-27.svg?v=5)
 
-Of 76 comparisons the fork is better in 57, shows no clear change in 10 and is worse in 9. The 9, generated from the same data as the heatmap:
+Of 76 comparisons the fork is better in 57, shows no clear change in 6 and is worse in 13. The 13, generated from the same data as the heatmap:
 
-- Indexing pretix: 7.20 s → 7.49 s on Bun (+4%)
-- Memory indexing pretix: 3.29 GiB → 4.17 GiB on Node (+27%), 2.89 GiB → 3.79 GiB on Bun (+31%)
-- Memory indexing supabase: 4.02 GiB → 4.73 GiB on Bun (+18%)
-- Syncing one file in pretix: 1.13 s → 1.27 s on Bun (+11%)
+- Indexing gin: 0.96 s → 1.02 s on Node (+6%), 0.77 s → 0.91 s on Bun (+18%)
+- Memory indexing Alamofire: 817 MiB → 1.05 GiB on Node (+32%)
+- Memory indexing pretix: 2.92 GiB → 3.97 GiB on Node (+36%), 2.88 GiB → 3.85 GiB on Bun (+34%)
+- Memory indexing supabase: 4.23 GiB → 4.83 GiB on Node (+14%), 4.10 GiB → 4.63 GiB on Bun (+13%)
+- Syncing one file in discourse: 1.19 s → 1.75 s on Node (+47%), 0.92 s → 1.20 s on Bun (+31%)
 - Memory busy on n8n (MCP server): 3.85 GiB → 4.54 GiB on Node (+18%)
 - 8 asks at once on gin (MCP server): 114 ms → 134 ms on Node (+18%), 153 ms → 161 ms on Bun (+5%)
 - File watcher on gin (MCP server): 357 ms → 358 ms on Bun (0%)
+
+No clear change (inside the comparison's own run-to-run spread): indexing pretix on Bun; memory indexing CPython on Node; memory indexing discourse on Node; syncing one file in gin on Bun; memory busy on n8n (MCP server) on Bun; CPU idle on gin (MCP server) on Bun.
 
 ## Follow-up merges
 
