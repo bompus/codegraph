@@ -181,15 +181,20 @@ impl KernelResolver {
 
     /// The first existing file among `base` + each of the language's
     /// extensions, then `base` itself, then the source an emitted `.js`/`.d.ts`
-    /// path was compiled from.
+    /// path was compiled from — each spelled as the index keys it
+    /// (indexedSpelling, upstream 8651990a / #2577).
     pub(super) fn probe_extensions(&self, base: &str, language: &str) -> Option<String> {
         extension_resolution(language)
             .iter()
             .filter(|ext| !base.is_empty() || ext.starts_with('/'))
             .map(|ext| if base.is_empty() { ext.trim_start_matches('/').to_string() } else { format!("{base}{ext}") })
+            .map(|candidate| indexed_spelling(&candidate, language))
             .find(|candidate| self.file_exists(candidate))
-            .or_else(|| self.file_exists(base).then(|| base.to_string()))
-            .or_else(|| self.find_source_for_emitted(base, language))
+            .or_else(|| {
+                let as_is = indexed_spelling(base, language);
+                self.file_exists(&as_is).then_some(as_is)
+            })
+            .or_else(|| self.find_source_for_emitted(&indexed_spelling(base, language), language))
     }
 
     /// resolveAliasedImport (import-resolver.ts): tsconfig paths → workspace
@@ -1761,6 +1766,25 @@ fn plain_import_names(line: &str, source: &str) -> Option<bool> {
         return None;
     }
     Some(clause.split(',').any(|name| name.trim() == source))
+}
+
+/// indexedSpelling (import-resolver.ts, upstream 8651990a / #2577): a path as
+/// the index keys its files. The alias, workspace and direct-path branches
+/// join an import specifier as written, so `@/widgets/Chart/` made
+/// `src/widgets/Chart//index.tsx` and `src/widgets/./Chart` made
+/// `src/widgets/./Chart/index.tsx` — spellings no file node or `files` row is
+/// keyed by. An ES-module specifier is read lexically, so `.` and empty
+/// segments drop and `..` folds; a trailing slash still names a folder. Other
+/// languages keep the path as found — a C include's `a/../b.h` follows the
+/// folder `a` on disk, symlinks included.
+fn indexed_spelling(file_path: &str, language: &str) -> String {
+    let dirty = file_path.contains("//")
+        || file_path.split('/').any(|seg| seg == "." || seg == "..");
+    if is_esm_import_language(language) && dirty {
+        pos_normalize(file_path)
+    } else {
+        file_path.to_string()
+    }
 }
 
 #[cfg(test)]
