@@ -309,6 +309,33 @@ impl KernelResolver {
         {
             return None;
         }
+        // The declarator walk below depends only on the candidate — the ref
+        // enters only through `visible(scope, point)`. Memoize the walk so a
+        // name with hundreds of same-file candidates pays the parent-chain
+        // climb once, not once per ref (minified bundles are the hot case).
+        // Keyed by ref language too: parsed_tree picks its parser from
+        // r.language, so the same candidate walks a different tree under
+        // typescript vs javascript refs (review on #566).
+        // Check BEFORE the file/tree loads: a memo hit needs no tree at all,
+        // and a missing or global scope needs no source either — the loads
+        // were the residual cost that kept the memo from helping (#566
+        // follow-up).
+        let memo_key = (n.id.clone(), r.language.clone());
+        if let Some(&hit) = self.js_decl_scope_memo.get(&memo_key) {
+            return match hit {
+                Some(None) => Some(true),
+                None => None,
+                Some(Some(scope)) => {
+                    let source = self.read_file(&n.file_path)?;
+                    let line = source.get((r.line - 1).max(0) as usize)?;
+                    let point = Point::new(
+                        (r.line - 1).max(0) as usize,
+                        super::names::js_unit_to_byte(line, r.column.max(0) as usize),
+                    );
+                    Some(visible(Some(scope), point))
+                }
+            };
+        }
         let source = self.read_file(&n.file_path)?;
         let tree = self.js_binding_tree(&source, r)?;
         let line = source.get((r.line - 1).max(0) as usize)?;
@@ -321,17 +348,6 @@ impl KernelResolver {
             (n.start_line - 1).max(0) as usize,
             super::names::js_unit_to_byte(line, n.start_column.max(0) as usize),
         );
-        // The declarator walk below depends only on the candidate — the ref
-        // enters only through `visible(scope, point)`. Memoize the walk so a
-        // name with hundreds of same-file candidates pays the parent-chain
-        // climb once, not once per ref (minified bundles are the hot case).
-        // Keyed by ref language too: parsed_tree picks its parser from
-        // r.language, so the same candidate walks a different tree under
-        // typescript vs javascript refs (review on #566).
-        let memo_key = (n.id.clone(), r.language.clone());
-        if let Some(&hit) = self.js_decl_scope_memo.get(&memo_key) {
-            return hit.map(|scope| visible(scope, point));
-        }
         let mut current = tree
             .root_node()
             .descendant_for_point_range(declaration, declaration);
