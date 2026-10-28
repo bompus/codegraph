@@ -32,7 +32,7 @@
  * end is itself the proof the canonicalization works.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as net from 'net';
@@ -264,6 +264,21 @@ async function staleIndex(root: string): Promise<Buffer> {
   fs.writeFileSync(path.join(root, 'app.ts'), 'export function changedSymbol() {}\n');
   return before;
 }
+
+/**
+ * Same allowance daemon-lock-holder.test.ts makes: each OS lookup gets a
+ * minute, not the 5 s production default — on a loaded runner PowerShell can
+ * take longer to start, and lookups time out while handovers wait on them.
+ */
+const LOOKUP_ENV = 'CODEGRAPH_PROCESS_LOOKUP_TIMEOUT_MS';
+const savedLookupTimeout = process.env[LOOKUP_ENV];
+beforeAll(() => {
+  process.env[LOOKUP_ENV] = '60000';
+});
+afterAll(() => {
+  if (savedLookupTimeout === undefined) delete process.env[LOOKUP_ENV];
+  else process.env[LOOKUP_ENV] = savedLookupTimeout;
+});
 
 describe('Shared MCP daemon (issue #411)', () => {
   let tempDir: string;   // the (possibly symlinked) path processes are spawned with
