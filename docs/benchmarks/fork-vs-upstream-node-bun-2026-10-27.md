@@ -17,7 +17,7 @@ The scripts are in [`scripts/benchmarks/runtime/`](../../scripts/benchmarks/runt
   | upstream, Bun | `bun` 1.4.4 running upstream's build, with `CODEGRAPH_ALLOW_UNSAFE_NODE=1` |
 
   Bun reports a Node.js compatibility version of 26 or newer, and upstream refuses Node 25 and newer, so without the override upstream exits with `Unsupported Node.js version`. The fork needs no override.
-- **Host.** WSL2 Ubuntu, 16 vCPUs, 122 GiB RAM, ext4, shared with other agent sessions.
+- **Host.** Bare-metal Ubuntu 26.04.1, 24 cores, 122 GiB RAM, ext4, shared with other agent sessions.
 - **Environment.** `CODEGRAPH_DIR=.cg-bench`, `CODEGRAPH_TELEMETRY=0`, and `CODEGRAPH_NO_DAEMON=1` for the CLI runs. Every timed command ran at normal priority under a 16 GiB memory cap and `/usr/bin/time -v`. Peak memory is MaxRSS. Database size is `codegraph.db` after a WAL checkpoint.
 - **Order.** Per corpus the arms ran in the order upstream Node, fork Node, fork Bun, upstream Bun, then the reverse. Each run did a full index (`codegraph init --yes .` into an empty directory) and then two one-file syncs (each appends a comment line and a one-line symbol to the same file, then runs `codegraph sync .`). Index figures are the median of two runs and sync figures the median of four.
 - **Corpora**, the same pinned commits as on 2026-10-18, shallow, no dependencies installed: gin (Go) `1bd0ecf`, Alamofire (Swift) `bda9ed5`, pretix (Python and JavaScript) `aa14505`, CPython (C and Python) `1e8ff18a`, discourse (Ruby and JavaScript) `ae5ba2c4`, supabase (React, Next.js and TypeScript) `36371de1`, n8n (Vue and TypeScript) `7cc0450a`. Each was checked at its pin, with a clean tracked tree, before the run.
@@ -136,7 +136,7 @@ The fork-Node server's busy memory on n8n (4.54 GiB against upstream's 3.85) is 
 
 ## Every result at a glance
 
-![Heatmap of the fork's change against upstream for index time, peak memory and one-file sync on seven repositories, the MCP server on n8n and gin, and command-line startup, on Node and on Bun. Lower is better; cells inside the comparison's own run-to-run spread are marked no clear change.](fork-vs-upstream-heatmap-2026-10-27.svg?v=5)
+![Heatmap of the fork's change against upstream for index time, peak memory and one-file sync on seven repositories, the MCP server on n8n and gin, and command-line startup, on Node and on Bun. Lower is better; cells inside the comparison's own run-to-run spread are marked no clear change.](fork-vs-upstream-heatmap-2026-10-27.svg?v=6)
 
 Of 76 comparisons the fork is better in 57, shows no clear change in 6 and is worse in 13. The 13, generated from the same data as the heatmap:
 

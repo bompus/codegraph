@@ -16,6 +16,7 @@
 // run-to-run spread (house-rules #321).
 import { readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import os from 'node:os';
 
 const argv = process.argv.slice(2);
 const root = argv.find((a, i) => !a.startsWith('--') && !(argv[i - 1] ?? '').startsWith('--'));
@@ -153,7 +154,8 @@ const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, s
 const T = (x, y, s, o = {}) => `<text x="${x}" y="${y}" font-size="${o.size || 12}" font-weight="${o.w || 400}" fill="${o.fill || C.text}" text-anchor="${o.a || 'start'}">${esc(s)}</text>`;
 const wrap = (W, H, body, title, desc) => `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="${FONT}" role="img" aria-labelledby="t d">\n<title id="t">${esc(title)}</title>\n<desc id="d">${esc(desc)}</desc>\n<rect width="${W}" height="${H}" rx="8" fill="${C.bg}"/>\n${body}\n</svg>\n`;
 const wrapLine = (s, n) => { const out = []; let cur = ''; for (const w of s.split(' ')) { if ((cur + ' ' + w).trim().length > n) { out.push(cur); cur = w; } else cur = (cur + ' ' + w).trim(); } if (cur) out.push(cur); return out; };
-const FOOT = `Measured ${META.date} · upstream ${META.upstream} vs fork ${META.fork} · Node ${META.node}, Bun ${META.bun} · 16-vCPU WSL2 · two runs per arm, median · fork on Node unless noted`;
+const HOST = `${os.cpus().length}-core ${os.platform() === 'linux' ? 'Linux' : os.platform()}, ${Math.floor(os.totalmem() / 2 ** 30)} GiB`;
+const FOOT = `Measured ${META.date} · upstream ${META.upstream} vs fork ${META.fork} · Node ${META.node}, Bun ${META.bun} · ${HOST} · two runs per arm, median · fork on Node unless noted`;
 const find = (group, label) => metrics.find((m) => m[0] === group && m[1] === label);
 
 function cards() {
