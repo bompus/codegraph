@@ -410,9 +410,15 @@ export class ReferenceResolver {
    */
   synthesisRuns = 0;
 
+  /** Edges the last completed synthesis emitted; sync reconciles stored
+   * synthesized rows against it instead of deleting them all first. */
+  lastSynthesizedEdges: Edge[] = [];
+
   async resynthesize(onProgress?: (done: number, total: number) => void): Promise<number> {
     this.clearCaches();
-    const edges = await synthesizeCallbackEdges(this.queries, this.context, onProgress);
+    const emitted: { edges?: Edge[] } = {};
+    const edges = await synthesizeCallbackEdges(this.queries, this.context, onProgress, undefined, undefined, emitted);
+    this.lastSynthesizedEdges = emitted.edges ?? [];
     this.queries.setSynthesisPending(false);
     return edges;
   }
@@ -2833,14 +2839,17 @@ export class ReferenceResolver {
     // loop. See docs/design/callback-edge-synthesis.md.
     const tSynth = Date.now();
     try {
+      const emitted: { edges?: Edge[] } = {};
       aggregateStats.byMethod['callback-synthesis'] = await synthesizeCallbackEdges(
         this.queries,
         this.context,
         onSynthesisProgress,
         pool,
-        parallel?.backpressure
+        parallel?.backpressure,
+        emitted
       );
       this.synthesisRuns++;
+      this.lastSynthesizedEdges = emitted.edges ?? [];
       this.queries.setSynthesisPending(false);
     } catch {
       // synthesis is additive and optional; ignore failures

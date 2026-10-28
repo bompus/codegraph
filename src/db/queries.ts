@@ -5733,6 +5733,47 @@ export class QueryBuilder {
     return Number(r.changes ?? 0);
   }
 
+  /**
+   * Reconcile stored synthesized edges with the set a refresh just emitted,
+   * keyed on the idx_edges_identity columns. Kept edges stay put — unlike
+   * deleteAllSynthesizedEdges + reinsert, an unchanged refresh writes nothing,
+   * which on a one-file sync was ~800 identical edge rows deleted and
+   * re-created (and their index pages rewritten) for zero graph change.
+   * Emitted edges the table already holds get their metadata refreshed when it
+   * drifted, matching what the delete+reinsert produced. Returns rows deleted
+   * and updated. Call after the emitted edges were inserted (INSERT OR IGNORE
+   * already added whichever ones were missing).
+   */
+  reconcileSynthesizedEdges(emitted: ReadonlyArray<{ source: string; target: string; kind: string; metadata?: unknown; line?: number | null; column?: number | null }>): { deleted: number; updated: number } {
+    const wanted = new Map<string, string | null>();
+    for (const e of emitted) {
+      wanted.set(
+        `${e.source}>${e.target}>${e.kind}>${e.line ?? -1}>${e.column ?? -1}`,
+        e.metadata ? JSON.stringify(e.metadata) : null,
+      );
+    }
+    const rows = this.db.prepare(
+      `SELECT id, source, target, kind, metadata, line, col FROM edges
+        WHERE provenance = 'heuristic' AND json_extract(metadata, '$.synthesizedBy') IS NOT NULL`,
+    ).all() as Array<{ id: number; source: string; target: string; kind: string; metadata: string | null; line: number | null; col: number | null }>;
+    const toDelete: number[] = [];
+    const toUpdate: Array<[string | null, number]> = [];
+    for (const r of rows) {
+      const key = `${r.source}>${r.target}>${r.kind}>${r.line ?? -1}>${r.col ?? -1}`;
+      const want = wanted.get(key);
+      if (want === undefined) toDelete.push(r.id);
+      else if (want !== r.metadata) toUpdate.push([want, r.id]);
+    }
+    let updated = 0;
+    this.db.transaction(() => {
+      const del = this.db.prepare('DELETE FROM edges WHERE id = ?');
+      for (const id of toDelete) del.run(id);
+      const upd = this.db.prepare('UPDATE edges SET metadata = ? WHERE id = ?');
+      for (const [meta, id] of toUpdate) updated += Number(upd.run(meta, id).changes ?? 0);
+    })();
+    return { deleted: toDelete.length, updated };
+  }
+
   // ===========================================================================
   // Near-duplicate bodies (src/graph/near-duplicates.ts)
   // ===========================================================================
@@ -5914,7 +5955,12 @@ export class QueryBuilder {
         // Passes that skipped the same bytes earlier still hold; a different hash replaces them.
         const prev = read.get(filePath) as { hash: string; passes: string } | undefined;
         if (prev?.hash === hash) for (const name of prev.passes.split(' ')) passes.add(name);
-        write.run(filePath, hash, [...passes].sort().join(' '));
+        const next = [...passes].sort().join(' ');
+        // A resync re-records the same skips; the row already says exactly
+        // this, so the write would only churn pages (measured ~900 leaf pages
+        // on a one-file sync of a 20k-file repo). Skip it.
+        if (prev?.hash === hash && prev.passes === next) continue;
+        write.run(filePath, hash, next);
       }
     })();
   }

@@ -7300,12 +7300,15 @@ export async function synthesizeCallbackEdges(
   // WAL-valve writer backstop (WalCheckpointValve.backpressure), called at
   // pool-idle points in the edge-insert loops below — the passes themselves
   // only read; every write in this function happens with the pool idle.
-  backpressure?: () => Promise<void> | null
+  backpressure?: () => Promise<void> | null,
+  // Forwarded to `synthesizeWith`: receives the emitted edge set so a caller
+  // can reconcile stored synthesized edges instead of deleting them all first.
+  emitted?: { edges?: Edge[] }
 ): Promise<number> {
   const prevImports = importPathMemo;
   importPathMemo = new Map();
   try {
-    return await withStripMemo(() => synthesizeWith(queries, withRunCache(ctx), onProgress, pool, backpressure));
+    return await withStripMemo(() => synthesizeWith(queries, withRunCache(ctx), onProgress, pool, backpressure, emitted));
   } finally {
     importPathMemo = prevImports;
   }
@@ -7322,7 +7325,12 @@ async function synthesizeWith(
   // WAL-valve writer backstop (WalCheckpointValve.backpressure), called at
   // pool-idle points in the edge-insert loops below — the passes themselves
   // only read; every write in this function happens with the pool idle.
-  backpressure?: () => Promise<void> | null
+  backpressure?: () => Promise<void> | null,
+  // When given, receives the full emitted edge set (the same rows insertEdges
+  // just wrote, plus the Go pre-passes). Sync uses it to reconcile — keep the
+  // rows re-emitted, drop only the ones no pass produced — instead of deleting
+  // every synthesized edge first and rewriting the whole set.
+  emitted?: { edges?: Edge[] }
 ): Promise<number> {
   // Each sub-pass below is a whole-graph scan, and there are ~30 of them, all
   // running synchronously on the indexer's main thread. Their AGGREGATE can run
@@ -7539,5 +7547,6 @@ async function synthesizeWith(
     await foldIfOver();
   }
   __mark('insertMergedEdges');
+  if (emitted) emitted.edges = [...goMethodContains, ...goImpl, ...merged];
   return merged.length + goImpl.length + goMethodContains.length;
 }
