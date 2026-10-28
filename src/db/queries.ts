@@ -3530,7 +3530,7 @@ export class QueryBuilder {
       params.push(...kinds);
     }
 
-    const rows = this.db.prepare(sql).all(...params) as EdgeRow[];
+    const rows = this.shapeStmt(sql).all(...params) as EdgeRow[];
     return rows.map(rowToEdge);
   }
 
@@ -5625,6 +5625,15 @@ export class QueryBuilder {
    * of milliseconds per call on a large index; these counts stay cheap.
    */
   getSizeStats(): Pick<GraphStats, 'nodeCount' | 'fileCount' | 'filesByLanguage'> {
+    // Explore pays this scan on every call for its adaptive budgets; the
+    // counts move only when the database does, so memoize by change stamp
+    // like dominantFileMemo (#2620). Inside a transaction memoizedRead
+    // declines and we compute directly, as before.
+    const hit = this.memoizedRead('sizeStats', () => this.computeSizeStats());
+    return hit ?? this.computeSizeStats();
+  }
+
+  private computeSizeStats(): Pick<GraphStats, 'nodeCount' | 'fileCount' | 'filesByLanguage'> {
     const counts = this.db
       .prepare('SELECT (SELECT COUNT(*) FROM nodes) AS nodes, (SELECT COUNT(*) FROM files) AS files')
       .get() as { nodes: number; files: number };
