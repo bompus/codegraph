@@ -138,6 +138,7 @@ export class ResolverPool {
     availableParallelism: number;
     memoryBudget: number;
     dbSizeBytes: number;
+    pendingRefs?: number;
   }): number | null {
     if (opts.explicit !== undefined && opts.explicit !== '') {
       const n = Number.parseInt(opts.explicit, 10);
@@ -154,7 +155,14 @@ export class ResolverPool {
     const cpuCap = Math.min(opts.availableParallelism - 1, 12);
     const perWorker = Math.min(Math.max(opts.dbSizeBytes * 0.2, 256 * 1024 * 1024), 1.5 * 1024 * 1024 * 1024);
     const memCap = Math.floor((opts.memoryBudget * 0.7) / perWorker);
-    const size = Math.min(cpuCap, memCap);
+    // Past ~25k pending refs per worker the extra workers stop paying for
+    // themselves: on a 207k-ref corpus 8 of 12 matched the wall time while
+    // each idle worker still carried ~180MB of isolate+kernel overhead, and
+    // only a deep queue (1.85M refs) made the 12th worker earn it (−13%
+    // resolve wall there). Size to the work, not just the machine.
+    const workCap =
+      opts.pendingRefs === undefined ? cpuCap : Math.max(2, Math.ceil(opts.pendingRefs / 25_000));
+    const size = Math.min(cpuCap, memCap, workCap);
     return size >= 2 ? size : null;
   }
 
@@ -171,7 +179,7 @@ export class ResolverPool {
    * one-time setup cost for the pool (the kernel-reader snapshot copy in
    * resolveAndPersistBatched) can preflight before spending it.
    */
-  static preflight(dbPath: string): number | null {
+  static preflight(dbPath: string, pendingRefs?: number): number | null {
     if (process.env.CODEGRAPH_NO_PARALLEL_RESOLVE === '1') return null;
     const workerScript = path.join(__dirname, 'resolver-worker.js');
     if (!fs.existsSync(workerScript)) return null;
@@ -186,6 +194,7 @@ export class ResolverPool {
       availableParallelism: ap,
       memoryBudget: budget,
       dbSizeBytes,
+      pendingRefs,
     });
     // Both outcomes log under SYNTH_TIMINGS — a silent null is how §7a.1's
     // diagnostic run hid the memory-term misfire for a whole 25-minute cycle.
@@ -202,8 +211,9 @@ export class ResolverPool {
     projectRoot: string,
     kernelDbPath: string | null = null,
     supertypesComplete = false,
+    pendingRefs?: number,
   ): ResolverPool | null {
-    const size = ResolverPool.preflight(dbPath);
+    const size = ResolverPool.preflight(dbPath, pendingRefs);
     if (size === null) return null;
     const workerScript = path.join(__dirname, 'resolver-worker.js');
     try {

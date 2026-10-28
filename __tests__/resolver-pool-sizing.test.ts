@@ -59,6 +59,20 @@ describe('ResolverPool.resolvePoolSize', () => {
     expect(size({ memoryBudget: 512 * MB, dbSizeBytes: 4 * GB })).toBeNull();
   });
 
+  it('pending refs cap the pool at ~25k refs per worker — spare workers cost RSS, not time', () => {
+    // Measured: 207k refs saturated 8 workers on a 24-parallelism host
+    // (7.5s at 8 = 7.4s at 12); 1.85M refs still profited from all 12.
+    expect(size({ availableParallelism: 24, pendingRefs: 207_304 })).toBe(9);
+    expect(size({ availableParallelism: 24, pendingRefs: 1_852_551 })).toBe(12);
+    expect(size({ availableParallelism: 24, pendingRefs: 60_000 })).toBe(3);
+    // No ref signal (undefined) keeps the old CPU/memory sizing.
+    expect(size({ availableParallelism: 24 })).toBe(12);
+    // Floor of 2 — the cap never disables an otherwise-viable pool.
+    expect(size({ availableParallelism: 24, pendingRefs: 25_000 })).toBe(2);
+    // Explicit override still wins over the work cap.
+    expect(size({ explicit: '12', pendingRefs: 60_000 })).toBe(12);
+  });
+
   it('CODEGRAPH_RESOLVE_WORKERS overrides everything: 0 disables, values clamp at 16', () => {
     expect(size({ explicit: '0' })).toBeNull();
     expect(size({ explicit: '3', memoryBudget: 512 * MB })).toBe(3); // override skips the memory term
