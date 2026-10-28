@@ -7,6 +7,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const [src, dst] = process.argv.slice(2);
+if (existsSync(join(src, 'host'))) writeFileSync(join(dst, 'host'), readFileSync(join(src, 'host'), 'utf8'));
 const ARM = { 'upstream-node': 'upnode', 'fork-node': 'forknode', 'fork-bun': 'forkbun', 'upstream-bun': 'upbun' };
 const CORPORA = [['gin', 'gin'], ['Alamofire', 'alamofire'], ['pretix', 'pretix'], ['cpython', 'cpython'], ['discourse', 'discourse'], ['supabase', 'supabase'], ['n8n', 'n8n']];
 

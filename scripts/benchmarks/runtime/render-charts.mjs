@@ -3,7 +3,7 @@
 // heatmap and the Markdown tables both pages quote, so no figure is typed by hand.
 //
 //   node scripts/benchmarks/runtime/render-charts.mjs $BENCH_OUT \
-//     --date 2026-10-13 --upstream 34dd3d2f --fork f045e5f7 --node 24.21.0 --bun 1.4.3 \
+//     --date 2026-10-13 --upstream 34dd3d2f --fork f045e5f7 --node 24.21.0 --bun 1.4.3 --host "16-core Ubuntu, 62 GiB" \
 //     [--cards assets/fork-vs-upstream-performance.svg] \
 //     [--heatmap docs/benchmarks/fork-vs-upstream-heatmap-2026-10-13.svg] [--tables tables.md]
 //
@@ -20,7 +20,7 @@ import { join } from 'node:path';
 const argv = process.argv.slice(2);
 const root = argv.find((a, i) => !a.startsWith('--') && !(argv[i - 1] ?? '').startsWith('--'));
 const opt = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : d; };
-if (!root) { console.error('usage: render-charts.mjs <BENCH_OUT> --date D --upstream SHA --fork SHA --node V --bun V [--cards F] [--heatmap F] [--tables F]'); process.exit(2); }
+if (!root) { console.error('usage: render-charts.mjs <BENCH_OUT> --date D --upstream SHA --fork SHA --node V --bun V --host H [--cards F] [--heatmap F] [--tables F]'); process.exit(2); }
 const META = { date: opt('date'), upstream: opt('upstream'), fork: opt('fork'), node: opt('node'), bun: opt('bun') };
 for (const [k, v] of Object.entries(META)) if (!v) { console.error(`missing --${k}`); process.exit(2); }
 
@@ -153,7 +153,11 @@ const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, s
 const T = (x, y, s, o = {}) => `<text x="${x}" y="${y}" font-size="${o.size || 12}" font-weight="${o.w || 400}" fill="${o.fill || C.text}" text-anchor="${o.a || 'start'}">${esc(s)}</text>`;
 const wrap = (W, H, body, title, desc) => `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="${FONT}" role="img" aria-labelledby="t d">\n<title id="t">${esc(title)}</title>\n<desc id="d">${esc(desc)}</desc>\n<rect width="${W}" height="${H}" rx="8" fill="${C.bg}"/>\n${body}\n</svg>\n`;
 const wrapLine = (s, n) => { const out = []; let cur = ''; for (const w of s.split(' ')) { if ((cur + ' ' + w).trim().length > n) { out.push(cur); cur = w; } else cur = (cur + ' ' + w).trim(); } if (cur) out.push(cur); return out; };
-const FOOT = `Measured ${META.date} · upstream ${META.upstream} vs fork ${META.fork} · Node ${META.node}, Bun ${META.bun} · 16-vCPU WSL2 · two runs per arm, median · fork on Node unless noted`;
+// The host the run measured, recorded by arms.sh into BENCH_OUT; --host
+// covers staged trees that predate the record.
+const HOST = opt('host') ?? (existsSync(join(root, 'host')) ? readFileSync(join(root, 'host'), 'utf8').trim() : undefined);
+if (!HOST) { console.error('missing --host H (no host file in BENCH_OUT)'); process.exit(2); }
+const FOOT = `Measured ${META.date} · upstream ${META.upstream} vs fork ${META.fork} · Node ${META.node}, Bun ${META.bun} · ${HOST} · two runs per arm, median · fork on Node unless noted`;
 const find = (group, label) => metrics.find((m) => m[0] === group && m[1] === label);
 
 function cards() {

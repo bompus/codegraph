@@ -9,6 +9,9 @@
 : "${BENCH_ARMS:?set BENCH_ARMS, see arms.sh}"
 : "${BENCH_OUT:?set BENCH_OUT to a results directory}"
 mkdir -p "$BENCH_OUT/logs"
+# Record the host the measurements came from; render-charts reads it back so a
+# footer generated elsewhere can't silently name the wrong hardware.
+printf '%s-core %s, %s GiB\n' "$(getconf _NPROCESSORS_ONLN)" "$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || uname -s)" "$(( $(awk '/MemTotal/{print $2}' /proc/meminfo) / 1048576 ))" > "$BENCH_OUT/host"
 read -r -a WRAP <<< "${BENCH_WRAP:-nice -n 10}"
 declare -A RUNTIME BUILD
 ARMS=()
