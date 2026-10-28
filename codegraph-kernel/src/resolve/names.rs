@@ -62,26 +62,21 @@ impl KernelResolver {
     }
 
     /// applyLanguageGate (name-matcher.ts).
-    pub(super) fn apply_language_gate(&mut self, candidates: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Vec<Arc<KNode>> {
+    pub(super) fn apply_language_gate(&mut self, mut candidates: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Vec<Arc<KNode>> {
+        // retain in place — one Vec alloc per ref instead of two.
         if r.reference_kind == "references" || r.reference_kind == "function_ref" {
-            return candidates
-                .into_iter()
-                .filter(|c| same_language_family(&c.language, &r.language) || self.objc_header_global_ref(c, r))
-                .collect();
+            candidates.retain(|c| same_language_family(&c.language, &r.language) || self.objc_header_global_ref(c, r));
+            return candidates;
         }
         if r.reference_kind == "imports" {
-            return candidates
-                .into_iter()
-                .filter(|c| {
-                    !crosses_known_family(&c.language, &r.language)
-                        && !crosses_code_boundary(&c.language, &r.language)
-                })
-                .collect();
+            candidates.retain(|c| {
+                !crosses_known_family(&c.language, &r.language)
+                    && !crosses_code_boundary(&c.language, &r.language)
+            });
+            return candidates;
         }
+        candidates.retain(|c| !crosses_code_boundary(&c.language, &r.language) || self.has_bridge_evidence(c, r));
         candidates
-            .into_iter()
-            .filter(|c| !crosses_code_boundary(&c.language, &r.language) || self.has_bridge_evidence(c, r))
-            .collect()
     }
 
     /// hasBridgeEvidence (name-matcher.ts): a call may cross a language
