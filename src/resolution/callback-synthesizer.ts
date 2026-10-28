@@ -7161,13 +7161,17 @@ export function hasSynthesisPattern(filePath: string, content: string): boolean 
 }
 
 const SYNTH_MODULE_FILE = /\.(?:[cm]?jsx|tsx|vue|svelte|astro)$/;
-const MODULE_LINE = /^\s*(?:import|export)\b/;
+// Re-exports only (`export {X} from`, `export *`): the barrel shapes that
+// rewire which module a name resolves through. `export type` carries no
+// synthesized-edge endpoint; a local `export const`/definition is covered by
+// the definition delta instead.
+const RE_EXPORT_LINE = /^\s*export\s+(?!type\b)(?:\*|\{[^}]*\}\s*from\b)/;
 
 /**
  * Whether an edited file can feed a synthesis pass — the input gates above,
  * plus the two shapes `wasSynthesisInput` tracked upstream that carry no
  * pattern of their own: a markup-capable module (a tag or lazy() can name its
- * component), and a barrel whose import/export lines rewire which module a
+ * component), and a barrel whose re-export lines rewire which module a
  * tag resolves to. Files that only export plain values stay out: changing
  * them can't move an edge's endpoint.
  */
@@ -7175,7 +7179,7 @@ export function mayFeedSynthesis(filePath: string, content: string): boolean {
   if (hasSynthesisPattern(filePath, content)) return true;
   if (SYNTH_MODULE_FILE.test(filePath)) return true;
   const lines = content.split('\n').filter((l) => l.trim() !== '');
-  return lines.length > 0 && lines.filter((l) => MODULE_LINE.test(l)).length / lines.length > 0.6;
+  return lines.length > 0 && lines.filter((l) => RE_EXPORT_LINE.test(l)).length / lines.length > 0.6;
 }
 
 /**
