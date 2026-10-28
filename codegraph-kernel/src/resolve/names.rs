@@ -375,6 +375,14 @@ impl KernelResolver {
         if lang == "go" {
             return Ok(go_name_visible(candidate, r));
         }
+        // A Dart `_name` is its library's, which spans the library file and
+        // its parts: riverpod_generator's `class Counter extends _$Counter`
+        // names the class it wrote into `main.g.dart` (upstream f7820b58).
+        if lang == "dart" {
+            return Ok(candidate.visibility.as_deref() != Some("private")
+                || (r.language == "dart"
+                    && self.dart_same_library(&r.file_path, &candidate.file_path)));
+        }
         if lang == "rust" {
             if candidate.visibility.as_deref() != Some("private") {
                 return Ok(true);
@@ -784,6 +792,10 @@ impl KernelResolver {
                 // tsdb's `[]*memSeries` is head.go's, not `tsdb/agent`'s, which scored the
                 // same by directory proximity and was then vetoed as invisible.
                 && (n.language != "go" || go_name_visible(&n, r))
+                // A Dart `_name` another library declares: the reference's
+                // own library's declaration wins instead of the namesake
+                // picked and then declined (upstream f7820b58 / #2466).
+                && !(r.language == "dart" && n.language == "dart" && n.visibility.as_deref() == Some("private") && n.file_path != r.file_path && !self.dart_same_library(&r.file_path, &n.file_path))
                 && !(matches!(r.language.as_str(),"lua"|"luau") && r.reference_kind=="calls" && !r.reference_name.contains(['.',':']) && n.kind=="method")
                 && !(r.language=="python" && r.reference_kind=="calls" && n.file_path!=r.file_path && self.is_receiver_less_call(r)? && self.python_locally_bound(&r.reference_name,r)? && !self.python_fixture_reachable(&n,&r.file_path)) {
                 kept.push(n);

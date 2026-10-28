@@ -696,9 +696,10 @@ pub(super) fn is_importable_kind(kind: &str) -> bool {
     !matches!(kind, "property" | "field" | "method" | "enum_member" | "parameter")
 }
 
-/// PRIVATE_IS_FILE_LOCAL (name-matcher.ts).
+/// PRIVATE_IS_FILE_LOCAL (name-matcher.ts). A Dart `_name` is its library's,
+/// which can span several files: see is_visible_across_files (f7820b58).
 pub(super) fn private_is_file_local(lang: &str) -> bool {
-    matches!(lang, "kotlin" | "java" | "csharp" | "swift" | "scala" | "dart" | "php")
+    matches!(lang, "kotlin" | "java" | "csharp" | "swift" | "scala" | "php")
 }
 
 /// NO_NESTED_FUNCTIONS (name-matcher.ts).
