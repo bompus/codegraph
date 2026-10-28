@@ -32,6 +32,11 @@ fn objc_file_local_elsewhere(n: &KNode, r: &ResolveRefIn) -> bool {
 
 fn prefer_adjacent_implementations(candidates: &mut Vec<Arc<KNode>>, r: &ResolveRefIn) {
     if r.reference_kind != "calls" || !is_js_family(&r.language) { return; }
+    // Nothing to demote without a .d.ts candidate — skip the HashSet build
+    // and its two String allocations per candidate.
+    if !candidates.iter().any(|n| [".d.ts", ".d.mts", ".d.cts"].iter().any(|s| n.file_path.ends_with(s))) {
+        return;
+    }
     let implementations: HashSet<_> = candidates.iter()
         .filter(|n| !re!(r"\.d\.[cm]?ts$").is_match(&n.file_path))
         .filter_map(|n| n.file_path.rsplit_once('.').map(|(stem, _)| (stem.to_string(), n.qualified_name.clone())))
@@ -137,7 +142,16 @@ impl KernelResolver {
     /// (`case class B()` in a test method), or a method of such a type —
     /// declared inside a function is reachable only from inside it.
     pub(super) fn is_lexically_reachable(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
-        let bare = re!(r"^[A-Za-z_$][\w$]*$").is_match(&r.reference_name);
+        // Same reference_name for every candidate in a ref's loop — one-entry
+        // memo instead of the thread-local re! per candidate.
+        let bare = match &self.bare_name_memo {
+            Some((name, b)) if name == &r.reference_name => *b,
+            _ => {
+                let b = re!(r"^[A-Za-z_$][\w$]*$").is_match(&r.reference_name);
+                self.bare_name_memo = Some((r.reference_name.clone(), b));
+                b
+            }
+        };
         if candidate.kind == "function" && bare && !self.object_member_reachable_by_name(candidate,r)? { return Ok(false); }
         if bare && js_objects_upstream::path_holder(candidate) && js_objects_upstream::literal_owner(candidate) {
             let last = js_objects_upstream::last_segment(candidate);

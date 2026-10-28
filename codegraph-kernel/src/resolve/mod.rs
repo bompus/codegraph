@@ -773,6 +773,9 @@ pub struct KernelResolver {
     /// ref language) — parsed_tree selects its parser from the ref's
     /// language, so the same candidate can walk a different tree.
     js_decl_scope_memo: HashMap<(String, String), js_scope_upstream::JsDeclScope>,
+    /// is_lexically_reachable's `bare` regex, by reference_name — refs are
+    /// evaluated in per-ref loops, so one entry covers a whole loop.
+    bare_name_memo: Option<(String, bool)>,
     language_type_scope_memo: HashMap<String, Rc<language_type_scope::LanguageTypeScope>>,
     scala_package_object_membership_memo: HashMap<String, Option<(String, i64, i64)>>,
     cpp_default_declaration_memo: HashMap<String, declarations_upstream::CppDefaultDeclarationIndex>,
@@ -983,6 +986,7 @@ impl KernelResolver {
             manifest_external_memo: HashMap::new(),
             lexical_scope_memo: HashMap::new(),
             js_decl_scope_memo: HashMap::new(),
+            bare_name_memo: None,
             language_type_scope_memo: HashMap::new(),
             scala_package_object_membership_memo: HashMap::new(),
             cpp_default_declaration_memo: HashMap::new(),
