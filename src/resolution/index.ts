@@ -1461,6 +1461,14 @@ export class ReferenceResolver {
         candidates.push(result);
       }
     }
+    // A reference a framework answers alone ends with the frameworks' answer
+    // (see FrameworkResolver.ownsReference): Nuxt's `navigateTo(x)` with a
+    // destination no route serves is no namesake's call.
+    if (this.frameworksFor(ref.language).some((f) => f.ownsReference?.(ref, this.context))) {
+      if (candidates.length === 0) return this.applyResolveTail(null, ref);
+      const owned = candidates.reduce((best, curr) => (curr.confidence > best.confidence ? curr : best));
+      return this.applyResolveTail(this.gateTargetKind(owned, ref), ref);
+    }
     // The kernel's ≥0.9 import verdict outranks <0.9 framework candidates —
     // resolveOneInner early-returns it and discards them. A verdict reported
     // without a candidate list is likewise already the merged winner.
