@@ -3,7 +3,7 @@
 // heatmap and the Markdown tables both pages quote, so no figure is typed by hand.
 //
 //   node scripts/benchmarks/runtime/render-charts.mjs $BENCH_OUT \
-//     --date 2026-10-13 --upstream 34dd3d2f --fork f045e5f7 --node 24.21.0 --bun 1.4.3 \
+//     --date 2026-10-13 --upstream 34dd3d2f --fork f045e5f7 --node 24.21.0 --bun 1.4.3 --host "16-core Ubuntu, 62 GiB" \
 //     [--cards assets/fork-vs-upstream-performance.svg] \
 //     [--heatmap docs/benchmarks/fork-vs-upstream-heatmap-2026-10-13.svg] [--tables tables.md]
 //
