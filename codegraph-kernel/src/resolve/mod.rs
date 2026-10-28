@@ -776,6 +776,14 @@ pub struct KernelResolver {
     /// is_lexically_reachable's `bare` regex, by reference_name — refs are
     /// evaluated in per-ref loops, so one entry covers a whole loop.
     bare_name_memo: Option<(String, bool)>,
+    /// bare_call_receiver's answer per ref (the same `&r` reaches it once per
+    /// same-file candidate). Keyed by the ref's address, which is stable for
+    /// a chunk's Vec; cleared at every chunk loop so a reallocated Vec can
+    /// never hit a previous chunk's entry.
+    bare_receiver_memo: HashMap<usize, Option<(Rc<SourceFile>, String)>>,
+    /// is_generated_file per path — the >256-pool scans run its ~25
+    /// regexes once per candidate; pools share few unique paths.
+    gen_path_memo: HashMap<String, bool>,
     language_type_scope_memo: HashMap<String, Rc<language_type_scope::LanguageTypeScope>>,
     scala_package_object_membership_memo: HashMap<String, Option<(String, i64, i64)>>,
     cpp_default_declaration_memo: HashMap<String, declarations_upstream::CppDefaultDeclarationIndex>,
@@ -987,6 +995,8 @@ impl KernelResolver {
             lexical_scope_memo: HashMap::new(),
             js_decl_scope_memo: HashMap::new(),
             bare_name_memo: None,
+            bare_receiver_memo: HashMap::new(),
+            gen_path_memo: HashMap::new(),
             language_type_scope_memo: HashMap::new(),
             scala_package_object_membership_memo: HashMap::new(),
             cpp_default_declaration_memo: HashMap::new(),
@@ -1179,6 +1189,18 @@ impl KernelResolver {
         Ok(out)
     }
 
+    /// is_generated_file, memoized per path — the >256-pool generated-share
+    /// scans run the ~25-regex check once per candidate; pools share few
+    /// unique file paths.
+    pub(super) fn is_gen_path(&mut self, path: &str) -> bool {
+        if let Some(&b) = self.gen_path_memo.get(path) {
+            return b;
+        }
+        let b = crate::textutil::is_generated_file(path);
+        self.gen_path_memo.insert(path.to_string(), b);
+        b
+    }
+
     /// `SELECT generated FROM files WHERE path = ?` — the join's fallback
     /// when a ref's stored file_path was empty (see read_pending_batch).
     fn file_generated(&mut self, path: &str) -> Result<Option<bool>> {
@@ -1197,6 +1219,7 @@ impl KernelResolver {
     #[cfg_attr(feature = "addon", napi)]
     pub fn resolve_chunk(&mut self, refs: Vec<ResolveRefIn>) -> Result<Vec<ResolveOutcome>> {
         let mut out = Vec::with_capacity(refs.len());
+        self.bare_receiver_memo.clear();
         for r in refs {
             let t0 = PROF_ON.then(std::time::Instant::now);
             let mut o = match per_ref(&r, ResolveOutcome::unresolved(), || self.resolve_ref(&r)) {
@@ -1257,6 +1280,7 @@ impl KernelResolver {
     #[cfg_attr(feature = "addon", napi)]
     pub fn resolve_deferred_this_members(&mut self, refs: Vec<ResolveRefIn>) -> Result<Vec<ResolveOutcome>> {
         let mut out = Vec::with_capacity(refs.len());
+        self.bare_receiver_memo.clear();
         for r in refs {
             if !is_migrated_language(&r.language) {
                 out.push(ResolveOutcome::unresolved());
@@ -1278,6 +1302,7 @@ impl KernelResolver {
     #[cfg_attr(feature = "addon", napi)]
     pub fn resolve_deferred_chains(&mut self, refs: Vec<ResolveRefIn>) -> Result<Vec<ResolveOutcome>> {
         let mut out = Vec::with_capacity(refs.len());
+        self.bare_receiver_memo.clear();
         for r in refs {
             if !is_migrated_language(&r.language) {
                 out.push(ResolveOutcome::unresolved());

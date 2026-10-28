@@ -723,7 +723,7 @@ impl KernelResolver {
         //     pools (Migration, __init__) proceed untouched.
         if named.len() > GENERATED_NAME_POOL_CAP
             && (r.generated == Some(true)
-                || named.iter().filter(|n| crate::textutil::is_generated_file(&n.file_path)).count() * 4
+                || named.iter().filter(|n| self.is_gen_path(&n.file_path)).count() * 4
                     >= named.len() * 3)
         {
             return Ok(None);
@@ -1019,7 +1019,7 @@ impl KernelResolver {
         // at least as wide, so decline before the retain chain.
         if candidates.len() > GENERATED_NAME_POOL_CAP
             && (r.generated == Some(true)
-                || candidates.iter().filter(|n| crate::textutil::is_generated_file(&n.file_path)).count() * 4
+                || candidates.iter().filter(|n| self.is_gen_path(&n.file_path)).count() * 4
                     >= candidates.len() * 3)
         {
             return Ok(None);

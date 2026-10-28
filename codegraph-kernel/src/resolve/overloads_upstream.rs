@@ -917,6 +917,19 @@ impl KernelResolver {
     /// `this.container.classList.toggle()`); None for a call written bare or
     /// not found.
     pub(super) fn bare_call_receiver(&mut self, r: &ResolveRefIn) -> Res<Option<(Rc<SourceFile>, String)>> {
+        // The answer depends only on the ref, but is asked once per same-file
+        // candidate — memoize by the ref's address (cleared per chunk loop,
+        // so a reallocated Vec can never reuse an entry).
+        let key = r as *const ResolveRefIn as usize;
+        if let Some(hit) = self.bare_receiver_memo.get(&key) {
+            return Ok(hit.clone());
+        }
+        let out = self.bare_call_receiver_uncached(r)?;
+        self.bare_receiver_memo.insert(key, out.clone());
+        Ok(out)
+    }
+
+    fn bare_call_receiver_uncached(&mut self, r: &ResolveRefIn) -> Res<Option<(Rc<SourceFile>, String)>> {
         if !re!(r"^[A-Za-z_$][\w$]*$").is_match(&r.reference_name) {
             return Ok(None);
         }
