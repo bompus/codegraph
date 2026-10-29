@@ -2,6 +2,12 @@
 
 use super::*;
 
+/// TYPE_COMPANION_VALUE_KINDS (index.ts #2801): the values a TypeScript
+/// type may share its name with in its file, which a call or `new` of the
+/// name means.
+static TYPE_COMPANION_VALUE_KINDS: &[&str] =
+    &["function", "class", "component", "constant", "variable"];
+
 impl KernelResolver {
     // -----------------------------------------------------------------------
     // Non-bare c/cpp `imports` refs — the #include-path slice (resolveOneInner
@@ -662,13 +668,28 @@ if super::lang_scope::is_dart_member_read(r) {
 
     /// gateTargetKind (index.ts): the imports/inheritance target-kind gates
     /// plus the out-of-repo import check.
-    pub(super) fn gate_target_kind(&mut self, cand: KCand, r: &ResolveRefIn) -> Res<Option<KCand>> {
+    pub(super) fn gate_target_kind(&mut self, mut cand: KCand, r: &ResolveRefIn) -> Res<Option<KCand>> {
         if r.language == "python" && r.reference_kind == "calls" && self.is_python_property(&cand.node) {
             return Ok(None);
         }
         // A `#define` is a value, never a callee (#1838).
         if r.reference_kind == "calls" && cpp::is_define(&cand.node) {
             return Ok(None);
+        }
+        // A TypeScript interface or type alias is no value: nothing calls
+        // one or makes an instance of it. A strategy that found one by name
+        // meant the value its file declares beside it (`interface Ok` and
+        // `function Ok` in a result module); with none there, the name is a
+        // value from elsewhere that the project only types (`new
+        // Response()`, `new Worker()`), and links nothing (#2801).
+        if matches!(r.reference_kind.as_str(), "calls" | "instantiates")
+            && is_esm_import_language(&r.language)
+            && matches!(cand.node.kind.as_str(), "interface" | "type_alias")
+        {
+            let Some(value) = self.same_named_value_of_type(&cand.node)? else {
+                return Ok(None);
+            };
+            cand.node = value;
         }
         if r.reference_kind == "imports" {
             if r.language == "python" && self.is_python_from_import_module(r.clone())
@@ -690,7 +711,6 @@ if super::lang_scope::is_dart_member_read(r) {
         if self.is_import_binding_call_target(&cand.node, r)? {
             return Ok(None);
         }
-        let mut cand = cand;
         if r.language == "go" && cand.node.language == "go" {
             let is_type = matches!(cand.node.kind.as_str(), "struct" | "interface" | "type_alias");
             if r.reference_kind == "calls" && is_type && !r.reference_name.contains('.') && !self.is_bare_go_call(r)? {
@@ -751,6 +771,20 @@ if super::lang_scope::is_dart_member_read(r) {
             cand.node = node;
         }
         Ok(Some(cand))
+    }
+
+    /// The value a file declares beside a type of the same name — `export
+    /// function Ok()` beside `export interface Ok`, a class merged with an
+    /// interface — which a call or `new` written with the name reaches
+    /// (sameNamedValueOfType, #2801). The first by position; None when the
+    /// file declares none.
+    fn same_named_value_of_type(&self, ty: &KNode) -> Res<Option<Arc<KNode>>> {
+        Ok(self
+            .nodes_in_file(&ty.file_path)?
+            .iter()
+            .filter(|n| n.name == ty.name && TYPE_COMPANION_VALUE_KINDS.contains(&n.kind.as_str()))
+            .min_by_key(|n| (n.start_line, n.start_column))
+            .cloned())
     }
 
     /// The one supertype-kind node a TypeScript value shares its name and file with.
