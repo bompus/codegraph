@@ -677,8 +677,13 @@ impl KernelResolver {
                 return Ok(result);
             }
             strict_local = true;
+            // `None` is upstream's `undefined`: no enclosing def binds the
+            // name, so it is no local — the ordinary paths keep it.
+            let Some(answer) = self.python_local_class(receiver, r, &mut read)? else {
+                return Ok(result);
+            };
             result.claimed = true;
-            self.python_local_class(receiver, r, &mut read)?
+            answer
         };
         let declared = matches!(answer, Answer::Declared(_)) && !strict_local;
         match answer {
@@ -721,11 +726,13 @@ impl KernelResolver {
     /// `name = factory()`, `name = None` (no evidence). Any other binding —
     /// a `for`/`with`/`except`/comprehension target, a tuple or augmented
     /// assignment, a walrus, an import, `del`, a nested `def` or `class` of
-    /// the name, a `nonlocal` write, a `global` — leaves it unknown, and a
-    /// contested one is no class at all.
-    fn python_local_class(&mut self, name: &str, r: &ResolveRefIn, read: &mut HashSet<String>) -> Res<Answer> {
+    /// the name, a `nonlocal` write — leaves it unknown, and a contested
+    /// one is no class at all. `None` is no local at all — a `global`
+    /// binding, a module-level name, or no enclosing def — upstream's
+    /// `undefined`, where the ordinary paths keep the call.
+    fn python_local_class(&mut self, name: &str, r: &ResolveRefIn, read: &mut HashSet<String>) -> Res<Option<Answer>> {
         let Some(src) = self.read_file(&r.file_path) else {
-            return Ok(Answer::Unknown);
+            return Ok(None);
         };
         let file = src.python_file();
         let at = (r.line - 1).max(0) as usize;
@@ -744,7 +751,7 @@ impl KernelResolver {
                 break;
             }
             if bindings.iter().any(|b| matches!(b, PyBinding::Global)) {
-                return Ok(Answer::Unknown);
+                return Ok(None);
             }
             if !bindings.is_empty() {
                 scope = Some((d, param, bindings));
@@ -752,23 +759,23 @@ impl KernelResolver {
             }
         }
         let Some((d, param, bindings)) = scope else {
-            return Ok(Answer::Unknown);
+            return Ok(None);
         };
         let mut evidence: Vec<Answer> = Vec::new();
         if let Some(param) = param {
             // A parameter without an annotation is no evidence.
             let Some(ann) = param else {
-                return Ok(Answer::Unknown);
+                return Ok(Some(Answer::Unknown));
             };
             let ev = self.python_ann_answer(&ann, r, read)?;
             if matches!(ev, Answer::Unknown) {
-                return Ok(Answer::Unknown);
+                return Ok(Some(Answer::Unknown));
             }
             evidence.push(ev);
         }
         for b in &bindings {
             let PyBinding::Assign { ty, value, line } = b else {
-                return Ok(Answer::Unknown);
+                return Ok(Some(Answer::Unknown));
             };
             let value = value.trim();
             let ev = if let Some(ty) = ty {
@@ -776,7 +783,7 @@ impl KernelResolver {
                 if !value.is_empty() && value != "None" {
                     if let Some(ctor) = python_constructor_call(value) {
                         if ctor.rsplit('.').next() != ty.trim().trim_matches(['\'', '"']).rsplit('.').next() {
-                            return Ok(Answer::Unknown);
+                            return Ok(Some(Answer::Unknown));
                         }
                     }
                 }
@@ -788,10 +795,10 @@ impl KernelResolver {
                 // with, unless the def binds `cap` anywhere else.
                 let (copied_param, copied_bindings) = python_scope_state(file, &src, d, value)?;
                 let Some(Some(ann)) = copied_param else {
-                    return Ok(Answer::Unknown);
+                    return Ok(Some(Answer::Unknown));
                 };
                 if !copied_bindings.is_empty() {
-                    return Ok(Answer::Unknown);
+                    return Ok(Some(Answer::Unknown));
                 }
                 self.python_ann_answer(&ann, r, read)?
             } else {
@@ -799,19 +806,19 @@ impl KernelResolver {
                 for callee in python_value_callees(value) {
                     let root = callee.split('.').next().unwrap_or(&callee);
                     if self.python_binds_locally(root, &r.file_path, (*line + 1) as i64, false)? {
-                        return Ok(Answer::Unknown);
+                        return Ok(Some(Answer::Unknown));
                     }
                 }
                 self.python_value_text_answer(value, r, read, 0)?
             };
             if matches!(ev, Answer::Unknown | Answer::Absent) {
-                return Ok(Answer::Unknown);
+                return Ok(Some(Answer::Unknown));
             }
             evidence.push(ev);
         }
         // Nothing here can be a project class: a builtin, or no evidence.
         if !evidence.iter().any(|e| !matches!(e, Answer::Runtime)) {
-            return Ok(if evidence.is_empty() { Answer::Unknown } else { Answer::Runtime });
+            return Ok(if evidence.is_empty() { Some(Answer::Unknown) } else { Some(Answer::Runtime) });
         }
         // A def or class of the name nested in the scope binds it there; a
         // def nested in it can rebind the scope's own through `nonlocal`;
@@ -823,7 +830,7 @@ impl KernelResolver {
                 && n.start_line > d as i64 + 1
                 && n.end_line <= end as i64 + 1
         }) {
-            return Ok(Answer::Unknown);
+            return Ok(Some(Answer::Unknown));
         }
         for i in d..=end.min(file.code.len().saturating_sub(1)) {
             let Some((_, code)) = file.code.get(i) else { break };
@@ -831,15 +838,15 @@ impl KernelResolver {
                 continue;
             }
             if re!(r"^\s*nonlocal\b").is_match(code) && bare_word(code, name) {
-                return Ok(Answer::Unknown);
+                return Ok(Some(Answer::Unknown));
             }
             if let Some(cap) = re!(r"\bas\s*\(([^)]*)\)").captures(code) {
                 if bare_word(&cap[1], name) {
-                    return Ok(Answer::Unknown);
+                    return Ok(Some(Answer::Unknown));
                 }
             }
         }
-        Ok(agree(evidence))
+        Ok(Some(agree(evidence)))
     }
 
     /// pythonFindMethod's member walk for the strict local path: `member` on

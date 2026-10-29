@@ -1046,6 +1046,12 @@ if super::lang_scope::is_dart_member_read(r) {
                 None => Ok(ResolveOutcome::unresolved()),
             };
         }
+        // A Kotlin call on an unqualified call's result — `repository().pending()`
+        // — resolves against the inner call's declared return type, never a
+        // same-named method elsewhere (#2822). `Some(None)` is terminal.
+        if let Some(result) = self.match_kotlin_call_result_call(r)? {
+            return match result { Some(candidate) => self.finish_pre_framework(r, candidate), None => Ok(self.refused()) };
+        }
         if is_js_family(&r.language) && r.reference_kind == "calls" {
             // matchJsSuperCall: `super.m()` binds to the nearest `extends`
             // ancestor's method before any name strategy can guess (#2497).

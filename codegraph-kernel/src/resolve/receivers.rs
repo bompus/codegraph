@@ -267,6 +267,9 @@ impl KernelResolver {
         if php_property {
             return self.infer_php_assigned_property_type(&scan_receiver, &lines, call_idx);
         }
+        if site.language == "kotlin" {
+            return self.kotlin_local_call_result_type(&scan_receiver, site);
+        }
         Ok(None)
     }
 
