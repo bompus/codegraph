@@ -114,6 +114,14 @@ pub(super) fn pos_relative(root: &str, abs: &str) -> String {
     format!("{}{}", ups, abs.strip_prefix(root_dir).unwrap_or(abs).trim_start_matches('/'))
 }
 
+/// escapesRoot (utils.ts): a relative path leaves its root on `..` itself, a
+/// first segment of `..` (`../`, or `..\` from Windows), or an absolute path.
+/// A folder NAMED `..generated` does not escape — starts_with("..") took it
+/// for a way out (upstream a38a1ec0 / #3028).
+pub(super) fn escapes_root(rel: &str) -> bool {
+    rel == ".." || rel.starts_with("../") || rel.starts_with("..\\") || rel.starts_with('/')
+}
+
 pub(super) fn is_within_dir(root_abs: &str, target_abs: &str) -> bool {
     target_abs == root_abs || target_abs.starts_with(&format!("{}/", root_abs.trim_end_matches('/')))
 }

@@ -99,6 +99,18 @@ export function lexicalPathWithinRoot(projectRoot: string, filePath: string): st
 }
 
 /**
+ * Whether a path made relative to a root (`path.relative(root, p)`, or a
+ * project-relative path) leaves the root: `..` itself, a first segment of
+ * `..` (`../x`, or `..\x` from Windows), or an absolute path, which
+ * `path.relative` gives on Windows for another drive. A folder whose NAME
+ * starts with two dots, like `..generated/`, is inside the root:
+ * `startsWith('..')` took it for a way out.
+ */
+export function escapesRoot(rel: string): boolean {
+  return rel === '..' || rel.startsWith('../') || rel.startsWith('..\\') || path.isAbsolute(rel);
+}
+
+/**
  * Validate that a file path stays within the project root, resolving symlinks.
  *
  * Two layers: a cheap lexical check that catches `../` traversal, then a
