@@ -936,6 +936,34 @@ if inferred.is_none() && r.language == "dart" {
         Ok(None)
     }
 
+    /// isReactLifecycleMethod (#2589): a lifecycle method (`render`,
+    /// `componentDidMount`, …) of a class whose head extends React's
+    /// `Component`/`PureComponent` — such calls are React's, never a
+    /// receiver's untyped guess.
+    fn is_react_lifecycle_method(&mut self, n: &KNode) -> Res<bool> {
+        if n.kind != "method" || !REACT_LIFECYCLE_METHODS.contains(&n.name.as_str()) {
+            return Ok(false);
+        }
+        let Some(owner_name) = n
+            .qualified_name
+            .rsplit_once("::")
+            .map(|(owner, _)| owner.rsplit("::").next().unwrap_or(owner).to_string())
+        else {
+            return Ok(false);
+        };
+        let Some(owner) = self
+            .nodes_in_file(&n.file_path)?
+            .iter()
+            .find(|c| c.kind == "class" && c.name == owner_name && c.start_line <= n.start_line && c.end_line >= n.end_line)
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        let head = self.declaration_head(&owner, 4);
+        let head = head.split('{').next().unwrap_or("");
+        Ok(re!(r"(?-u:\b)extends\s+(?:React\s*\.\s*)?(?:Pure)?Component(?-u:\b)").is_match(head))
+    }
+
     /// Whether the bound-receiver miss is a local the index cannot type —
     /// upstream's strategy-3 name match runs for it (`ctx`, bound from an
     /// assertion to a type a function declares); every other miss —
@@ -1295,6 +1323,14 @@ if inferred.is_none() && r.language == "dart" {
                 target.retain(|m| {
                     !php_scope::is_vue_component_method(m) || (object_or_class == "this" && m.file_path == r.file_path)
                 });
+                // A React class component's `render()` and lifecycle methods
+                // are React's to call (#2589): an untyped `root.render(<App/>)`
+                // is no error boundary's `render`, whatever holds the root.
+                if object_or_class != "this" && object_or_class != "super" {
+                    let mut kept = Vec::new();
+                    for n in target { if !self.is_react_lifecycle_method(&n)? { kept.push(n); } }
+                    target = kept;
+                }
                 narrowed |= target.len() != before;
             }
             if super::call_shape::is_std_method(&r.language, &method_name)
@@ -1722,6 +1758,14 @@ if inferred.is_none() && r.language == "dart" {
             return self.match_method_call_free(r);
         }
         if binding.kind == "param" {
+            // An unannotated parameter bound the name but says nothing of
+            // its value — matchMethodCall (#2589) lets the name strategies
+            // answer it: `items.forEach((root) => root.render())` guesses the
+            // one `render`. An annotated one (`store: any`) claims the name:
+            // the claim model keeps it terminal.
+            if self.js_param_unannotated(&binding, root, r)? {
+                return self.match_method_call_free(r);
+            }
             return Ok(None);
         }
         // An awaited binding reassigned before the call no longer holds its
@@ -1729,7 +1773,79 @@ if inferred.is_none() && r.language == "dart" {
         if is_esm_family(&r.language) && self.infer_esm_awaited_call_type(root, r)?.is_some_and(|a| a.rebound) {
             return Ok(None);
         }
-        probe!(r, "brc:factory-tail", self.esm_factory_tail(&binding, root, method, r))
+        if let Some(hit) = probe!(r, "brc:factory-tail", self.esm_factory_tail(&binding, root, method, r)?) {
+            return Ok(Some(hit));
+        }
+        // A declaration that says nothing of the value — an unreadable
+        // initializer or `new` of a non-class binding — leaves the receiver
+        // untyped (#2589): the free strategies answer it.
+        if self.js_binding_says_nothing(&binding, root, r)? {
+            return self.match_method_call_free(r);
+        }
+        Ok(None)
+    }
+
+    /// Whether `name`'s first occurrence on `line` carries a `name:` type
+    /// annotation — `jsParameterReading`/`jsDeclarationReading`'s `name:`
+    /// anchored at the binding site (#2589). A destructured leaf (`{ root }:
+    /// { root: any }`) reads its own position: followed by ` }`, it is
+    /// unannotated; only a plain `name: T` pins a type.
+    fn js_name_annotated(&mut self, line: &str, name: &str) -> Res<bool> {
+        let escaped = regex::escape(name);
+        let Some(m) = Self::cached_regex(&format!(r"(?:^|[^\w$]){escaped}(?-u:\b)"))?.find(line) else {
+            return Ok(false);
+        };
+        Ok(re!(r"^[!?]?\s*:").is_match(&line[m.end()..]))
+    }
+
+    /// A `param` binding says nothing when its own position carries no
+    /// annotation — `(root)`, `{ root }: { root: any }` — where `name: T`,
+    /// even `name: any`, does (the claim model pins annotated receivers).
+    fn js_param_unannotated(&mut self, binding: &KBinding, name: &str, r: &ResolveRefIn) -> Res<bool> {
+        let Some(source) = self.read_file(&r.file_path) else { return Ok(false) };
+        let Some(line) = source.get((binding.line - 1).max(0) as usize) else { return Ok(false) };
+        Ok(!self.js_name_annotated(line, name)?)
+    }
+
+    /// jsBindingReading's "the binding says nothing of the value" (#2589): a
+    /// `name: T` annotation or a whole-value `= new C()` where `C` binds to a
+    /// function/class — or to nothing — says something; every other
+    /// declaration does not, and the name strategies still answer for it.
+    fn js_binding_says_nothing(&mut self, binding: &KBinding, name: &str, r: &ResolveRefIn) -> Res<bool> {
+        let Some(source) = self.read_file(&r.file_path) else { return Ok(true) };
+        let Some(line) = source.get((binding.line - 1).max(0) as usize) else { return Ok(true) };
+        let escaped = regex::escape(name);
+        if self.js_name_annotated(line, name)? {
+            return Ok(false);
+        }
+        // A `name = factory(…)` binding is typed when the factory's return
+        // annotation is known — upstream's jsDeclarationReading (#2589) —
+        // even though the binding itself carries none.
+        if self
+            .untyped_local_call_type(&source, (binding.line - 1).max(0) as usize, name, r, false)?
+            .is_some()
+        {
+            return Ok(false);
+        }
+        if let Some(m) = Self::cached_regex(&format!(
+            r"(?:^|[^\w$]){escaped}[^=;]*=\s*new\s+([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*(?:<[^;(){{}}]*>\s*)?\(",
+        ))?.captures(line) {
+            let cls = m[1].split('.').next().unwrap_or("");
+            return Ok(match self.receiver_binding(cls, r)? {
+                None => false,
+                Some(b) => match b.kind.as_str() {
+                    "import" => false,
+                    "decl" => !b.node_id.as_deref()
+                        .and_then(|id| self.node_by_id(id).ok().flatten())
+                        .is_some_and(|n| matches!(n.kind.as_str(), "function" | "class" | "component" | "method")),
+                    _ => true,
+                },
+            });
+        }
+        // Every other declaration claims the receiver's name — a call result
+        // the project declares (checked above) or anything else the claim
+        // model pins. Only a `new C()` whose `C` is no class says nothing.
+        Ok(false)
     }
 }
 
@@ -1784,6 +1900,15 @@ fn ends_initializer(init_s: &str, call_end: i64) -> bool {
 /// the closing paren of a multi-line call, which the tail rule needs
 /// (name-matcher.ts FACTORY_DECLARATION_LINES).
 const FACTORY_DECLARATION_LINES: usize = 40;
+
+/// REACT_LIFECYCLE_METHODS (#2589): method names React itself calls on a
+/// class component — a guess must never claim them for an untyped receiver.
+const REACT_LIFECYCLE_METHODS: &[&str] = &[
+    "render", "componentDidMount", "componentDidUpdate", "componentWillUnmount",
+    "shouldComponentUpdate", "getSnapshotBeforeUpdate", "componentDidCatch",
+    "componentWillMount", "componentWillReceiveProps", "componentWillUpdate",
+    "UNSAFE_componentWillMount", "UNSAFE_componentWillReceiveProps", "UNSAFE_componentWillUpdate",
+];
 
 /// A binding initializer's factory call (see factory_initializer).
 pub(super) struct FactoryInit {

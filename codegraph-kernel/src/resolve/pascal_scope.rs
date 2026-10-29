@@ -210,6 +210,9 @@ impl KernelResolver {
         )?;
         if out.status == "resolved" {
             out.edge_kind = Some(edge_kind);
+            // A method pointer is a function used as a value, as `@Handler`
+            // is (#756).
+            if pointer { out.fn_ref = Some(true); }
         }
         Ok(Some(out))
     }

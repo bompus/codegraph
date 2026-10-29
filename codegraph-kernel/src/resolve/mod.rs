@@ -267,6 +267,10 @@ pub struct ResolveOutcome {
     /// an import binds, so a sync can park the call under that import's module.
     pub type_head: Option<String>,
     pub type_from: Option<Vec<String>>,
+    /// A function used as a value resolved here (a paren-less Pascal method
+    /// pointer — TS's `metadata: { fnRef: true }` on matchPascalParenlessRef).
+    /// `function_ref` refs get the marker from their reference kind instead.
+    pub fn_ref: Option<bool>,
 }
 
 impl ResolveOutcome {
@@ -284,6 +288,7 @@ impl ResolveOutcome {
             pre_framework: false,
             type_head: None,
             type_from: None,
+            fn_ref: None,
         }
     }
     /// Frameworks are active and the kernel found no name/import candidate —
@@ -336,6 +341,7 @@ impl ResolveOutcome {
             pre_framework: false,
             type_head: None,
             type_from: None,
+            fn_ref: None,
         }
     }
 }

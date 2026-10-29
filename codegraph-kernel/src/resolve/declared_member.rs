@@ -23,7 +23,7 @@ impl KernelResolver {
         let mut hits = line.match_indices(&call).map(|(i, _)| &line[..i]).peekable();
         hits.peek().is_some() && hits.all(|before| before.ends_with("this."))
     }
-    fn declaration_head(&mut self, n: &KNode, count: i64) -> String {
+    pub(super) fn declaration_head(&mut self, n: &KNode, count: i64) -> String {
         let Some(lines) = self.read_file(&n.file_path) else { return String::new() };
         let from = ((n.start_line - 1).max(0) as usize).min(lines.len());
         let to = ((n.start_line + count).max(0) as usize).min(lines.len());
@@ -56,7 +56,15 @@ impl KernelResolver {
             if let Some(m)=re.captures(line) {
                 let before=&line[..m.get(0).unwrap().start()];
                 let in_params=*depth==1 && before.matches('(').count()>before.matches(')').count();
-                if !in_params && !matches!(&m[1], "return"|"new"|"throw"|"var"|"val"|"get"|"set"|"init"|"class"|"interface"|"object"|"static"|"final") {
+                // A language keyword where a type would be is not a member's
+                // type — upstream's MEMBER_TYPE_NON_TYPES, verbatim.
+                if !in_params && !matches!(&m[1],
+                    "return"|"new"|"case"|"throw"|"else"|"in"|"out"|"ref"|"params"|"await"|"yield"|"is"|"as"|"using"
+                    |"var"|"val"|"goto"|"nameof"|"typeof"|"sizeof"|"default"|"when"|"where"|"get"|"set"|"init"
+                    |"class"|"interface"|"enum"|"struct"|"record"|"object"|"namespace"|"package"|"import"|"extends"
+                    |"implements"|"fun"|"static"|"final"|"abstract"|"sealed"|"override"|"virtual"|"delegate"|"event"
+                    // Java's `sealed interface Shape permits Circle, Square` and `void run() throws Failure {`.
+                    |"permits"|"throws") {
                     found=if m[1].contains('.') {Some(m[1].to_string())} else {self.normalize_inferred_type_name(&m[1])?};break;
                 }
             }

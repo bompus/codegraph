@@ -378,7 +378,7 @@ impl KernelResolver {
     /// wrappers. The type must be declared, or imported under its own name,
     /// in the factory's module, and not collide with a different same-named
     /// type in the caller. `await` forms belong to infer_esm_awaited_call_type.
-    fn untyped_local_call_type(
+    pub(super) fn untyped_local_call_type(
         &mut self,
         lines: &[String],
         at: usize,
