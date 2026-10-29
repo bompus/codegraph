@@ -544,11 +544,23 @@ pub(super) struct FileExportIndexK {
 
 /// WorkspacePackages (workspace-packages.ts).
 #[derive(Clone, Debug, Default)]
+/// workspace-packages.ts PackageEntries.
+pub(super) struct WorkspaceEntriesK {
+    /// `exports` key → targets, best first (ordered like the map was read).
+    pub(super) exports: Vec<(String, Vec<String>)>,
+    /// source/module/main/types/typings targets, best first.
+    pub(super) main: Vec<String>,
+}
+
 pub(super) struct WorkspaceK {
     pub(super) source_entries: Vec<(String, String)>,
     pub(super) by_name: HashMap<String, String>,
     pub(super) entry_by_name: Option<HashMap<String, String>>,
     pub(super) local_link_names: HashSet<String>,
+    /// Package directory → its manifest's declared entries.
+    pub(super) entries_by_dir: HashMap<String, WorkspaceEntriesK>,
+    /// Manifest directory → path-dependency name → package directory.
+    pub(super) scoped_by_name: HashMap<String, HashMap<String, String>>,
 }
 
 // ---------------------------------------------------------------------------

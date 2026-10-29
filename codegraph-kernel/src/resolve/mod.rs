@@ -100,6 +100,31 @@ pub struct KernelScopedAliasIn {
     pub map: KernelAliasMapIn,
 }
 
+/// A string-keyed entry whose value is a list — `exports` subpath → targets.
+#[cfg_attr(feature = "addon", napi(object))]
+pub struct KernelKvList {
+    pub key: String,
+    pub values: Vec<String>,
+}
+
+/// A package directory's declared entries (workspace-packages.ts PackageEntries).
+#[cfg_attr(feature = "addon", napi(object))]
+pub struct KernelPackageEntriesIn {
+    /// Package directory relative to projectRoot.
+    pub dir: String,
+    /// `exports` key (`.`, `./widgets`, `./schema/*`) → its targets, best first.
+    pub exports: Vec<KernelKvList>,
+    /// source/module/main/types/typings targets, best first.
+    pub main: Vec<String>,
+}
+
+/// A manifest directory's path-dependency names → package directories.
+#[cfg_attr(feature = "addon", napi(object))]
+pub struct KernelScopedPackageIn {
+    pub dir: String,
+    pub names: Vec<KernelKv>,
+}
+
 #[cfg_attr(feature = "addon", napi(object))]
 pub struct KernelWorkspaceIn {
     /// Import-source path prefix → workspace package name (longest prefix wins).
@@ -110,6 +135,10 @@ pub struct KernelWorkspaceIn {
     pub entry_by_name: Option<Vec<KernelKv>>,
     /// Link-source package names skipped during directory checks.
     pub local_link_names: Option<Vec<String>>,
+    /// Package directory → its manifest's declared entries (exports, main fields).
+    pub entries_by_dir: Option<Vec<KernelPackageEntriesIn>>,
+    /// Manifest directory → `file:`/`link:`/`portal:` dependency name → package dir.
+    pub scoped_by_name: Option<Vec<KernelScopedPackageIn>>,
 }
 
 #[cfg_attr(feature = "addon", napi(object))]
@@ -933,6 +962,39 @@ impl KernelResolver {
             local_link_names: w
                 .local_link_names
                 .map(|v| v.into_iter().collect())
+                .unwrap_or_default(),
+            entries_by_dir: w
+                .entries_by_dir
+                .map(|v| {
+                    v.into_iter()
+                        .map(|e| {
+                            (
+                                e.dir,
+                                WorkspaceEntriesK {
+                                    exports: e
+                                        .exports
+                                        .into_iter()
+                                        .map(|kv| (kv.key, kv.values))
+                                        .collect(),
+                                    main: e.main,
+                                },
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            scoped_by_name: w
+                .scoped_by_name
+                .map(|v| {
+                    v.into_iter()
+                        .map(|s| {
+                            (
+                                s.dir,
+                                s.names.into_iter().map(|kv| (kv.key, kv.value)).collect(),
+                            )
+                        })
+                        .collect()
+                })
                 .unwrap_or_default(),
         });
         // context.getCppIncludeDirs?.() ?? [] — the TS side resolves

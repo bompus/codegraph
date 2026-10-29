@@ -298,7 +298,7 @@ impl KernelResolver {
                 if self.known_file(&file) { return local; }
             }
         }
-        if self.workspaces.is_some() && self.resolve_workspace_import(&source).is_some() {
+        if self.workspaces.is_some() && self.resolve_workspace_import(&source, &r.file_path).is_some() {
             return local;
         }
         if !self.is_declared_outside_package(&source, &r.file_path)
@@ -359,7 +359,7 @@ impl KernelResolver {
     /// playground fixtures.
     pub(super) fn repository_package(&mut self, package: &str, from_file: &str) -> RepositoryPackage {
         if let Some(ws) = &self.workspaces {
-            if ws.local_link_names.contains(package) || self.resolve_workspace_import(package).is_some() {
+            if ws.local_link_names.contains(package) || self.resolve_workspace_import(package, from_file).is_some() {
                 return RepositoryPackage::Mapped;
             }
         }

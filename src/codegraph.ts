@@ -68,6 +68,7 @@ import { extractSegmentSearchWords, segmentLookupVariants, splitIdentifierSegmen
 import { seedLiteralsInQuery, seedRouteNamesInQuery } from './extraction/literal-capture';
 import { createYielder } from './resolution/cooperative-yield';
 import { createImportReader, reopenNameMatchedImports, reopenReferencesThroughAddedFiles, reopenReferencesThroughBarrels, reopenReferencesThroughChangedDefaults, reopenReferencesThroughDeclaredPackages } from './resolution/module-importers';
+import { ESM_IMPORT_LANGUAGES } from './resolution/import-resolver';
 import { minRefsForPool } from './resolution/resolver-pool';
 
 /** The extraction, resolution and watcher modules, loaded on first use. */
@@ -148,6 +149,7 @@ export interface IndexOptions {
  */
 /** project_metadata key for the Python package-root digest (see sync). */
 const PYTHON_ROOTS_METADATA_KEY = 'python_root_fingerprint';
+const WORKSPACE_METADATA_KEY = 'js_workspace_fingerprint';
 
 export class CodeGraph {
   private db: DatabaseConnection;
@@ -852,6 +854,7 @@ export class CodeGraph {
         // real full index — a sync touches a subset, so it must NOT advance the
         // extraction stamp (the bulk would still be stale). See extraction-version.ts.
         if (result.success) this.stampPythonRootFingerprint();
+        if (result.success) this.stampWorkspaceFingerprint();
 
         if (result.success && result.filesIndexed > 0) {
           try {
@@ -971,6 +974,13 @@ export class CodeGraph {
   private stampPythonRootFingerprint(fingerprint = this.resolver.getPythonRootFingerprint()): void {
     try {
       this.queries.setMetadata(PYTHON_ROOTS_METADATA_KEY, fingerprint);
+    } catch { /* metadata is advisory */ }
+  }
+
+  /** Record the workspace-map digest a later sync compares against. */
+  private stampWorkspaceFingerprint(fingerprint = this.resolver.getWorkspaceFingerprint()): void {
+    try {
+      this.queries.setMetadata(WORKSPACE_METADATA_KEY, fingerprint);
     } catch { /* metadata is advisory */ }
   }
 
@@ -1242,7 +1252,8 @@ export class CodeGraph {
               const tAdded = Date.now();
               const reopened = reopenReferencesThroughAddedFiles(
                 this.queries, importReader, added, edgesBeforeResolution,
-                (specifier, fromFile, language) => this.resolver.resolveModuleFile(specifier, fromFile, language)
+                (specifier, fromFile, language) => this.resolver.resolveModuleFile(specifier, fromFile, language),
+                (file) => this.resolver.workspacePackageDirOf(file)
               );
               if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] sync-added-module-importers: ${Date.now() - tAdded}ms (${reopened} refs re-opened)`);
             }
@@ -1454,6 +1465,40 @@ export class CodeGraph {
               }
             }
             if (before !== now) this.stampPythonRootFingerprint(now);
+          } finally {
+            this.resolver.closeKernel();
+            walValve?.start();
+          }
+        }
+
+        // Workspace packages and path dependencies (#2456, #2502). A
+        // package.json edit — a member's name, its `main` or `exports`, a
+        // `file:` dependency — moves what an import of the package resolves to
+        // in files it never touched, and no indexed file changes with it. A
+        // full reconcile (`codegraph sync`, a git hook, the watcher's catch-up)
+        // reads the manifests again; when what they declare moved, every
+        // JavaScript-family reference is re-opened, as a moved Python root set
+        // re-opens Python's above, and the orphan sweep below resolves them by
+        // the new map exactly as a fresh index would. Package.json edits that
+        // leave the map alone (a version bump, a new registry dependency) cost
+        // one read. The watcher's scoped syncs follow source files only and
+        // skip the read: a monorepo's manifests take a walk of the tree to
+        // find. An index stamped by an older engine has no digest: record one.
+        if (fullReconcile) {
+          const tWorkspace = Date.now();
+          if (walValve) { walValve.stop(); await walValve.drain(); }
+          try {
+            const before = this.queries.getMetadata(WORKSPACE_METADATA_KEY);
+            const now = this.resolver.refreshWorkspacePackages();
+            if (before !== null && before !== now) {
+              let reopened = 0;
+              for (const language of ESM_IMPORT_LANGUAGES) reopened += this.orchestrator.resurrectResolutionEdgesForLanguage(language);
+              this.queries.setSynthesisPending(true);
+              if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
+                console.error(`[phase-timing] sync-workspace-packages: ${Date.now() - tWorkspace}ms (${reopened} refs re-opened)`);
+              }
+            }
+            if (before !== now) this.stampWorkspaceFingerprint(now);
           } finally {
             this.resolver.closeKernel();
             walValve?.start();

@@ -41,7 +41,7 @@ import { createYielder, type MaybeYield } from './cooperative-yield';
 import { MAX_SOURCE_FILE_SIZE_BYTES } from '../file-limits';
 import { loadProjectAliases, loadScopedAliases, scopedAliasesForFile, type AliasMap, type AliasScope } from './path-aliases';
 import { findGoModuleForImport, goModulePackageDir, loadGoModule, type GoModule } from './go-module';
-import { loadWorkspacePackages, type WorkspacePackages } from './workspace-packages';
+import { loadWorkspacePackages, workspaceFingerprint, workspacePackageDirOf, type WorkspacePackages } from './workspace-packages';
 import { logDebug } from '../errors';
 import { lexicalPathWithinRoot, safeJsonParse } from '../utils';
 import { builtinModules } from 'module';
@@ -1030,6 +1030,38 @@ export class ReferenceResolver {
     });
   }
 
+  /**
+   * The workspace packages and path dependencies as package.json files
+   * declare them now, read again from disk, and their fingerprint (see
+   * `workspaceFingerprint`). The resolver keeps the map for its lifetime, so
+   * a sync calls this to see a manifest edit; when the map moved, the
+   * resolver takes the new one and drops every memo resolved through the old
+   * one, and the caller re-opens what was linked by it.
+   */
+  refreshWorkspacePackages(): string {
+    const fresh = loadWorkspacePackages(this.projectRoot);
+    const fingerprint = workspaceFingerprint(fresh);
+    if (this.workspacePackages === undefined || workspaceFingerprint(this.workspacePackages) !== fingerprint) {
+      this.workspacePackages = fresh;
+      this.clearCaches();
+      // The kernel resolver takes the workspace map at construction: a moved
+      // map must reach a new instance, not just a cleared memo.
+      this.closeKernel();
+    }
+    return fingerprint;
+  }
+
+  /** The fingerprint of the workspace map this resolver resolves by (see `workspaceFingerprint`). */
+  getWorkspaceFingerprint(): string {
+    return workspaceFingerprint(this.context.getWorkspacePackages?.() ?? null);
+  }
+
+  /** The folder of the workspace package or path dependency `file` is in (see `workspacePackageDirOf`), or null. */
+  workspacePackageDirOf(file: string): string | null {
+    const ws = this.context.getWorkspacePackages?.();
+    return ws ? workspacePackageDirOf(ws, file) : null;
+  }
+
   getPythonReopenScope(changedFiles: string[]) {
     return this.withPythonKernel((kernel) => kernel.pythonPackageReopenScope(changedFiles));
   }
@@ -1366,6 +1398,16 @@ export class ReferenceResolver {
             byName: toKv(workspaces.byName),
             entryByName: workspaces.entryByName ? toKv(workspaces.entryByName) : undefined,
             localLinkNames: workspaces.localLinkNames ? [...workspaces.localLinkNames] : undefined,
+            entriesByDir: workspaces.entriesByDir
+              ? [...workspaces.entriesByDir.entries()].map(([dir, e]) => ({
+                  dir,
+                  exports: e.exports ? [...e.exports.entries()].map(([key, values]) => ({ key, values })) : [],
+                  main: e.main ?? [],
+                }))
+              : undefined,
+            scopedByName: workspaces.scopedByName
+              ? [...workspaces.scopedByName.entries()].map(([dir, names]) => ({ dir, names: toKv(names) }))
+              : undefined,
           }
         : undefined,
       goModules: this.getGoModules().map(m => ({ modulePath: m.modulePath, dir: path.relative(this.projectRoot, m.rootDir).split(path.sep).join('/') })),

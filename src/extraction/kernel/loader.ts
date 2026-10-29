@@ -178,11 +178,29 @@ export interface KernelAliasMapIn {
   patterns: KernelAliasPatternIn[];
 }
 
+export interface KernelKvList {
+  key: string;
+  values: string[];
+}
+
+export interface KernelPackageEntriesIn {
+  dir: string;
+  exports: KernelKvList[];
+  main: string[];
+}
+
+export interface KernelScopedPackageIn {
+  dir: string;
+  names: KernelKv[];
+}
+
 export interface KernelWorkspaceIn {
   sourceEntries: KernelKv[];
   byName: KernelKv[];
   entryByName?: KernelKv[];
   localLinkNames?: string[];
+  entriesByDir?: KernelPackageEntriesIn[];
+  scopedByName?: KernelScopedPackageIn[];
 }
 
 export interface KernelResolverConfig {
