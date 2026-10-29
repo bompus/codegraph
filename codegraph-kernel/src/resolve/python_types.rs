@@ -677,6 +677,25 @@ impl KernelResolver {
                 return Ok(result);
             }
             strict_local = true;
+            // A receiver that names a class declared here is a static-style
+            // call (`File.write(f, "x")`), which the ordinary paths resolve;
+            // the strict read is for a local or a parameter.
+            if self.python_ref_class(receiver, r)?.is_some() {
+                return Ok(result);
+            }
+            // A lambda's own parameter of the name shadows the outer binding;
+            // its default is that outer value, which the ordinary paths read.
+            if self.python_lambda_parameter_named(receiver, r)? {
+                return Ok(result);
+            }
+            // A lambda body reads its captured cell when invoked, and a name
+            // no binding reaches it yet (a future initialization) stays
+            // unresolved there, as the fork's receiver-scope rules hold.
+            let future = self.receiver_binding(receiver, r)?.is_some_and(|b| b.line > r.line);
+            if future && self.python_in_lambda_body(r)? {
+                result.claimed = true;
+                return Ok(result);
+            }
             // `None` is upstream's `undefined`: no enclosing def binds the
             // name, so it is no local — the ordinary paths keep it.
             let Some(answer) = self.python_local_class(receiver, r, &mut read)? else {
@@ -718,6 +737,60 @@ impl KernelResolver {
         result.type_from = read.into_iter().collect();
         result.type_from.sort();
         Ok(result)
+    }
+
+    /// Whether the reference sits in a lambda body whose parameters include
+    /// `name`: the lambda's own parameter, whose default is that outer value.
+    fn python_lambda_parameter_named(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
+        let Some(source) = self.read_file(&r.file_path) else { return Ok(false) };
+        let Some(tree) = self.parsed_tree(&source, r) else { return Ok(false) };
+        let text = source.text();
+        let leaf = super::iteration::descendant_for_position(
+            tree.root_node(),
+            text,
+            ((r.line - 1).max(0) as usize, r.column.max(0) as usize),
+        );
+        let at = leaf.start_byte();
+        let mut current = Some(leaf);
+        while let Some(node) = current {
+            if node.kind() == "lambda"
+                && node.child_by_field_name("body").is_some_and(|body| body.start_byte() <= at && at < body.end_byte())
+                && node.child_by_field_name("parameters").is_some_and(|params| {
+                    super::iteration::named_children(params).into_iter().any(|param| {
+                        let named = param.child_by_field_name("name").unwrap_or(param);
+                        named.kind() == "identifier" && &text[named.start_byte()..named.end_byte()] == name
+                    })
+                })
+            {
+                return Ok(true);
+            }
+            current = node.parent();
+        }
+        Ok(false)
+    }
+
+    /// Whether the reference `r` sits in a lambda's body (not its parameters or
+    /// a default), a deferred read with no graph function node of its own.
+    fn python_in_lambda_body(&mut self, r: &ResolveRefIn) -> Res<bool> {
+        let Some(source) = self.read_file(&r.file_path) else { return Ok(false) };
+        let Some(tree) = self.parsed_tree(&source, r) else { return Ok(false) };
+        let text = source.text();
+        let leaf = super::iteration::descendant_for_position(
+            tree.root_node(),
+            text,
+            ((r.line - 1).max(0) as usize, r.column.max(0) as usize),
+        );
+        let at = leaf.start_byte();
+        let mut current = Some(leaf);
+        while let Some(node) = current {
+            if node.kind() == "lambda"
+                && node.child_by_field_name("body").is_some_and(|body| body.start_byte() <= at && at < body.end_byte())
+            {
+                return Ok(true);
+            }
+            current = node.parent();
+        }
+        Ok(false)
     }
 
     /// pythonLocalClass (#2583): the project class the local or parameter
@@ -762,6 +835,9 @@ impl KernelResolver {
             return Ok(None);
         };
         let mut evidence: Vec<Answer> = Vec::new();
+        // (evidence index, line, whether it rebinds the name): a bare
+        // annotation (`store: B`) does not.
+        let mut lines: Vec<(usize, usize, bool)> = Vec::new();
         if let Some(param) = param {
             // A parameter without an annotation is no evidence.
             let Some(ann) = param else {
@@ -771,6 +847,7 @@ impl KernelResolver {
             if matches!(ev, Answer::Unknown) {
                 return Ok(Some(Answer::Unknown));
             }
+            lines.push((evidence.len(), 0, true));
             evidence.push(ev);
         }
         for b in &bindings {
@@ -778,6 +855,7 @@ impl KernelResolver {
                 return Ok(Some(Answer::Unknown));
             };
             let value = value.trim();
+            let annotation_only = ty.is_some() && value.is_empty();
             let ev = if let Some(ty) = ty {
                 // `reg: Base = make()` trusts the annotation; `reg: A = B()` contradicts it.
                 if !value.is_empty() && value != "None" {
@@ -811,9 +889,10 @@ impl KernelResolver {
                 }
                 self.python_value_text_answer(value, r, read, 0)?
             };
-            if matches!(ev, Answer::Unknown | Answer::Absent) {
-                return Ok(Some(Answer::Unknown));
+            if matches!(ev, Answer::Absent) {
+                continue;
             }
+            lines.push((evidence.len(), *line, !annotation_only));
             evidence.push(ev);
         }
         // Nothing here can be a project class: a builtin, or no evidence.
@@ -846,6 +925,25 @@ impl KernelResolver {
                 }
             }
         }
+        // The fork's receiver-scope rule reads the binding in effect at the
+        // call, not every binding the def makes (`store = A(); store = B();
+        // store.get()` is B's). A same-line replacement, or a later one a
+        // closure's captured cell sees, leaves it unknown; so does a binding
+        // shape this read refuses (checked above).
+        if self.python_receiver_uncertain(r)? {
+            return Ok(Some(Answer::Unknown));
+        }
+        // `PyBinding` lines are zero-based; the ref's line is one-based.
+        let at = r.line.max(0) as usize;
+        if let Some((i, _, _)) = lines
+            .iter()
+            .filter(|(_, line, rebinds)| *rebinds && *line < at)
+            .max_by_key(|(_, line, _)| *line)
+        {
+            return Ok(Some(evidence[*i].clone()));
+        }
+        // Nothing binds the name at the call: a lone initialization, later or
+        // not, is retained only when it is the def's only evidence.
         Ok(Some(agree(evidence)))
     }
 
