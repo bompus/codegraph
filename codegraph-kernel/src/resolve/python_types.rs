@@ -2,6 +2,7 @@
 //! Syntax trees distinguish executable assignments/returns from strings,
 //! nested definitions and incomplete expressions. All evidence names its
 //! source files so incremental sync can reopen dependent edges.
+use super::super::bound::{python_def_params, python_param_names, PyFile};
 use super::*;
 use tree_sitter::Node as PyNode;
 
@@ -14,7 +15,7 @@ pub struct PythonAttributeResult {
     pub type_from: Vec<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Answer {
     Class(Arc<KNode>),
     Declared(Arc<KNode>),
@@ -614,6 +615,7 @@ impl KernelResolver {
             return Ok(result);
         };
         let mut read = HashSet::new();
+        let mut strict_local = false;
         let answer = if let Some(callee) = receiver.strip_suffix("()") {
             if !simple_name(callee) {
                 return Ok(result);
@@ -624,13 +626,10 @@ impl KernelResolver {
                 return Ok(result);
             }
             self.python_callable_result(callee, r, &mut read, 0, false)?
-        } else {
-            let Some((head, attr)) = receiver
-                .split_once('.')
-                .filter(|(_, a)| simple_name(a) && !a.contains('.'))
-            else {
-                return Ok(result);
-            };
+        } else if let Some((head, attr)) = receiver
+            .split_once('.')
+            .filter(|(_, a)| simple_name(a) && !a.contains('.'))
+        {
             if self.python_outside_module_receiver(head, r)? {
                 result.claimed = true;
                 return Ok(result);
@@ -662,16 +661,41 @@ impl KernelResolver {
                 return Ok(result);
             };
             self.python_attribute_type(&class, attr, r, &mut read, &mut HashSet::new())?
+        } else {
+            // matchPythonTypedLocalCall (#2583): `reg.get()`-shaped calls —
+            // a plain local or parameter receiver on a builtin-named method —
+            // settle only through the strict scope evidence read; a name it
+            // cannot type, or whose evidence contests, stays refused rather
+            // than name-guessed. A `self`/`cls` receiver or a builtin type
+            // name keeps the ordinary paths.
+            if !re!(r"^[A-Za-z_]\w*$").is_match(receiver)
+                || !PYTHON_BUILT_IN_METHODS.contains(method)
+                || PYTHON_BUILT_IN_TYPES.contains(receiver)
+                || receiver == "self"
+                || receiver == "cls"
+            {
+                return Ok(result);
+            }
+            strict_local = true;
+            result.claimed = true;
+            self.python_local_class(receiver, r, &mut read)?
         };
-        let declared = matches!(answer, Answer::Declared(_));
+        let declared = matches!(answer, Answer::Declared(_)) && !strict_local;
         match answer {
             Answer::Runtime => result.claimed = true,
             Answer::Class(class) | Answer::Declared(class) => {
                 result.claimed = true;
-                if let Some(mro) = self.python_mro(&class, 0)? {
-                    read.extend(mro.iter().map(|c| c.file_path.clone()));
-                }
-                let mut members = self.python_members(&class, method, r, &mut HashSet::new())?;
+                let mut members = if strict_local {
+                    // pythonMethodOnClass: own member, else a declared base's —
+                    // read through the file's imports so a base from outside
+                    // the project holds none of its methods.
+                    self.python_strict_members(&class, method, r, &mut HashSet::new())?
+                } else {
+                    if let Some(mro) = self.python_mro(&class, 0)? {
+                        read.extend(mro.iter().map(|c| c.file_path.clone()));
+                    }
+                    self.python_members(&class, method, r, &mut HashSet::new())?
+                };
                 if members.is_empty() && declared {
                     members = self.python_descendant_members(&class, method, r)?;
                 }
@@ -690,6 +714,526 @@ impl KernelResolver {
         result.type_from.sort();
         Ok(result)
     }
+
+    /// pythonLocalClass (#2583): the project class the local or parameter
+    /// `name` holds at `r`, agreed by every binding of it in the binding
+    /// def's own body — a parameter annotation, `name: T`, `name = Ctor()`,
+    /// `name = factory()`, `name = None` (no evidence). Any other binding —
+    /// a `for`/`with`/`except`/comprehension target, a tuple or augmented
+    /// assignment, a walrus, an import, `del`, a nested `def` or `class` of
+    /// the name, a `nonlocal` write, a `global` — leaves it unknown, and a
+    /// contested one is no class at all.
+    fn python_local_class(&mut self, name: &str, r: &ResolveRefIn, read: &mut HashSet<String>) -> Res<Answer> {
+        let Some(src) = self.read_file(&r.file_path) else {
+            return Ok(Answer::Unknown);
+        };
+        let file = src.python_file();
+        let at = (r.line - 1).max(0) as usize;
+        // pythonBindingScope: the innermost def around the ref that binds the
+        // name — a parameter, or any binding in its own body. A `global`
+        // binding or no such def is no local.
+        let start = match file.stmt(at) {
+            Some((s, code)) if re!(r"^\s*(?:async\s+)?def\b").is_match(code) => Some(*s),
+            _ => file.scope.get(at).copied().flatten(),
+        };
+        let mut scope: Option<(usize, Option<Option<String>>, Vec<PyBinding>)> = None;
+        for d in file.functions_around(start) {
+            let (param, bindings) = python_scope_state(file, &src, d, name)?;
+            if param.is_some() {
+                scope = Some((d, param, bindings));
+                break;
+            }
+            if bindings.iter().any(|b| matches!(b, PyBinding::Global)) {
+                return Ok(Answer::Unknown);
+            }
+            if !bindings.is_empty() {
+                scope = Some((d, param, bindings));
+                break;
+            }
+        }
+        let Some((d, param, bindings)) = scope else {
+            return Ok(Answer::Unknown);
+        };
+        let mut evidence: Vec<Answer> = Vec::new();
+        if let Some(param) = param {
+            // A parameter without an annotation is no evidence.
+            let Some(ann) = param else {
+                return Ok(Answer::Unknown);
+            };
+            let ev = self.python_ann_answer(&ann, r, read)?;
+            if matches!(ev, Answer::Unknown) {
+                return Ok(Answer::Unknown);
+            }
+            evidence.push(ev);
+        }
+        for b in &bindings {
+            let PyBinding::Assign { ty, value, line } = b else {
+                return Ok(Answer::Unknown);
+            };
+            let value = value.trim();
+            let ev = if let Some(ty) = ty {
+                // `reg: Base = make()` trusts the annotation; `reg: A = B()` contradicts it.
+                if !value.is_empty() && value != "None" {
+                    if let Some(ctor) = python_constructor_call(value) {
+                        if ctor.rsplit('.').next() != ty.trim().trim_matches(['\'', '"']).rsplit('.').next() {
+                            return Ok(Answer::Unknown);
+                        }
+                    }
+                }
+                self.python_ann_answer(ty, r, read)?
+            } else if value == "None" {
+                continue;
+            } else if re!(r"^[A-Za-z_]\w*$").is_match(value) {
+                // `reg = cap`: what the def's parameter `cap` is annotated
+                // with, unless the def binds `cap` anywhere else.
+                let (copied_param, copied_bindings) = python_scope_state(file, &src, d, value)?;
+                let Some(Some(ann)) = copied_param else {
+                    return Ok(Answer::Unknown);
+                };
+                if !copied_bindings.is_empty() {
+                    return Ok(Answer::Unknown);
+                }
+                self.python_ann_answer(&ann, r, read)?
+            } else {
+                // A callee the def binds (`Store = load(); reg = Store()`) is no evidence.
+                for callee in python_value_callees(value) {
+                    let root = callee.split('.').next().unwrap_or(&callee);
+                    if self.python_binds_locally(root, &r.file_path, (*line + 1) as i64, false)? {
+                        return Ok(Answer::Unknown);
+                    }
+                }
+                self.python_value_text_answer(value, r, read, 0)?
+            };
+            if matches!(ev, Answer::Unknown | Answer::Absent) {
+                return Ok(Answer::Unknown);
+            }
+            evidence.push(ev);
+        }
+        // Nothing here can be a project class: a builtin, or no evidence.
+        if !evidence.iter().any(|e| !matches!(e, Answer::Runtime)) {
+            return Ok(if evidence.is_empty() { Answer::Unknown } else { Answer::Runtime });
+        }
+        // A def or class of the name nested in the scope binds it there; a
+        // def nested in it can rebind the scope's own through `nonlocal`;
+        // `with … as (a, name)` binds it in a way bindings don't read.
+        let end = python_scope_end(file, d);
+        if self.nodes_in_file(&r.file_path)?.iter().any(|n| {
+            matches!(n.kind.as_str(), "function" | "method" | "class")
+                && n.name == name
+                && n.start_line > d as i64 + 1
+                && n.end_line <= end as i64 + 1
+        }) {
+            return Ok(Answer::Unknown);
+        }
+        for i in d..=end.min(file.code.len().saturating_sub(1)) {
+            let Some((_, code)) = file.code.get(i) else { break };
+            if !code.contains(name) {
+                continue;
+            }
+            if re!(r"^\s*nonlocal\b").is_match(code) && bare_word(code, name) {
+                return Ok(Answer::Unknown);
+            }
+            if let Some(cap) = re!(r"\bas\s*\(([^)]*)\)").captures(code) {
+                if bare_word(&cap[1], name) {
+                    return Ok(Answer::Unknown);
+                }
+            }
+        }
+        Ok(agree(evidence))
+    }
+
+    /// pythonFindMethod's member walk for the strict local path: `member` on
+    /// `cls` itself, else on a base the class's file declares — resolved
+    /// through that file's imports (`python_bases`), never through the
+    /// `extends` edges, so a base spelled from a module outside the project
+    /// holds none of its methods.
+    fn python_strict_members(
+        &mut self,
+        cls: &Arc<KNode>,
+        member: &str,
+        r: &ResolveRefIn,
+        seen: &mut HashSet<String>,
+    ) -> Res<Vec<Arc<KNode>>> {
+        if seen.len() >= 16 || !seen.insert(cls.id.clone()) {
+            return Ok(Vec::new());
+        }
+        if self.python_class_assigns(cls, member)? {
+            return Ok(vec![cls.clone()]);
+        }
+        let own: Vec<Arc<KNode>> = self
+            .nodes_by_qualified_name(&format!("{}::{}", cls.qualified_name, member))?
+            .iter()
+            .filter(|n| n.file_path == cls.file_path)
+            .cloned()
+            .collect();
+        if !own.is_empty() {
+            return Ok(own);
+        }
+        let mut out: Vec<Arc<KNode>> = Vec::new();
+        for base in self.python_bases(cls, r)? {
+            for n in self.python_strict_members(&base, member, r, seen)? {
+                if !out.iter().any(|o| o.id == n.id) {
+                    out.push(n);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// pythonAnnotationEvidence → pythonEvidenceClass: `Optional[T]`,
+    /// `Union[T, None]`, `T | None` and `"T"` unwrap to `T`; a runtime
+    /// container type is 'runtime', anything unreadable is unknown.
+    fn python_ann_answer(&mut self, raw: &str, site: &ResolveRefIn, read: &mut HashSet<String>) -> Res<Answer> {
+        let mut t = raw.trim().trim_matches(['\'', '"']).trim().to_string();
+        for _ in 0..4 {
+            if t.is_empty() {
+                break;
+            }
+            let cap = re!(r"^(?:typing\.)?Optional\s*\[\s*(.+)\s*\]$").captures(&t)
+                .or_else(|| re!(r"^(?:typing\.)?Union\s*\[\s*([^,\]]+?)\s*,\s*None\s*\]$").captures(&t))
+                .or_else(|| re!(r"^(.+?)\s*\|\s*None$").captures(&t))
+                .or_else(|| re!(r"^None\s*\|\s*(.+)$").captures(&t));
+            let Some(cap) = cap else {
+                break;
+            };
+            t = cap[1].trim().trim_matches(['\'', '"']).trim().to_string();
+        }
+        let head = t.split('[').next().unwrap_or("").trim().trim_start_matches("typing.");
+        if PYTHON_RUNTIME_TYPES.contains(head) {
+            return Ok(Answer::Runtime);
+        }
+        if t.contains('[') || !re!(r"^[A-Za-z_][\w.]*$").is_match(&t) || head == "Any" {
+            return Ok(Answer::Unknown);
+        }
+        self.python_named_answer(&t, site, read)
+    }
+
+    /// pythonValueEvidence → pythonEvidenceClass for a whole assigned value:
+    /// a conditional's arms must agree; literals and runtime containers are
+    /// 'runtime'; `Ctor()` is that class; `factory(...)` resolves by what the
+    /// factory produces; anything else is unknown.
+    fn python_value_text_answer(
+        &mut self,
+        raw: &str,
+        site: &ResolveRefIn,
+        read: &mut HashSet<String>,
+        depth: usize,
+    ) -> Res<Answer> {
+        if depth >= 8 {
+            return Ok(Answer::Unknown);
+        }
+        if let Some((a, b)) = python_conditional_arms(raw) {
+            let x = self.python_value_text_answer(&a, site, read, depth + 1)?;
+            let y = self.python_value_text_answer(&b, site, read, depth + 1)?;
+            return Ok(agree(vec![x, y]));
+        }
+        let mut awaited = false;
+        let mut v = raw.trim();
+        if let Some(rest) = v.strip_prefix("await") {
+            if rest.starts_with(char::is_whitespace) {
+                v = rest.trim();
+                awaited = true;
+            }
+        }
+        let Some(shape) = python_expr_shape(v) else {
+            return Ok(Answer::Unknown);
+        };
+        if re!(r"^(?:S(?: S)*|-?\d[\w.]*|True|False|\[\]|\{\}|\(\))$").is_match(&shape) {
+            return Ok(if awaited { Answer::Unknown } else { Answer::Runtime });
+        }
+        if let Some(cap) = re!(r"^([A-Za-z_][\w.]*) ?\(\)$").captures(&shape) {
+            let callee = cap[1].to_string();
+            if PYTHON_RUNTIME_TYPES.contains(callee.as_str()) {
+                return Ok(if awaited { Answer::Unknown } else { Answer::Runtime });
+            }
+            if callee
+                .rsplit('.')
+                .next()
+                .is_some_and(|leaf| leaf.starts_with(|c: char| c.is_ascii_uppercase()))
+            {
+                return if awaited {
+                    Ok(Answer::Unknown)
+                } else {
+                    self.python_named_answer(&callee, site, read)
+                };
+            }
+            return self.python_callable_result(&callee, site, read, depth + 1, awaited);
+        }
+        Ok(Answer::Unknown)
+    }
+}
+
+/// pythonScopeBindings: `name`'s parameter-annotation state in the def at
+/// statement line `d` — None when it is no parameter, Some(None) for a bare
+/// or starred one, Some(Some) for `name: T` — plus every binding of the name
+/// in the def's own body (a one-line body on the header line counts).
+fn python_scope_state(
+    file: &PyFile,
+    lines: &[String],
+    d: usize,
+    name: &str,
+) -> Res<(Option<Option<String>>, Vec<PyBinding>)> {
+    let header = file.stmt(d).map(|(_, h)| h.clone()).unwrap_or_default();
+    // Params are read off the raw header — the statement's strings are
+    // blanked, so `reg: "T"` reads `reg: "          "` there; offsets match.
+    let raw = file
+        .stmts
+        .iter()
+        .position(|(i, _)| *i == d)
+        .map(|k| python_raw_stmt(file, lines, k))
+        .unwrap_or_else(|| header.clone());
+    let params = python_def_params(&header)
+        .map(|p| raw.get(p.clone()).map_or_else(|| header[p].to_string(), str::to_string))
+        .unwrap_or_default();
+    let param = python_param_names(&params)
+        .contains(&name)
+        .then(|| python_param_ann(&params, name))
+        .flatten();
+    let mut bindings = Vec::new();
+    if let Some(body) = header_colon(&header)
+        .map(|at| &header[at + 1..])
+        .filter(|b| !b.trim().is_empty())
+    {
+        bindings.extend(python_stmt_bindings(body, body, name, d)?);
+    }
+    for (k, (i, code)) in file.stmts.iter().enumerate() {
+        if file.scope[*i] != Some(d) || !mentions(code, name) {
+            continue;
+        }
+        let raw = python_raw_stmt(file, lines, k);
+        bindings.extend(python_stmt_bindings(code, &raw, name, *i)?);
+    }
+    Ok((param, bindings))
+}
+
+/// The last line inside the `def`/`class` at line `d`, nested bodies
+/// included — the range a `nonlocal` or `as (…)` scan must cover.
+fn python_scope_end(file: &PyFile, d: usize) -> usize {
+    let mut end = d;
+    for (i, s) in file.scope.iter().enumerate().skip(d + 1) {
+        let mut at = *s;
+        while let Some(h) = at {
+            if h == d {
+                end = i;
+                break;
+            }
+            at = file.scope[h];
+        }
+    }
+    end
+}
+
+/// pythonBlankStrings: `line` with the contents of its string literals
+/// blanked (quotes kept), so a string never reads as code. A quote left open
+/// blanks the rest of the line.
+fn python_blank_strings(line: &str) -> String {
+    let bytes = line.as_bytes();
+    let mut out = bytes.to_vec();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c != b'"' && c != b'\'' {
+            i += 1;
+            continue;
+        }
+        let triple = bytes.get(i + 1) == Some(&c) && bytes.get(i + 2) == Some(&c);
+        let qlen = if triple { 3 } else { 1 };
+        let mut j = i + qlen;
+        while j < bytes.len() && !line.get(j..).is_some_and(|s| s.starts_with(&line[i..i + qlen])) {
+            j += if bytes[j] == b'\\' { 2 } else { 1 };
+        }
+        for o in out.iter_mut().take(j.min(bytes.len())).skip(i + qlen) {
+            *o = b' ';
+        }
+        i = (j + qlen).min(bytes.len());
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `name: T` or `name: T = d` in a def's parameter list: Some(Some(T)),
+/// Some(None) for a bare or starred parameter, None when not a parameter.
+/// Commas and the default's `=` are read on a string-blanked copy.
+fn python_param_ann(params: &str, name: &str) -> Option<Option<String>> {
+    let blank = python_blank_strings(params);
+    let mut depth = 0i32;
+    let mut from = 0usize;
+    let mut parts: Vec<std::ops::Range<usize>> = Vec::new();
+    for (i, c) in blank.char_indices() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(from..i);
+                from = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(from..blank.len());
+    for range in parts {
+        let part = &params[range.clone()];
+        let Some(cap) = re!(r"^\s*(\*{0,2})([A-Za-z_]\w*)\s*(:?)").captures(part) else {
+            continue;
+        };
+        if &cap[2] != name {
+            continue;
+        }
+        if !cap[1].is_empty() || cap[3].is_empty() {
+            return Some(None);
+        }
+        let at = cap[0].len();
+        // The annotation runs up to the default's `=`, outside brackets.
+        let mut d = 0i32;
+        let mut to = part.len();
+        for (i, c) in blank[range.clone()][at..].char_indices() {
+            match c {
+                '(' | '[' | '{' => d += 1,
+                ')' | ']' | '}' => d -= 1,
+                '=' if d == 0 => {
+                    to = at + i;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let ann = part[at..to].trim();
+        return Some((!ann.is_empty()).then(|| ann.to_string()));
+    }
+    None
+}
+
+/// pythonValueCallees: the names `value` calls as a whole expression or
+/// conditional arm — `Client(...)`, `make()` — whose local rebinding would
+/// make the evidence wrong.
+fn python_value_callees(value: &str) -> Vec<String> {
+    if let Some((a, b)) = python_conditional_arms(value.trim()) {
+        return [a, b].into_iter().flat_map(|arm| python_value_callees(&arm)).collect();
+    }
+    let mut v = value.trim();
+    if let Some(rest) = v.strip_prefix("await") {
+        if rest.starts_with(char::is_whitespace) {
+            v = rest.trim();
+        }
+    }
+    python_expr_shape(v)
+        .and_then(|shape| re!(r"^([A-Za-z_][\w.]*) ?\(\)$").captures(&shape).map(|c| c[1].to_string()))
+        .into_iter()
+        .collect()
+}
+
+/// pythonConditionalArms: the two arms of a top-level `A if c else B`;
+/// keywords inside brackets or strings do not count.
+fn python_conditional_arms(raw: &str) -> Option<(String, String)> {
+    let mut depth = 0i32;
+    let mut if_at: Option<usize> = None;
+    let bytes = raw.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let c = bytes[i];
+        let ch = raw[i..].chars().next().unwrap();
+        if c == b'"' || c == b'\'' {
+            let triple = bytes.get(i + 1) == Some(&c) && bytes.get(i + 2) == Some(&c);
+            let close_len = if triple { 3 } else { 1 };
+            let close = &raw[i..i + close_len];
+            let mut j = i + close_len;
+            while j < bytes.len() && !raw.get(j..).is_some_and(|s| s.starts_with(close)) {
+                j += if bytes[j] == b'\\' { 2 } else { 1 };
+            }
+            i = j + close_len;
+            continue;
+        }
+        if matches!(c, b'(' | b'[' | b'{') {
+            depth += 1;
+        } else if matches!(c, b')' | b']' | b'}') {
+            depth -= 1;
+        } else if depth == 0 && raw[..i].chars().next_back().is_some_and(|p| p.is_whitespace()) {
+            let rest = &raw[i..];
+            if if_at.is_none()
+                && rest.starts_with("if")
+                && rest.len() > 2
+                && rest.as_bytes()[2].is_ascii_whitespace()
+            {
+                if_at = Some(i);
+            } else if if_at.is_some()
+                && rest.starts_with("else")
+                && rest.len() > 4
+                && rest.as_bytes()[4].is_ascii_whitespace()
+            {
+                let at = if_at.unwrap();
+                return Some((raw[..at].trim().to_string(), raw[i + 4..].trim().to_string()));
+            }
+        }
+        i += ch.len_utf8();
+    }
+    None
+}
+
+/// pythonExprShape: the top-level shape of a python expression — string
+/// literals collapse to `S` and everything inside brackets is dropped, so
+/// `Client(a, f(b))` reads `Client()` and `Client() if t else Fake()` keeps
+/// its `if`. None when the expression is left open or unrecoverable.
+fn python_expr_shape(raw: &str) -> Option<String> {
+    python_expr_scan(raw).0
+}
+
+/// pythonExprScan: `shape` plus why there is none — 'continues' for an open
+/// bracket or triple-quoted string or a trailing `\`, 'broken' for a
+/// single-line string left open or a bracket closed that was never opened.
+fn python_expr_scan(raw: &str) -> (Option<String>, &'static str) {
+    let mut out = String::new();
+    let mut depth = 0i32;
+    let bytes = raw.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let c = bytes[i];
+        let ch = raw[i..].chars().next().unwrap();
+        if c == b'"' || c == b'\'' {
+            let triple = bytes.get(i + 1) == Some(&c) && bytes.get(i + 2) == Some(&c);
+            let close_len = if triple { 3 } else { 1 };
+            let close = &raw[i..i + close_len];
+            let mut j = i + close_len;
+            while j < bytes.len() && !raw.get(j..).is_some_and(|s| s.starts_with(close)) {
+                j += if bytes[j] == b'\\' { 2 } else { 1 };
+            }
+            if j >= bytes.len() {
+                return (None, if triple { "continues" } else { "broken" });
+            }
+            if depth == 0 {
+                let strip = out
+                    .chars()
+                    .rev()
+                    .take(2)
+                    .take_while(|k| "rbfuRBFU".contains(*k))
+                    .count();
+                out.truncate(out.len() - strip);
+                out.push('S');
+            }
+            i = j + close_len;
+            continue;
+        }
+        if matches!(c, b'(' | b'[' | b'{') {
+            if depth == 0 {
+                out.push(ch);
+            }
+            depth += 1;
+        } else if matches!(c, b')' | b']' | b'}') {
+            depth -= 1;
+            if depth < 0 {
+                return (None, "broken");
+            }
+            if depth == 0 {
+                out.push(ch);
+            }
+        } else if depth == 0 {
+            out.push(ch);
+        }
+        i += ch.len_utf8();
+    }
+    let shape = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    if depth > 0 || shape.ends_with('\\') {
+        return (None, "continues");
+    }
+    (Some(shape), "none")
 }
 #[cfg_attr(feature = "addon", napi)]
 impl KernelResolver {
