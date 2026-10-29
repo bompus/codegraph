@@ -261,7 +261,7 @@ impl KernelResolver {
                 let base = alias_map.base_url.as_deref().unwrap_or(&self.project_root);
                 let absolute = pos_resolve(base, &filled);
                 let relative = pos_relative(&self.root_abs, &absolute).replace('\\', "/");
-                if relative.starts_with("..") {
+                if escapes_root(&relative) {
                     continue;
                 }
                 out.push(relative);
@@ -394,7 +394,7 @@ impl KernelResolver {
             let base = aliases.base_url.as_deref().unwrap_or(&self.project_root);
             let absolute = pos_resolve(base, import_path);
             let relative = pos_relative(&self.root_abs, &absolute).replace('\\', "/");
-            if !relative.is_empty() && !relative.starts_with("..") && !relative.starts_with('/') {
+            if !relative.is_empty() && !escapes_root(&relative) {
                 out.push(relative);
             }
         }

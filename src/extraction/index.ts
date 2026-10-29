@@ -28,7 +28,7 @@ import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLangu
 import { loadExtensionOverrides, loadIncludeIgnoredPatterns, loadExcludePatterns, loadIncludePatterns, PROJECT_CONFIG_FILENAME } from '../project-config';
 import { isCodeGraphDataDir, readDirEntries } from '../directory';
 import { logDebug, logWarn } from '../errors';
-import { validatePathWithinRoot, normalizePath } from '../utils';
+import { validatePathWithinRoot, normalizePath, escapesRoot } from '../utils';
 import ignore, { Ignore } from 'ignore';
 import { withNoMatchFastPath } from './ignore-prefilter';
 import { detectFrameworks, detectFrameworksWithSkips, getFrameworkResolver } from '../resolution/frameworks';
@@ -735,7 +735,7 @@ function collectIncludedFiles(
       if (entry.name === '.git' || isCodeGraphDataDir(entry.name)) continue;
       const abs = path.join(absDir, entry.name);
       const rel = normalizePath(path.relative(rootDir, abs));
-      if (!rel || rel.startsWith('..')) continue;
+      if (!rel || escapesRoot(rel)) continue;
       if (entry.isSymbolicLink()) {
         try {
           const st = fs.statSync(fs.realpathSync(abs));
@@ -1795,7 +1795,7 @@ function scanDirectoryWalk(
   const isIgnored = (fullPath: string, isDir: boolean, matchers: ScopedIgnore[]): boolean => {
     for (const { dir, ig } of matchers) {
       let rel = normalizePath(path.relative(dir, fullPath));
-      if (!rel || rel.startsWith('..')) continue; // not under this matcher's dir
+      if (!rel || escapesRoot(rel)) continue; // not under this matcher's dir
       if (isDir) rel += '/'; // dir-only rules (e.g. `build/`) only match with the slash
       if (ig.ignores(rel)) return true;
     }

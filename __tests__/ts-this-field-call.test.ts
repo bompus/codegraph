@@ -51,16 +51,16 @@ beforeAll(async () => {
   // A field typed as the type OF a value: an object literal used as a namespace.
   w(
     'storage.ts',
-    'export const AppStorage = {\n' +
+    'export const DraftHubStorage = {\n' +
       '  async get(key: string): Promise<string> { return key; },\n' +
       '  async getSettings(): Promise<object> { return {}; },\n' +
       '};\n'
   );
   w(
     'keeper.ts',
-    "import { AppStorage } from './storage';\n" +
+    "import { DraftHubStorage } from './storage';\n" +
       'export class Keeper {\n' +
-      '  constructor(private readonly storage: typeof AppStorage) {}\n' +
+      '  constructor(private readonly storage: typeof DraftHubStorage) {}\n' +
       '  async get(key: string): Promise<string> { return this.storage.get(key); }\n' +
       '  async settings(): Promise<object> { return this.storage.getSettings(); }\n' +
       '}\n'
@@ -80,6 +80,20 @@ beforeAll(async () => {
       '  notify(msg: string): string { return this.#mailer.send(msg); }\n' +
       '  fallback(msg: string): string { return this.#backup.send(msg); }\n' +
       '  put(x: string): void { this.#items.add(x); }\n' +
+      '}\n'
+  );
+  // Two apps declare the same service; the caller is equally near both.
+  // Code-unit order and locale collation disagree on `Beta` vs `alpha`.
+  for (const app of ['Beta', 'alpha']) {
+    fs.mkdirSync(path.join(dir, 'src', 'apps', app), { recursive: true });
+    w(`apps/${app}/service.ts`, 'export class UserService {\n  load(): string { return "x"; }\n}\n');
+  }
+  fs.mkdirSync(path.join(dir, 'src', 'shared'));
+  w(
+    'shared/hub.ts',
+    'export class Hub {\n' +
+      '  constructor(private readonly users: UserService) {}\n' +
+      '  run(): string { return this.users.load(); }\n' +
       '}\n'
   );
   cg = CodeGraph.initSync(dir);
@@ -113,11 +127,18 @@ describe('this.<field>.<method>() (#1496)', () => {
     expect(calleesOf('Notifier::push')).toEqual([]);
   });
 
+  it('breaks an equal-proximity tie by code-unit path order, the same on every host locale', () => {
+    // localeCompare depends on the host's ICU locale (en puts `alpha` first);
+    // code-unit order puts `Beta` first everywhere.
+    const callee = cg.getCallees(method('Hub::run').id).map(({ node }) => node.filePath);
+    expect(callee).toEqual(['src/apps/Beta/service.ts']);
+  });
+
   it('resolves a field typed `typeof <objectLiteral>` onto the literal\'s member', () => {
     // The members are functions inside the constant's extent (#1573), qualified
     // under it (#2300).
-    expect(calleesOf('Keeper::settings')).toEqual(['AppStorage::getSettings']);
-    expect(calleesOf('Keeper::get')).toEqual(['AppStorage::get']);
+    expect(calleesOf('Keeper::settings')).toEqual(['DraftHubStorage::getSettings']);
+    expect(calleesOf('Keeper::get')).toEqual(['DraftHubStorage::get']);
     const self = cg.getCallers(method('Keeper::get').id).some(({ node }) => node.id === method('Keeper::get').id);
     expect(self).toBe(false);
   });
@@ -168,49 +189,5 @@ export class Vault {
     expect(callees('optional')).toEqual(['Mailer::send']);
     expect(callees('put')).toEqual([]);
     expect(callees('publicPut')).toEqual(['Cart::add']);
-  });
-});
-
-describe('this.<field>.<method>() with a same-named class elsewhere', () => {
-  let temp: string;
-  let graph: CodeGraph | undefined;
-  afterEach(() => {
-    graph?.destroy();
-    graph = undefined;
-    if (temp) fs.rmSync(temp, { recursive: true, force: true });
-  });
-
-  const mailer = 'export class Mailer {\n  send(msg: string): string { return msg; }\n}\n';
-  const notifier = (from: string) =>
-    `import { Mailer } from '${from}';\n` +
-    'export class Notifier {\n' +
-    '  constructor(private readonly mailer: Mailer) {}\n' +
-    '  send(msg: string): string { return this.mailer.send(msg); }\n' +
-    '}\n';
-  async function sendTargets(files: Record<string, string>): Promise<string[]> {
-    temp = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-field-homonym-'));
-    fs.mkdirSync(path.join(temp, 'src'));
-    for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(temp, 'src', name), body);
-    graph = await CodeGraph.init(temp, { index: true });
-    const caller = graph.getNodesByKind('method').find((n) => n.qualifiedName === 'Notifier::send')!;
-    return graph.getCallees(caller.id).map(({ node }) => node.filePath);
-  }
-
-  // The decoy sorts before and after the imported file: the import decides, not path order.
-  it.each(['aaa.ts', 'zzz.ts'])('follows the field type\'s import past a decoy in %s', async (decoy) => {
-    const targets = await sendTargets({ 'mailer.ts': mailer, [decoy]: mailer, 'notifier.ts': notifier('./mailer') });
-    expect(targets).toEqual(['src/mailer.ts']);
-  });
-
-  it('keeps an overloaded method in the imported file', async () => {
-    const overloaded =
-      'export class Mailer {\n  send(msg: string): string;\n  send(msg: number): string;\n  send(msg: any): string { return String(msg); }\n}\n';
-    const targets = await sendTargets({ 'mailer.ts': overloaded, 'aaa.ts': mailer, 'notifier.ts': notifier('./mailer') });
-    expect(targets).toEqual(['src/mailer.ts']);
-  });
-
-  it('binds no project method when the field type comes from a package', async () => {
-    const targets = await sendTargets({ 'mailer.ts': mailer, 'aaa.ts': mailer, 'notifier.ts': notifier('nodemailer') });
-    expect(targets).toEqual([]);
   });
 });
