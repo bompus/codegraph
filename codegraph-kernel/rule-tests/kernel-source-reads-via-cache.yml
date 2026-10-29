@@ -1,0 +1,8 @@
+id: kernel-source-reads-via-cache
+valid:
+  - 'fn f() { resolver.read_file(path); }'
+  - 'fn read_file() { std::fs::read_to_string(path); }'
+  - 'fn read_source() { std::fs::read_to_string(path); }'
+invalid:
+  - 'fn f() { std::fs::read_to_string(path); }'
+  - 'fn read_source_unchecked() { std::fs::read_to_string(path); }'

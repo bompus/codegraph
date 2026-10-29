@@ -1,0 +1,7 @@
+id: kernel-no-adhoc-name-regex
+valid:
+  - 'fn f() { Regex::new("fixed pattern"); }'
+  - 'fn f() { resolver.cached_regex(&format!("^{name}$")); }'
+invalid:
+  - 'fn f() { Regex::new(&format!("^{name}$")); }'
+  - 'fn f() { Regex::new(format!("^{name}$")); }'
