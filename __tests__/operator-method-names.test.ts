@@ -282,4 +282,26 @@ describe('a method whose name is not a plain word', () => {
     expect(callsFrom(cg, 'src/Vec.scala', lineOf(scala, 'def twice'))).toEqual([`Vec::++@Vec.scala:${lineOf(scala, 'def ++(n: Int, m: Int)')}`]);
     expect(callsFrom(cg, 'src/Weird.kt', lineOf(kotlin, 'fun use()'))).toEqual([`Weird::\`reads (a value\`@Weird.kt:${lineOf(kotlin, 'x: Int, y: Int')}`]);
   }, 120_000);
+
+  it('C++: a comment between the dot and the operator name still reads the arguments', async () => {
+    const hppText = lines(
+      'struct Total {',
+      '  int value = 0;',
+      '  Total& operator+=(int n) { value += n; return *this; }',
+      '  Total& operator+=(const Total& other) { value += other.value; return *this; }',
+      '};',
+    );
+    const cppText = lines(
+      '#include "total.hpp"',
+      'int addUp() {',
+      '  Total a;',
+      '  Total b;',
+      '  b./* note */operator+=(a);',
+      '  return b.value;',
+      '}',
+    );
+    const cg = await index(project({ 'src/total.hpp': hppText, 'src/total.cpp': cppText }));
+    expect(callsFrom(cg, 'src/total.cpp', lineOf(cppText, 'int addUp()')))
+      .toEqual([`Total::operator+=@total.hpp:${lineOf(hppText, 'Total& operator+=(const Total& other)')}`]);
+  }, 120_000);
 });

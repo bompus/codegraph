@@ -688,6 +688,12 @@ impl KernelResolver {
             if self.python_lambda_parameter_named(receiver, r)? {
                 return Ok(result);
             }
+            // A binding a branch, loop or `try` may not run leaves no single
+            // value in effect; claim it and link nothing.
+            if self.python_conditional_bindings(receiver, r)? {
+                result.claimed = true;
+                return Ok(result);
+            }
             // A lambda body reads its captured cell when invoked, and a name
             // no binding reaches it yet (a future initialization) stays
             // unresolved there, as the fork's receiver-scope rules hold.
@@ -789,6 +795,49 @@ impl KernelResolver {
                 return Ok(true);
             }
             current = node.parent();
+        }
+        Ok(false)
+    }
+
+    /// Whether the def around `r` binds `name` inside a branch, loop, `try` or
+    /// `with` before the call: no single value is in effect there, so the
+    /// strict read refuses rather than taking the last written assignment.
+    fn python_conditional_bindings(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
+        let Some(src) = self.read_file(&r.file_path) else { return Ok(false) };
+        let file = src.python_file();
+        let at = (r.line - 1).max(0) as usize;
+        let start = match file.stmt(at) {
+            Some((s, code)) if re!(r"^\s*(?:async\s+)?def\b").is_match(code) => Some(*s),
+            _ => file.scope.get(at).copied().flatten(),
+        };
+        let Some(d) = start else { return Ok(false) };
+        let assign = Self::cached_regex(&format!(r"^\s*{}\s*(?::[^=]*)?=[^=]", regex::escape(name)))?;
+        // One conditional binding beside a `None` placeholder or a later plain
+        // assignment still has a value to read. Two conditional bindings in
+        // different blocks do not.
+        let end = python_scope_end(file, d);
+        let mut conditional = 0;
+        for i in (d + 1)..=end.min(file.code.len().saturating_sub(1)) {
+            let Some(line) = src.get(i) else { break };
+            if !assign.is_match(line.trim_start()) { continue; }
+            let indent = line.len() - line.trim_start().len();
+            let mut j = i;
+            let mut inside = false;
+            while j > d {
+                j -= 1;
+                let Some(above) = src.get(j) else { break };
+                let trimmed = above.trim_start();
+                if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
+                if above.len() - trimmed.len() >= indent { continue; }
+                if re!(r"^(?:if|elif|else|for|while|try|except|finally|with)\b").is_match(trimmed) {
+                    inside = true;
+                    break;
+                }
+            }
+            if inside {
+                conditional += 1;
+                if conditional >= 2 { return Ok(true); }
+            }
         }
         Ok(false)
     }
@@ -933,17 +982,51 @@ impl KernelResolver {
         if self.python_receiver_uncertain(r)? {
             return Ok(Some(Answer::Unknown));
         }
+        // A conditional, loop or `try` binding may not run, so no chronological
+        // order decides between it and another: `if flag: store = A() else:
+        // store = B()` leaves the call unknown, as #2821 refuses.
+        let control_bound = |line0: usize| -> bool {
+            let Some(binding) = src.get(line0) else { return false };
+            let binding_indent = binding.len() - binding.trim_start().len();
+            let mut i = line0;
+            while i > d {
+                i -= 1;
+                let Some(line) = src.get(i) else { break };
+                let trimmed = line.trim_start();
+                if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
+                if line.len() - trimmed.len() >= binding_indent { continue; }
+                if re!(r"^(?:if|elif|else|for|while|try|except|finally|with)").is_match(trimmed) {
+                    return true;
+                }
+            }
+            false
+        };
         // `PyBinding` lines are zero-based; the ref's line is one-based.
         let at = r.line.max(0) as usize;
-        if let Some((i, _, _)) = lines
+        let eligible = |line: &usize, rebinds: &bool| *rebinds && *line < at;
+        if lines.iter().any(|(_, line, rebinds)| eligible(line, rebinds) && control_bound(*line)) {
+            return Ok(Some(Answer::Unknown));
+        }
+        if let Some((i, line, _)) = lines
             .iter()
-            .filter(|(_, line, rebinds)| *rebinds && *line < at)
+            .filter(|(_, line, rebinds)| eligible(line, rebinds))
             .max_by_key(|(_, line, _)| *line)
         {
+            // A conflicting set where the binding in effect may not run stays
+            // unknown: `store = A(); if flag: store = B(); store.get()`.
+            if control_bound(*line) && matches!(agree(evidence.clone()), Answer::Unknown) {
+                return Ok(Some(Answer::Unknown));
+            }
             return Ok(Some(evidence[*i].clone()));
         }
-        // Nothing binds the name at the call: a lone initialization, later or
-        // not, is retained only when it is the def's only evidence.
+        // Nothing binds the name before the call: `store.get(); store = A()`
+        // raises UnboundLocalError in the def's own body. A nested def that
+        // captures the outer name reads it when invoked, which the fork keeps.
+        if start == Some(d) {
+            return Ok(Some(Answer::Unknown));
+        }
+        // A lone initialization, later or not, is retained only when it is the
+        // def's only evidence.
         Ok(Some(agree(evidence)))
     }
 

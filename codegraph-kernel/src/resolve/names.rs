@@ -366,6 +366,22 @@ impl KernelResolver {
         Ok(!self.is_sealed_module(&candidate.file_path)? && !self.is_unexported_module_binding(candidate)?)
     }
 
+    /// Whether the reference's own import names the file `target` is in: a
+    /// default or named binding whose specifier resolves to that file. A
+    /// function value reached this way is import-justified, so a module's
+    /// unexported-binding rule does not bar it.
+    pub(super) fn ref_imports_target_file(&mut self, target: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        let name = r.reference_name.trim();
+        if name.is_empty() { return Ok(false); }
+        let mappings = self.import_mappings(&r.file_path)?;
+        for mapping in mappings.iter() {
+            if mapping.local_name != name { continue; }
+            let Some(hit) = self.resolve_via_import(&r.clone().naming(&mapping.local_name, "references"))? else { continue; };
+            if hit.node.file_path == target.file_path { return Ok(true); }
+        }
+        Ok(false)
+    }
+
     /// isVisibleAcrossFiles (name-matcher.ts).
     pub(super) fn is_visible_across_files(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
         self.is_visible_across_files_for(candidate, r, true)

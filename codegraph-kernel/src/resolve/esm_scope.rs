@@ -26,6 +26,11 @@ impl KernelResolver {
                 for m in re!(r"(?m)^[ \t]*export\s+(?:default|=)\s+([A-Za-z_$][\w$]*)\s*;?\s*$").captures_iter(&code) {
                     names.insert(m[1].to_string());
                 }
+                // `export default function Disclosure() {}` exports the
+                // declaration's own name to a default import.
+                for m in re!(r"(?m)^[ \t]*export\s+default\s+(?:async\s+)?(?:function|class)\s+([A-Za-z_$][\w$]*)").captures_iter(&code) {
+                    names.insert(m[1].to_string());
+                }
                 for m in re!(r"(?m)^[ \t]*export\s+default\s*\{([^}]*)\}|(?-u:\b)return\s*\{([^{}]*)\}").captures_iter(&code) {
                     for item in m.get(1).or_else(|| m.get(2)).unwrap().as_str().split(',') {
                         let value = item.rsplit(':').next().unwrap_or("").trim();

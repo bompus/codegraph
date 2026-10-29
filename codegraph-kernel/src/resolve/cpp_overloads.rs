@@ -532,17 +532,33 @@ fn opening_paren(text: &str, close: usize) -> Option<usize> {
 /// arguments: …`), so the `function` field never spells the callee. The argument list is still the
 /// call's own; only the name has to come from the error.
 fn cpp_call_has_operator_error(call: tree_sitter::Node, text: &str, name: &str) -> bool {
-    let name: String = name.chars().filter(|c| !c.is_whitespace()).collect();
+    let plain = |spelling: &str| -> String { spelling.chars().filter(|c| !c.is_whitespace()).collect() };
+    let name = plain(name);
     let mut cursor = call.walk();
     let mut found = false;
     for child in call.children(&mut cursor) {
-        if child.is_error() {
-            let spelled: String = text[child.byte_range()].chars().filter(|c| !c.is_whitespace()).collect();
-            // The error starts at the member access: `b.operator+=(a)` strands `".operator+="`.
-            if spelled.trim_start_matches(['.', '-', '>']) == name { found = true; break; }
+        if !child.is_error() { continue; }
+        // The grammar still reads the operator's own name when a comment sits
+        // inside the access (`b./* note */operator+=(a)`); the error's raw text
+        // then carries the comment, so compare the name node where there is one.
+        if let Some(operator) = cpp_operator_name_in(child, text) {
+            if plain(operator) == name { found = true; break; }
+            continue;
         }
+        // No name node: the error starts at the member access, so the text is
+        // `".operator+="` (or the same behind `->`).
+        let spelled = plain(&text[child.byte_range()]);
+        if spelled.trim_start_matches(['.', '-', '>']) == name { found = true; break; }
     }
     found
+}
+
+/// The `operator_name` a tree-sitter-cpp error holds, if it read one.
+fn cpp_operator_name_in<'t>(node: tree_sitter::Node, text: &'t str) -> Option<&'t str> {
+    if node.kind() == "operator_name" { return Some(&text[node.byte_range()]); }
+    let mut cursor = node.walk();
+    let children: Vec<_> = node.children(&mut cursor).collect();
+    children.into_iter().find_map(|child| cpp_operator_name_in(child, text))
 }
 
 /// The expanded definition a C++ method that a macro defines carries as its signature

@@ -282,6 +282,29 @@ def make():
 reg = {}
 reg.get("k")
 `,
+  'future_local.py': `class Store:
+    def get(self):
+        return 1
+
+def direct():
+    result = store.get()
+    store = Store()
+    return result
+`,
+  'branches_two.py': `class A:
+    def get(self):
+        return 'A'
+class B:
+    def get(self):
+        return 'B'
+
+def choose(flag):
+    if flag:
+        store = A()
+    else:
+        store = B()
+    return store.get()
+`,
   'outside_base.py': `from somepkg import BaseStore
 
 
@@ -419,6 +442,14 @@ describe('Python builtin-named methods through typed locals and parameters (#258
 
   it('links nothing for a method a base from outside the project could hold', () => {
     expect(callsFrom('outside_base.py', 'use_child')).toEqual([]);
+  });
+
+  it('links nothing for a local read before its only assignment in the same def', () => {
+    expect(callsFrom('future_local.py', 'direct')).toEqual([]);
+  });
+
+  it('links nothing when branches bind the local to different classes', () => {
+    expect(callsFrom('branches_two.py', 'choose')).toEqual([]);
   });
 });
 

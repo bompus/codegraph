@@ -222,4 +222,19 @@ export function list(present: (fn: unknown) => void): void {
       cg.close();
     }
   }, 60_000);
+
+  it('leaves a name the module does not export unresolved instead of taking an unexported namesake', async () => {
+    const cg = await indexProject({
+      'package.json': PACKAGE_JSON,
+      'tsconfig.json': TSCONFIG,
+      'src/empty.ts': 'export const anchor = 1;\n',
+      'src/other.ts': 'function secret() { return 1; }\nexport const keep = secret;\n',
+      'src/consumer.ts': "import { secret } from './empty';\nfunction register(cb: () => number) { return cb(); }\nregister(secret);\n",
+    });
+    try {
+      expect(fnRefsFrom(cg, 'src/consumer.ts')).toEqual([]);
+    } finally {
+      cg.close();
+    }
+  }, 60_000);
 });

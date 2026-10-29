@@ -1326,12 +1326,16 @@ if r.language == "dart" && r.reference_kind == "references"
         // a receiver's type or a function value — keeps every language's own
         // privacy but not a module's unexported-binding rule, which upstream
         // applies to the name strategies alone.
+        // A function value the file's own import names is justified by that
+        // import, not by its name: an unexported inner function behind a
+        // default-exported wrapper stays reachable through the default import.
+        let name_pick = match winner.resolved_by {
+            "instance-method" | "field-call" => false,
+            "function-ref" => !self.ref_imports_target_file(&winner.node, r)?,
+            _ => true,
+        };
         if !matches!(winner.resolved_by, "import" | "framework" | "file-path")
-            && !self.is_visible_across_files_for(
-                &winner.node,
-                r,
-                !matches!(winner.resolved_by, "instance-method" | "function-ref" | "field-call"),
-            )?
+            && !self.is_visible_across_files_for(&winner.node, r, name_pick)?
         {
             return Ok(ResolveOutcome::unresolved());
         }
