@@ -2195,6 +2195,9 @@ const JSX_CHILD_KINDS = new Set<NodeKind>(['component', 'function', 'class']);
  */
 const JSX_CHILD_LANGUAGES = [...JS_FAMILY, 'vue', 'svelte'];
 
+/** A file whose tags the JSX pass reads: a script, or a single-file component's. */
+const JSX_INPUT_FILE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro)$/;
+
 /**
  * Whether a JSX tag can render `node` (`jsxChild`): a script's component,
  * function or class named with a tag's capital, or any component, which a
@@ -2273,6 +2276,34 @@ function projectImport(ctx: ResolutionContext, name: string, file: string): { mo
   const module = binding.resolvedPath ?? resolveImportPath(binding.source, file, language, ctx);
   if (!module || !ctx.getNodesInFile(module).some((n) => n.kind === 'file')) return undefined;
   return { module, exported: binding.isDefault || binding.exportedName === 'default' ? 'default' : binding.exportedName };
+}
+
+/**
+ * The files a JSX file's project-imported tags are read through: each tag's
+ * module, the index or barrel that hands its component on, and the module
+ * that declares it (`exportedComponent`'s reads). A sync that edits one of
+ * them — `index.ts` forwarding another module, a default export rewired —
+ * redraws the tag. `memo` holds each module and export's reads for one run.
+ */
+function importedTagModules(ctx: ResolutionContext, file: string, content: string, memo: Map<string, Set<string>>): Set<string> {
+  const out = new Set<string>();
+  JSX_TAG_RE.lastIndex = 0;
+  const names = new Set<string>();
+  for (let m = JSX_TAG_RE.exec(content); m; m = JSX_TAG_RE.exec(content)) names.add(m[1]!);
+  for (const name of names) {
+    const imported = projectImport(ctx, name, file);
+    if (!imported) continue;
+    const key = `${imported.module}\0${imported.exported}`;
+    let reads = memo.get(key);
+    if (!reads) {
+      reads = new Set<string>();
+      exportedComponent(imported.module, imported.exported, ctx, new Set(), reads);
+      memo.set(key, reads);
+    }
+    for (const read of reads) out.add(read);
+  }
+  out.delete(file);
+  return out;
 }
 
 /**
@@ -7188,12 +7219,19 @@ export function mayFeedSynthesis(filePath: string, content: string): boolean {
  * edges dropped out (a channel crossing the fan-out cap) or the file is gone.
  */
 export function collectSynthesisInputs(ctx: ResolutionContext): string[] {
-  const inputs: string[] = [];
+  const inputs = new Set<string>();
+  const tagModules = new Map<string, Set<string>>();
   for (const file of ctx.getAllFiles()) {
     const content = ctx.readFile(file);
-    if (content && mayFeedSynthesis(file, content)) inputs.push(file);
+    if (!content) continue;
+    if (mayFeedSynthesis(file, content)) inputs.add(file);
+    // Every file a tag imported from the project is read through feeds the
+    // JSX pass too — a rewired index redraws the tag (#2563).
+    if (JSX_INPUT_FILE.test(file) && (content.includes('</') || content.includes('/>'))) {
+      for (const read of importedTagModules(ctx, file, content, tagModules)) inputs.add(read);
+    }
   }
-  return inputs;
+  return [...inputs];
 }
 
 /**
