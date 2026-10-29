@@ -651,19 +651,15 @@ impl KernelResolver {
         // declaration in the class, above the fields and the unit's
         // variables.
         let from = self.pascal_routine_header_at(&r.file_path, r.line)?;
-        let mentions =
-            regex::Regex::new(&format!(r"(?i)\b{}\b", regex::escape(lower)))
-                .unwrap();
-        let declares_routine = regex::Regex::new(&format!(
+        let mentions = Self::cached_regex(&format!(r"(?i)\b{}\b", regex::escape(lower)))?;
+        let declares_routine = Self::cached_regex(&format!(
             r"(?i)\b(?:procedure|function)\s+{}\b",
             regex::escape(lower)
-        ))
-        .unwrap();
-        let declares_var = regex::Regex::new(&format!(
+        ))?;
+        let declares_var = Self::cached_regex(&format!(
             r"(?i)\b{}\b\s*(?:,\s*[A-Za-z_]\w*\s*)*:",
             regex::escape(lower)
-        ))
-        .unwrap();
+        ))?;
         let strip = re!(r"//.*$|\{[^}]*\}|'[^']*'");
         for i in from.max(1)..=r.line.min(source.len() as i64) {
             let text = &source[(i - 1) as usize];
@@ -1727,15 +1723,13 @@ impl KernelResolver {
         // `:` that does not start `:=` — Rust regex has no lookahead, so
         // the colon is found first and the next byte checked by hand.
         let rx = if node.kind == "property" {
-            regex::Regex::new(&format!(
+            Self::cached_regex(&format!(
                 r"(?i)\bproperty\s+{name}\s*(?:\[[^\]]*\])?\s*:"
-            ))
-            .unwrap()
+            ))?
         } else {
-            regex::Regex::new(&format!(
+            Self::cached_regex(&format!(
                 r"(?i)\b{name}\b(?:\s*,\s*[A-Za-z_]\w*)*\s*,?\s*:"
-            ))
-            .unwrap()
+            ))?
         };
         let strip = re!(r"//.*$|\{[^}]*\}|\(\*.*?\*\)");
         let mut text = String::new();
