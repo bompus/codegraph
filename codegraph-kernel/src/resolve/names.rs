@@ -408,7 +408,7 @@ impl KernelResolver {
             return Ok(false);
         }
         if lang == "go" {
-            return Ok(go_name_visible(candidate, r));
+            return self.go_name_visible(candidate, r);
         }
         // A Dart `_name` is its library's, which spans the library file and
         // its parts: riverpod_generator's `class Counter extends _$Counter`
@@ -517,6 +517,32 @@ impl KernelResolver {
             }
         }
         None
+    }
+
+    /// isGoNameVisible (name-matcher.ts): by the name's first letter, not the
+    /// extractor's flag (unset for every Go method, exported or not); an
+    /// unexported name is its own package's. A package is its directory AND
+    /// package clause: `a_test` files beside `a` files are a package of their
+    /// own whose bare top-level names reach `a` only through an import —
+    /// qualified, or bare after a dot import and exported (#2581).
+    pub(super) fn go_name_visible(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        let dir = pos_dirname(&candidate.file_path);
+        if dir != pos_dirname(&r.file_path) {
+            return Ok(candidate.name.chars().next().is_some_and(|c| c.is_ascii_uppercase()));
+        }
+        if candidate.file_path == r.file_path
+            || matches!(candidate.kind.as_str(), "method" | "property" | "field" | "enum_member")
+            || r.reference_name.contains('.')
+        {
+            return Ok(true);
+        }
+        let own = self.go_package_clause(&r.file_path);
+        let theirs = self.go_package_clause(&candidate.file_path);
+        if own.is_none() || theirs.is_none() || own == theirs {
+            return Ok(true);
+        }
+        Ok(candidate.name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            && self.go_dot_imports(&r.file_path)?.dirs.iter().any(|d| *d == dir))
     }
 
     /// isBarePhpCall (name-matcher.ts): a PHP `calls` ref written without a
@@ -838,7 +864,7 @@ impl KernelResolver {
                 // And a Go name that isn't exported, only its own package's: prometheus
                 // tsdb's `[]*memSeries` is head.go's, not `tsdb/agent`'s, which scored the
                 // same by directory proximity and was then vetoed as invisible.
-                && (n.language != "go" || go_name_visible(&n, r))
+                && (n.language != "go" || self.go_name_visible(&n, r)?)
                 // A Dart `_name` another library declares: the reference's
                 // own library's declaration wins instead of the namesake
                 // picked and then declined (upstream f7820b58 / #2466).
@@ -2102,12 +2128,4 @@ mod js_unit_tests {
     fn utf16_total(s: &str) -> usize {
         s.chars().map(char::len_utf16).sum()
     }
-}
-
-/// isGoNameVisible (name-matcher.ts): by the name's first letter, not the
-/// extractor's flag (unset for every Go method, exported or not); an
-/// unexported name is its own package's directory's.
-fn go_name_visible(candidate: &KNode, r: &ResolveRefIn) -> bool {
-    candidate.name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
-        || pos_dirname(&candidate.file_path) == pos_dirname(&r.file_path)
 }

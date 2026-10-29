@@ -591,6 +591,7 @@ mod fields;
 mod rust_impls;
 mod ts_known;
 mod go_asserted;
+mod go_build;
 mod go_value;
 mod method_call;
 mod pipeline;
@@ -701,6 +702,11 @@ pub struct KernelResolver {
     go_alias_target_memo: HashMap<String, fields::GoAliasTarget>,
     /// goUnreadFileMethods, by file path: `None` when the file can't be read.
     go_unread_methods_memo: HashMap<String, Option<HashSet<String>>>,
+    /// goFileConstraint, by file path: `None` builds everywhere or can't be
+    /// read.
+    go_build_constraint_memo: HashMap<String, Option<Rc<go_build::GoFileConstraint>>>,
+    /// preferGoBuildTwin's same-package same-name pool, by target node id.
+    go_build_twins_memo: HashMap<String, Rc<Vec<Arc<KNode>>>>,
     /// javaSupertypesOf, by type name.
     java_supers_memo: HashMap<String, Rc<Vec<String>>>,
     /// phpSupertypeQns, by declaration id.
@@ -973,6 +979,8 @@ impl KernelResolver {
             go_mc_untyped_local: false,
             go_alias_target_memo: HashMap::new(),
             go_unread_methods_memo: HashMap::new(),
+            go_build_constraint_memo: HashMap::new(),
+            go_build_twins_memo: HashMap::new(),
             java_supers_memo: HashMap::new(),
             php_supers_memo: HashMap::new(),
             vb: vbnet::VbMemo::default(),
@@ -1356,7 +1364,10 @@ impl KernelResolver {
             });
             out.push(match hit {
                 Ok(c) => match c {
-                    Some(c) => ResolveOutcome::resolved(&c.node, c.confidence, c.resolved_by, true, None),
+                    Some(c) => {
+                        let outcome = ResolveOutcome::resolved(&c.node, c.confidence, c.resolved_by, true, None);
+                        if r.language == "go" { self.prefer_go_build_twin(outcome, &r)? } else { outcome }
+                    }
                     None => ResolveOutcome::unresolved(),
                 },
                 Err(Halt::Napi(e)) => return Err(e),

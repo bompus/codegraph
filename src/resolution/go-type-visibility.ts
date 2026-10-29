@@ -5,7 +5,7 @@ import type { ImportMapping, ResolutionContext, ResolvedRef, UnresolvedRef } fro
 function lineAt(ref: UnresolvedRef, context: ResolutionContext): string | undefined {
   return context.getFileLines?.(ref.filePath)?.[ref.line - 1] ?? context.readFile(ref.filePath)?.split(/\r?\n/)[ref.line - 1];
 }
-function goPackageDir(file: string): string { return path.posix.dirname(file.replace(/\\/g, '/')); }
+function goPackageDir(file: string): string { const dir = path.posix.dirname(file.replace(/\\/g, '/')); return dir === '.' ? '' : dir; }
 function goImportPackageDir(name: string, file: string, context: ResolutionContext): string | null | undefined {
   const imp = context.getImportMappings(file, 'go').find((m) => m.localName === name);
   return imp ? context.getGoPackageDir?.(imp.source, file) ?? null : undefined;
@@ -180,7 +180,8 @@ export function goTypePositionTarget(result: ResolvedRef, ref: UnresolvedRef, co
     } else if (imported) pkgDir = context.getGoPackageDir?.(imported.source, ref.filePath) ?? null;
   }
   if (isType && (!bare || goPackageDir(target.filePath) === pkgDir)) return result;
-  const types = pkgDir ? goPackageTypes(name, pkgDir, context) : [];
+  // `''` is a real directory — a module's root package — not a miss.
+  const types = pkgDir !== null && pkgDir !== undefined ? goPackageTypes(name, pkgDir, context) : [];
   if (types.length > 0) return { ...result, targetNodeId: preferCallSiteFile(types, ref.filePath)[0]!.id };
   return isType ? result : null;
 }

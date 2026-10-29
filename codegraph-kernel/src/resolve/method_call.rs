@@ -1590,7 +1590,13 @@ if inferred.is_none() && r.language == "dart" {
                     return if receiver == root { self.match_bound_type_member(root, method, r) } else { self.enum_constant_call(receiver, method, r) };
                 }
                 let via_import = self.resolve_via_import_member(r)?.filter(|c| {
-                    matches!(
+                    // A Go `pkg.Name` can name any exported package member —
+                    // `pkg.Type(…)` conversions included; edge-kind rewriting
+                    // decides calls-vs-references downstream.
+                    let go_member = r.language == "go"
+                        && matches!(c.node.kind.as_str(),
+                            "struct" | "interface" | "type_alias" | "variable" | "constant");
+                    go_member || matches!(
                         c.node.kind.as_str(),
                         "function" | "method" | "class" | "component"
                     )

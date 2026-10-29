@@ -1569,6 +1569,11 @@ impl KernelResolver {
             if let [node] = nodes.as_slice() {
                 return Ok(Some(KCand { node: node.clone(), confidence: 0.9, resolved_by: "import" }));
             }
+            // A name the package defines once per build target: the twin the
+            // reference's file builds with, or nothing (#2581).
+            if let Some(node) = self.go_pick_twin(&nodes, r)? {
+                return Ok(Some(KCand { node, confidence: 0.9, resolved_by: "import" }));
+            }
         }
         Ok(None)
     }

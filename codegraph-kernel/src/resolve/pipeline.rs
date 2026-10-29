@@ -708,10 +708,19 @@ if super::lang_scope::is_dart_member_read(r) {
                     self.go_bare_type_dir(name, &r.file_path)?
                 } else { None };
                 if let Some(package) = package {
-                    let types: Vec<_> = self.nodes_by_name(name)?.iter()
-                        .filter(|n| n.language == "go" && matches!(n.kind.as_str(), "struct" | "interface" | "type_alias")
-                            && pos_dirname(&n.file_path) == package)
-                        .cloned().collect();
+                    // The package is its directory AND clause: `a_test`'s
+                    // type position cannot name `a`'s fixture (#2581).
+                    let list = self.nodes_by_name(name)?;
+                    let mut types: Vec<_> = Vec::new();
+                    for n in list.iter() {
+                        if n.language == "go"
+                            && matches!(n.kind.as_str(), "struct" | "interface" | "type_alias")
+                            && pos_dirname(&n.file_path) == package
+                            && self.go_name_visible(n, r)?
+                        {
+                            types.push(n.clone());
+                        }
+                    }
                     if let Some(target) = prefer_call_site_file(types, &r.file_path).first() {
                         cand.node = target.clone();
                     } else { return Ok(None); }
@@ -906,6 +915,12 @@ if super::lang_scope::is_dart_member_read(r) {
         }
         if let Some(attribute) = attribute {
             if !attribute.type_from.is_empty() { outcome.type_from = Some(attribute.type_from); }
+        }
+        // A Go name its package defines under complementary build
+        // constraints resolves to the twin the reference's file builds with
+        // (preferGoBuildTwin, #2581).
+        if r.language == "go" {
+            outcome = self.prefer_go_build_twin(outcome, r)?;
         }
         Ok(outcome)
     }
