@@ -642,6 +642,14 @@ impl KernelResolver {
                 });
             }
         }
+        // An element of a field — `this.listeners[type].push()`, emitted as
+        // `this.listeners[].push`: the element type the field's declaration
+        // writes, or nothing (matchMethodCall's elementOf arm).
+        if is_js_family(&r.language) {
+            if let Some(m) = re!(r"^this\.(#?[A-Za-z0-9_$]+)\[\]\.([A-Za-z0-9_$]+)$").captures(&r.reference_name) {
+                return Ok(McShape::Done(self.match_ts_this_field_call(&m[1], &m[2], r, true)?));
+            }
+        }
         let dot_re = re!(r"^((?:this\.#)?[A-Za-z0-9_.]+)\.([A-Za-z0-9_]+:?(?:[A-Za-z0-9_]+:)*)$");
         // A JS/TS method name may carry `$`, which `\w` doesn't: an RxJS-style
         // `this.organizationService.organizations$()`, vscode's RPC
@@ -1149,16 +1157,16 @@ if inferred.is_none() && r.language == "dart" {
         }
 
         // TS/JS `this.field.method` — EXCLUSIVE; the field's declared type
-        // off the enclosing class, validated by rmot, or nothing.
+        // off the enclosing class, validated by rmot, or nothing. An element
+        // of a field — `this.listeners[type].push()`, emitted as
+        // `this.listeners[].push` — resolves on the element's type.
         if matches!(r.language.as_str(), "typescript" | "javascript" | "tsx" | "jsx")
             && dotted
             && object_or_class.starts_with("this.")
         {
-            return self.match_ts_this_field_call(
-                &object_or_class["this.".len()..],
-                &method_name,
-                r,
-            );
+            let field = &object_or_class["this.".len()..];
+            let (field, element) = field.strip_suffix("[]").map_or((field, false), |f| (f, true));
+            return self.match_ts_this_field_call(field, &method_name, r, element);
         }
 
         // Java/Kotlin field receiver inference — non-exclusive (a miss still

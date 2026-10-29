@@ -589,6 +589,7 @@ impl KernelResolver {
                 }
                 let rest = &line[at + field.len() + caps.get(0).map_or(0, |m| m.end())..];
                 return Ok(Some(TsFieldDecl {
+                    element: ts_field_element(&caps[1], rest, &source, line_no),
                     ty: caps[1].to_string(),
                     value_type: false,
                     typed_collection: guard1_tail_re().is_match(rest),
@@ -615,7 +616,9 @@ impl KernelResolver {
                         continue;
                     }
                     let rest = &line[m.end..];
+                    let element = if *value_type { None } else { ts_field_element(&line[gs..ge], rest, &source, line_no) };
                     return Ok(Some(TsFieldDecl {
+                        element,
                         ty: line[gs..ge].to_string(),
                         value_type: *value_type,
                         typed_collection: guard1_tail_re().is_match(rest),
@@ -638,6 +641,7 @@ impl KernelResolver {
                 if declares && self.ts_init_is_read(owner, &source, start + i, &init)? {
                     let rest = &line[init.end..];
                     return Ok(Some(TsFieldDecl {
+                        element: None,
                         ty: init.ty,
                         value_type: false,
                         typed_collection: guard1_tail_re().is_match(rest),
@@ -1267,15 +1271,39 @@ impl KernelResolver {
         self.resolve_rust_module_file(&segs[..segs.len() - 1], &owner.file_path)
     }
 
+    /// `this.<field>[k].<method>()` calls the element's type: what the field's
+    /// declaration writes for it, or nothing. A type parameter of the
+    /// declaring class names no type (`class Store<Item> { items: Item[] }`),
+    /// whatever project class shares its name.
+    fn ts_field_held(&mut self, decl: TsFieldDecl, cls: &KNode, element: bool) -> Res<Option<TsFieldDecl>> {
+        if !element {
+            return Ok(Some(decl));
+        }
+        let Some(element_ty) = decl.element.clone() else { return Ok(None) };
+        if decl.value_type || self.ts_class_type_parameter(cls, &element_ty) {
+            return Ok(None);
+        }
+        Ok(Some(TsFieldDecl {
+            element: None,
+            ty: element_ty,
+            value_type: false,
+            typed_collection: false,
+            array: false,
+            nullable: false,
+        }))
+    }
+
     /// matchTsThisFieldCall — the `this.field.method` entry point of
     /// matchMethodCall's requireReceiverEvidence=false arm. The owner is the
     /// enclosing class written on the calling method's qualified name, so it
     /// is not a guess — same exclusive discipline as the go/rust field arms.
+    /// `element` selects the field's element type (`this.<field>[].<method>`).
     pub(super) fn match_ts_this_field_call(
         &mut self,
         field: &str,
         method: &str,
         r: &ResolveRefIn,
+        element: bool,
     ) -> Res<Option<KCand>> {
         if field.is_empty() || field.contains('.') {
             return Ok(None);
@@ -1297,7 +1325,7 @@ impl KernelResolver {
         if owner.is_empty() {
             return Ok(None);
         }
-        self.match_ts_field_call_free(owner, field, method, r)
+        self.match_ts_field_call_free(owner, field, method, r, element)
     }
 
     /// matchTsFieldCall without boundOwner — the unbound variant used by the
@@ -1312,6 +1340,7 @@ impl KernelResolver {
         field: &str,
         method: &str,
         r: &ResolveRefIn,
+        element: bool,
     ) -> Res<Option<KCand>> {
         let owners = prefer_call_site_file(
             self.nodes_by_name(owner)?
@@ -1330,14 +1359,17 @@ impl KernelResolver {
         // nothing about this one's field.
         let mut found: Vec<(TsFieldDecl, Arc<KNode>)> = Vec::new();
         for cls in owners.iter().filter(|c| c.file_path == r.file_path) {
-            if let Some(hit) = self.ts_field_through_bases(cls, field, r, 0)? {
-                found.push(hit);
+            if let Some((decl, cls)) = self.ts_field_through_bases(cls, field, r, 0)? {
+                if let Some(decl) = self.ts_field_held(decl, &cls, element)? {
+                    found.push((decl, cls));
+                }
                 break;
             }
         }
         if found.is_empty() {
             for cls in owners.iter().filter(|c| c.file_path != r.file_path) {
-                let Some(decl) = self.ts_field_decl(cls, field)? else { continue };
+                let Some(read) = self.ts_field_decl(cls, field)? else { continue };
+                let Some(decl) = self.ts_field_held(read, cls, element)? else { continue };
                 if self.ts_type_visible_in(&decl.ty, r)? {
                     // The type is the class the call's file names.
                     let mut at = (**cls).clone();
@@ -1729,6 +1761,103 @@ pub(super) struct TsFieldDecl {
     pub(super) array: bool,
     /// The only union members after the type are `undefined`/`null`.
     pub(super) nullable: bool,
+    /// What one of the field's elements holds: `Item` of `Item[]`, `Array<Item>` or `Record<string, Item>`.
+    pub(super) element: Option<String>,
+}
+
+/// Whether what follows a field's type joins it with another type: `| Other[]`,
+/// `& Extra`. `| null` and `| undefined` do not.
+fn ts_joins_another_type(tail: &str) -> bool {
+    let mut rest = tail.trim_start();
+    while let Some(t) = rest.strip_prefix('|') {
+        let t = t.trim_start();
+        if let Some(t) = t.strip_prefix("null").or_else(|| t.strip_prefix("undefined")) {
+            let mut b = t.as_bytes().iter();
+            if matches!(b.next(), None | Some(b' ' | b'\t' | b'|' | b'&' | b';' | b'=' | b')' | b',' | b'<' | b'{' | b'[' | b'/' | b'\n' | b'\r')) {
+                rest = t.trim_start();
+                continue;
+            }
+        }
+        break;
+    }
+    rest.starts_with('|') || rest.starts_with('&')
+}
+
+/// Container types whose element type is one of their type arguments, and which.
+fn ts_element_container(ty: &str) -> Option<(usize, usize)> {
+    match ty {
+        "Array" | "ReadonlyArray" => Some((1, 0)),
+        "Record" => Some((2, 1)),
+        _ => None,
+    }
+}
+
+/// The type an element of a field holds, from the field's written type (`ty`)
+/// and what follows it on the line (`rest`): `Item` of `Item[]`, `Array<Item>`
+/// and `Record<string, Item>`. None for any other type, an array of arrays, an
+/// element that is not a plain type name (a union, a generic), or a field
+/// typed as a union with another type (`Item[] | Other[]`); `| null` and
+/// `| undefined` leave the element as it is.
+fn ts_field_element_type(ty: &str, rest: &str) -> Option<String> {
+    let plain = |t: &str| -> Option<String> {
+        let ok = !t.is_empty()
+            && t.bytes().next().is_some_and(|b| b.is_ascii_alphabetic() || b == b'_' || b == b'$')
+            && t.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b == b'.');
+        ok.then(|| t.to_string())
+    };
+    let trimmed = rest.trim_start();
+    if let Some(tail) = trimmed.strip_prefix("[]") {
+        return (!tail.trim_start().starts_with('[') && !ts_joins_another_type(tail)).then(|| ty.to_string());
+    }
+    let (args_n, at) = ts_element_container(ty)?;
+    if !trimmed.starts_with('<') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut from = rest.len() - trimmed.len() + 1;
+    let mut args: Vec<String> = Vec::new();
+    let bytes = rest.as_bytes();
+    let mut i = from;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'<' | b'(' | b'[' | b'{' => depth += 1,
+            b'>' | b')' | b']' | b'}' if depth > 0 => depth -= 1,
+            b',' if depth == 0 => {
+                args.push(rest[from..i].trim().to_string());
+                from = i + 1;
+            }
+            b'>' if depth == 0 => {
+                args.push(rest[from..i].trim().to_string());
+                let tail = &rest[i + 1..];
+                if tail.trim_start().starts_with('[') || ts_joins_another_type(tail) {
+                    return None;
+                }
+                return (args.len() == args_n).then(|| args.get(at)).flatten().and_then(|a| plain(a));
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The field's element type, with the multi-line guard of tsFieldRead: a type
+/// that goes on below with `| Other[]` holds no one element type.
+fn ts_field_element(ty: &str, rest: &str, source: &SourceFile, line_no: i64) -> Option<String> {
+    let element = ts_field_element_type(ty, rest)?;
+    let mut below = String::new();
+    let mut r = line_no as usize;
+    while let Some(raw) = source.get(r) {
+        let line = strip_line_comments(raw);
+        let t = line.trim_start();
+        if !t.starts_with('|') && !t.starts_with('&') {
+            break;
+        }
+        below.push(' ');
+        below.push_str(t);
+        r += 1;
+    }
+    (!ts_joins_another_type(&below)).then_some(element)
 }
 
 /// Whether the class's constructor passes `field` as an argument of `super(...)`,

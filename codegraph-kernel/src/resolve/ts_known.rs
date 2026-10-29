@@ -22,6 +22,9 @@ fn is_member_owner_kind(kind: &str) -> bool {
     matches!(kind, "class" | "interface")
 }
 
+/// Lines of a class header the type-parameter reader looks through: decorators, then `class C<…>` over several lines.
+const TS_CLASS_HEAD_LINES: usize = 24;
+
 impl KernelResolver {
     /// tsTypeDeclaredIn: the class or interface named `name` that `file` declares.
     pub(super) fn ts_type_declared_in(&mut self, file: &str, name: &str) -> Res<Option<Arc<KNode>>> {
@@ -397,16 +400,21 @@ impl KernelResolver {
         Ok(None)
     }
 
-    /// Is `name` one of the type parameters the head of the TS class or
-    /// interface `cls` declares (`class Emitter<T>`)?
-    fn ts_class_type_parameter(&mut self, cls: &KNode, name: &str) -> bool {
+    /// Is `name` one of the type parameters the head of the TS class,
+    /// interface or type alias `cls` declares (`class Emitter<T>`,
+    /// `type State<T> = …`)? The list is read from the `class` / `interface` /
+    /// `type` keyword to its own `>`, over several lines and through
+    /// constraints and defaults that hold braces (`<T extends { id: string }>`).
+    /// A list whose `>` is not found reads as declaring `name`: a caller drops
+    /// the type rather than take a parameter for a project class.
+    pub(super) fn ts_class_type_parameter(&mut self, cls: &KNode, name: &str) -> bool {
         let Some(source) = self.read_file(&cls.file_path) else { return false };
         let from = (cls.start_line - 1).max(0) as usize;
-        let head = source.get(from..(from + 3).min(source.len())).unwrap_or_default().join(" ");
+        let head = source.get(from..(from + TS_CLASS_HEAD_LINES).min(source.len())).unwrap_or_default().join("\n");
         // No `{`-cut: `class Shaped<Item extends { id: string }>` carries a
         // brace inside its parameter list; the `>` scan below is depth-aware.
         let head = head.as_str();
-        let Ok(open) = Self::cached_regex(&format!(r"(?-u:\b){}\s*<", regex::escape(&cls.name))) else { return false };
+        let Ok(open) = Self::cached_regex(&format!(r"(?-u:\b)(?:class|interface|type)\s+{}\s*<", regex::escape(&cls.name))) else { return false };
         let Some(open) = open.find(head) else { return false };
         // The parameters between the `<` after the name and its own `>`, split
         // at their top level: `T`, `K extends keyof T = never`.
@@ -437,7 +445,7 @@ impl KernelResolver {
                 _ => {}
             }
         }
-        false
+        true
     }
 }
 
