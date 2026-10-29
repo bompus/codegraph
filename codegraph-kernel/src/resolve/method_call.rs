@@ -628,6 +628,20 @@ impl KernelResolver {
         }
 
         // `this.#field.method` keeps its ES private field (#1987).
+        // A Go composite literal's written type carries its type arguments
+        // (`Box[int]{}.Size` arrives as `Box[int].Size`, `lib.List[int]{}.Len`
+        // as `lib.List[int].Len`); an indexed receiver arrives bare, so a
+        // bracketed receiver here is always an instantiation.
+        if r.language == "go" {
+            if let Some(m) = re!(r"^([A-Za-z0-9_.]+\[[^\]]*\])\.([A-Za-z0-9_]+)$").captures(&r.reference_name) {
+                return Ok(McShape::Parsed {
+                    receiver: m[1].to_string(),
+                    method: m[2].to_string(),
+                    inferable: true,
+                    dotted: true,
+                });
+            }
+        }
         let dot_re = re!(r"^((?:this\.#)?[A-Za-z0-9_.]+)\.([A-Za-z0-9_]+:?(?:[A-Za-z0-9_]+:)*)$");
         // A JS/TS method name may carry `$`, which `\w` doesn't: an RxJS-style
         // `this.organizationService.organizations$()`, vscode's RPC
@@ -687,6 +701,14 @@ impl KernelResolver {
 
         if inferable {
             if r.language == "go" {
+                // `Box[int]`/`lib.List[int]` is the written type of the
+                // composite literal the call selects on — the type's method
+                // answers, or nothing does; no local inference applies.
+                if let Some(base) = object_or_class.strip_suffix(']').and_then(|s| s.split('[').next()) {
+                    if re!(r"^\*?[A-Za-z_]\w*(\.[A-Za-z_]\w*)?$").is_match(base) {
+                        return self.go_method_on_declared_type(base, &r.file_path, &method_name, r);
+                    }
+                }
                 if let Some(verdict) = self.go_asserted_member(&object_or_class, &method_name, r)? {
                     if verdict.is_none() { self.go_mc_terminal = true; }
                     return Ok(verdict);
@@ -703,16 +725,13 @@ impl KernelResolver {
                     if let Some(decl) = self.go_local_declaration_at(
                         object_or_class.clone(), r.file_path.clone(), r.line, r.column)?
                     {
-                        match &decl.declared_type {
-                            Some(text) => {
-                                if Self::go_named_type(text).is_none()
-                                    || matches!(self.go_written_type(text, r)?, Some(super::go_asserted::GoAsserted::Outside))
-                                {
-                                    self.go_mc_terminal = true;
-                                    return Ok(None);
-                                }
+                        if let Some(text) = &decl.declared_type {
+                            if Self::go_named_type(text).is_none()
+                                || matches!(self.go_written_type(text, r)?, Some(super::go_asserted::GoAsserted::Outside))
+                            {
+                                self.go_mc_terminal = true;
+                                return Ok(None);
                             }
-                            _ => {}
                         }
                     }
                 }
@@ -754,6 +773,7 @@ impl KernelResolver {
             }
             // TS passes requireReceiverEvidence (=true) as preserveQualifiedName
             // to both inferrers here — qualified names stay intact.
+            let mut go_type_file: Option<String> = None;
             let mut inferred = if matches!(r.language.as_str(), "java" | "kotlin" | "csharp") && self.explicit_this_receiver(&object_or_class, &method_name, r) {
                 self.infer_declared_member_receiver_type(&format!("this.{object_or_class}"), r)?
             } else if r.language == "cpp" {
@@ -761,7 +781,18 @@ impl KernelResolver {
             } else if r.language == "python" && object_or_class.contains('.') {
                 None
             } else {
-                probe!(r, "mc:infer-local", self.infer_local_receiver_type(&object_or_class, &site, true)?)
+                let local = if r.language == "go" && !object_or_class.contains('.') {
+                    match self.go_local_receiver_written(&object_or_class, r)? {
+                        Some((t, f)) => { go_type_file = Some(f); Some(t) }
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                probe!(r, "mc:infer-local", match local {
+                    Some(_) => Ok(local),
+                    None => self.infer_local_receiver_type(&object_or_class, &site, true),
+                }?)
             };
             if r.language == "objc" && inferred.is_none() {
                 inferred = self.objc_member_receiver_type(&object_or_class, r)?;
@@ -829,6 +860,12 @@ if inferred.is_none() && r.language == "dart" {
                 let mut bsite = r.clone();
                 if let Some(b) = &binding {
                     bsite.line = b.line;
+                }
+                // A Go type the written source read names the file that
+                // knows its package (`model := query.Query().Session` —
+                // Session lives in query/, not the call's).
+                if let Some(f) = &go_type_file {
+                    bsite.file_path = f.clone();
                 }
                 let member = self.match_bound_type_member(&t, &method_name, &bsite)?;
                 if member.is_none() && r.language == "go" {
@@ -933,6 +970,7 @@ if inferred.is_none() && r.language == "dart" {
             // inferrers run at the ref's own site with qualified names
             // normalized (preserveQualifiedName=false).
             let cpp_alias = if r.language == "cpp" { self.cpp_receiver_alias(&object_or_class, r)? } else { None };
+            let mut go_type_file: Option<String> = None;
             let inferred = if let Some(alias) = &cpp_alias {
                 match &alias.raw {
                     Some(raw) => match self.cpp_type_owner(raw, &alias.site, 0, false)? {
@@ -945,6 +983,11 @@ if inferred.is_none() && r.language == "dart" {
                 self.infer_cpp_receiver_type(&object_or_class, r, 0, false)?
             } else if r.language == "python" && object_or_class.contains('.') {
                 None
+            } else if r.language == "go" && !object_or_class.contains('.') {
+                match self.go_local_receiver_written(&object_or_class, r)? {
+                    Some((t, f)) => { go_type_file = Some(f); Some(t) }
+                    None => self.infer_local_receiver_type(&object_or_class, r, true)?,
+                }
             } else {
                 self.infer_local_receiver_type(&object_or_class, r, r.language == "go")?
             };
@@ -1027,9 +1070,10 @@ if inferred.is_none() && r.language == "dart" {
                     }
                 }
                 // An awaited type resolves from the file that declares it,
-                // and a hit on that type itself must live there.
+                // and a hit on that type itself must live there. A Go type
+                // the written source read names that file the same way.
                 let mut site = r.clone();
-                if let Some(f) = &awaited_file {
+                if let Some(f) = awaited_file.as_ref().or(go_type_file.as_ref()) {
                     site.file_path = f.clone();
                 }
                 match self.resolve_method_on_type(
@@ -1545,15 +1589,24 @@ if inferred.is_none() && r.language == "dart" {
                 if (r.language == "java" || r.language == "kotlin" || r.language == "python") && self.resolve_bound_type(root, r, 0)?.is_some() {
                     return if receiver == root { self.match_bound_type_member(root, method, r) } else { self.enum_constant_call(receiver, method, r) };
                 }
-                return Ok(match self.resolve_via_import_member(r)? {
-                    Some(c) => {
-                        if matches!(
-                            c.node.kind.as_str(),
-                            "function" | "method" | "class" | "component"
-                        ) {
-                            Some(c)
-                        } else {
-                            None
+                let via_import = self.resolve_via_import_member(r)?.filter(|c| {
+                    matches!(
+                        c.node.kind.as_str(),
+                        "function" | "method" | "class" | "component"
+                    )
+                });
+                return Ok(match via_import {
+                    Some(c) => Some(c),
+                    // A Go `pkg.Type{}.M`/`pkg.Type[args]{}.M` keeps the
+                    // composite literal's written type — `pkg.Type`'s method
+                    // or nothing.
+                    None if r.language == "go" => {
+                        match re!(r"^([A-Za-z_]\w*\.[A-Za-z_]\w*)\[[^\]]*\]$")
+                            .captures(receiver)
+                            .or_else(|| re!(r"^([A-Za-z_]\w*\.[A-Za-z_]\w*)$").captures(receiver))
+                        {
+                            Some(m) => self.go_method_on_declared_type(&m[1], &r.file_path, method, r)?,
+                            None => None,
                         }
                     }
                     None => None,
@@ -1570,6 +1623,16 @@ if inferred.is_none() && r.language == "dart" {
             // The import resolver descends one member — a deeper receiver
             // must not mistake the first member for the call.
             if receiver.contains('.') {
+                // A Go `pkg.Type{}.M`/`pkg.Type[args]{}.M` keeps the
+                // literal's written type — `pkg.Type`'s method or nothing.
+                if r.language == "go" {
+                    if let Some(m) = re!(r"^([A-Za-z_]\w*\.[A-Za-z_]\w*)\[[^\]]*\]$")
+                        .captures(receiver)
+                        .or_else(|| re!(r"^([A-Za-z_]\w*\.[A-Za-z_]\w*)$").captures(receiver))
+                    {
+                        return self.go_method_on_declared_type(&m[1], &r.file_path, method, r);
+                    }
+                }
                 return Ok(None);
             }
             return Ok(match self.resolve_via_import_member(r)? {

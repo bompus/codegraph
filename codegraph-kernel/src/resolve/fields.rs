@@ -112,9 +112,6 @@ impl KernelResolver {
             return Ok(hit.clone());
         }
         let mut found = GoDotImports::default();
-        if std::env::var_os("CODEGRAPH_KERNEL_DEBUG_GO").is_some() {
-            eprintln!("[go-dots] {file_path} imports: {:?}", self.import_mappings(file_path)?.iter().map(|i| format!("{}={}", i.local_name, i.source)).collect::<Vec<_>>());
-        }
         for import in self.import_mappings(file_path)?.iter().filter(|i| i.local_name == ".") {
             if let Some(dir) = self.go_package_dir(&import.source, file_path) {
                 found.dirs.push(dir);
@@ -157,9 +154,6 @@ impl KernelResolver {
     pub(super) fn go_bare_type_dir(&mut self, name: &str, file_path: &str) -> Res<Option<String>> {
         let own = pos_dirname(file_path).to_string();
         let dots = self.go_dot_imports(file_path)?;
-        if std::env::var_os("CODEGRAPH_KERNEL_DEBUG_GO").is_some() {
-            eprintln!("[go-bare] {name} in {file_path}: own={own} dirs={:?} outside={} types={:?}", dots.dirs, dots.outside, dots.types);
-        }
         if (dots.dirs.is_empty() && !dots.outside) || !self.go_package_types(name, &own)?.is_empty() {
             return Ok(Some(own));
         }
@@ -308,7 +302,14 @@ impl KernelResolver {
             .collect();
         let in_pkg: Vec<Arc<KNode>> =
             named.into_iter().filter(|m| pos_dirname(&m.file_path) == pkg_dir).collect();
-        if in_pkg.is_empty() { return self.go_promoted_method(type_name, method, pkg_dir, r); }
+        if in_pkg.is_empty() {
+            // A file of the package the index couldn't read may declare the
+            // method — the graph's gap is not a promoted method's place.
+            if self.go_unread_file_declares(type_name, method, pkg_dir)? {
+                return Ok(None);
+            }
+            return self.go_promoted_method(type_name, method, pkg_dir, r);
+        }
         if r.reference_kind == "function_ref" && in_pkg.len() != 1 { return Ok(None); }
         let ordered = prefer_call_site_file(in_pkg, &r.file_path);
         Ok(Some(KCand { node: ordered[0].clone(), confidence: 0.85, resolved_by: "instance-method" }))

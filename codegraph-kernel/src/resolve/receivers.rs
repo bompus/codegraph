@@ -903,7 +903,7 @@ fn go_bare_result(
         }
         if let Some(id) = binding.node_id.as_deref() {
             let Some(node) = self.node_by_id(id)? else { return Ok(None) };
-            return Ok(go_result_from_node(&node).map(|ty| (ty, node)));
+            return Ok(go_result_from_node(self, &node).map(|ty| (ty, node)));
         }
         return Ok(None);
     }
@@ -915,7 +915,7 @@ fn go_bare_result(
             && pos_dirname(&n.file_path) == dir)
         .cloned().collect();
     let [node] = nodes.as_slice() else { return Ok(None) };
-    Ok(go_result_from_node(node).map(|ty| (ty, node.clone())))
+    Ok(go_result_from_node(self, node).map(|ty| (ty, node.clone())))
 }
 
     /// cppClassExists — an aggregate type with this last `::` segment exists.
@@ -1088,7 +1088,7 @@ fn go_bare_result(
                 && pos_dirname(&n.file_path) == dir)
             .cloned().collect();
         let [callee] = nodes.as_slice() else { return Ok(None) };
-        let Some(raw) = go_result_from_node(callee) else { return Ok(None) };
+        let Some(raw) = go_result_from_node(self, callee) else { return Ok(None) };
         self.go_method_on_declared_type(&raw, &callee.file_path, method, r)
     }
 
@@ -1218,9 +1218,12 @@ pub(super) fn pick_closest_jvm_candidate(candidates: &[Arc<KNode>], from_path: &
     best.clone()
 }
 
-fn go_result_from_node(node: &KNode) -> Option<String> {
+fn go_result_from_node(resolver: &mut KernelResolver, node: &KNode) -> Option<String> {
     if node.kind == "function" {
-        return node.return_type.clone().filter(|ty| !ty.is_empty());
+        // The result a type parameter spells is its constraint: `V` of
+        // `F[V Validator]` carries Validator's methods, `T` of `F[T any]`
+        // none — go_call_result_at reads the declaration for it.
+        return resolver.go_call_result_at(node, 0);
     }
     if !matches!(node.kind.as_str(), "variable" | "constant") {
         return None;

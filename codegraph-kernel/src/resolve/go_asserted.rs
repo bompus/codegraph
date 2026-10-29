@@ -31,7 +31,7 @@ enum Declared {
     Other,
 }
 
-fn text_of<'a>(node: TsNode, text: &'a str) -> &'a str {
+pub(super) fn text_of<'a>(node: TsNode, text: &'a str) -> &'a str {
     &text[node.start_byte()..node.end_byte()]
 }
 
@@ -51,10 +51,10 @@ fn declared_by(names: &[TsNode], values: Option<TsNode>, typed: bool, name: &str
     Some(asserted.map_or(Declared::Other, Declared::Asserted))
 }
 
-fn identifiers<'t>(list: TsNode<'t>) -> Vec<TsNode<'t>> {
-    if list.kind() == "identifier" { return vec![list]; }
+pub(super) fn identifiers<'t>(list: TsNode<'t>) -> Vec<TsNode<'t>> {
+    if matches!(list.kind(), "identifier" | "blank_identifier") { return vec![list]; }
     let mut cursor = list.walk();
-    list.named_children(&mut cursor).filter(|n| n.kind() == "identifier").collect()
+    list.named_children(&mut cursor).filter(|n| matches!(n.kind(), "identifier" | "blank_identifier")).collect()
 }
 
 /// `name`'s declaration among one statement, if the statement declares it.
@@ -171,7 +171,14 @@ impl KernelResolver {
     /// the index cannot tell (a type literal, a type declared inside a
     /// function, a type parameter): the call goes to the other strategies.
     pub(super) fn go_written_type(&mut self, written: &str, r: &ResolveRefIn) -> Res<Option<GoAsserted>> {
-        let Some(hit) = re!(r"^\*?\s*(?:([A-Za-z_]\w*)\s*\.\s*)?([A-Za-z_]\w*)\s*(?:\[[\s\S]*\])?$").captures(written.trim()) else { return Ok(None); };
+        let w = written.trim();
+        // A type the source spells without a named holder — `func() T`,
+        // `struct{…}`, `[]T`, `map[K]V`, `chan T`, `interface{…}` — is no
+        // project type's: terminal, not a name-match cue.
+        if re!(r"^\*?\s*(func\b|struct\b|interface\b|map\s*\[|chan\b|<-|\[)").is_match(w) {
+            return Ok(Some(GoAsserted::Outside));
+        }
+        let Some(hit) = re!(r"^\*?\s*(?:([A-Za-z_]\w*)\s*\.\s*)?([A-Za-z_]\w*)\s*(?:\[[\s\S]*\])?$").captures(w) else { return Ok(None); };
         let qualifier = hit.get(1).map(|m| m.as_str().to_string());
         let name = hit[2].to_string();
         let declared = self.nodes_by_name(&name)?.iter()
@@ -247,7 +254,7 @@ impl KernelResolver {
 
 /// An actual lexical declaration, including the name's position for reading
 /// its initializer. Used by func-field synthesis through the native bridge.
-fn local_declaration_in<'a>(scope: TsNode<'a>, name: &str, site: usize, text: &str) -> Option<(TsNode<'a>, Option<String>)> {
+pub(super) fn local_declaration_in<'a>(scope: TsNode<'a>, name: &str, site: usize, text: &str) -> Option<(TsNode<'a>, Option<String>)> {
     /// `x := &pkg.T{…}`, `x := T{…}`, `x := new(T)` and `var x = &T{…}`
     /// write their type in the value; other right-hand sides say nothing.
     /// `k` is the name's place among the declaration's names — the value

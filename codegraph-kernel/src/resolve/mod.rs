@@ -699,6 +699,8 @@ pub struct KernelResolver {
     go_mc_untyped_local: bool,
     /// goAliasTarget, by type node id.
     go_alias_target_memo: HashMap<String, fields::GoAliasTarget>,
+    /// goUnreadFileMethods, by file path: `None` when the file can't be read.
+    go_unread_methods_memo: HashMap<String, Option<HashSet<String>>>,
     /// javaSupertypesOf, by type name.
     java_supers_memo: HashMap<String, Rc<Vec<String>>>,
     /// phpSupertypeQns, by declaration id.
@@ -970,6 +972,7 @@ impl KernelResolver {
             go_mc_terminal: false,
             go_mc_untyped_local: false,
             go_alias_target_memo: HashMap::new(),
+            go_unread_methods_memo: HashMap::new(),
             java_supers_memo: HashMap::new(),
             php_supers_memo: HashMap::new(),
             vb: vbnet::VbMemo::default(),

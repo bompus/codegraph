@@ -707,9 +707,6 @@ if super::lang_scope::is_dart_member_read(r) {
                 } else if self.go_written_qualifier(r)?.is_none() {
                     self.go_bare_type_dir(name, &r.file_path)?
                 } else { None };
-                if std::env::var_os("CODEGRAPH_KERNEL_DEBUG_GO").is_some() {
-                    eprintln!("[go-gate] {} {} in {} cand={}:{} pkg={:?}", r.reference_name, r.reference_kind, r.file_path, cand.node.kind, cand.node.file_path, package);
-                }
                 if let Some(package) = package {
                     let types: Vec<_> = self.nodes_by_name(name)?.iter()
                         .filter(|n| n.language == "go" && matches!(n.kind.as_str(), "struct" | "interface" | "type_alias")
@@ -1248,9 +1245,6 @@ if r.language == "dart" && r.reference_kind == "references"
         if !matches!(winner.resolved_by, "import" | "framework" | "file-path")
             && !self.is_visible_across_files(&winner.node, r)?
         {
-            if std::env::var_os("CODEGRAPH_KERNEL_DEBUG_VIS").is_some() {
-                eprintln!("[vis-veto] {} {:?} via={} -> {}:{} {}:{}", r.reference_name, r.reference_kind, winner.resolved_by, winner.node.id, winner.node.kind, winner.node.file_path, winner.node.start_line);
-            }
             return Ok(ResolveOutcome::unresolved());
         }
         Ok(ResolveOutcome::resolved(
