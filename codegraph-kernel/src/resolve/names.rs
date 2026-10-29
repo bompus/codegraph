@@ -304,6 +304,41 @@ impl KernelResolver {
         Ok(is_trait)
     }
 
+    /// Mark that a Rust typed-receiver path resolved `r` (RUST_TYPED_REFS).
+    pub(super) fn mark_rust_typed(&mut self, r: &ResolveRefIn) {
+        if let Some(id) = r.row_id {
+            self.rust_typed_refs.insert(id);
+        }
+    }
+
+    /// rustTraitOf (name-matcher.ts): the `trait` node `Owner::method`'s
+    /// owner names when it encloses the method's lines, else None.
+    pub(super) fn rust_trait_of(&mut self, candidate: &KNode) -> Res<Option<Arc<KNode>>> {
+        if let Some(hit) = self.rust_trait_of_memo.get(&candidate.id) {
+            return Ok(match hit {
+                Some(id) => self.node_by_id(id)?,
+                None => None,
+            });
+        }
+        let owner = candidate
+            .qualified_name
+            .rsplit_once("::")
+            .map(|(q, _)| q.rsplit("::").next().unwrap_or(""))
+            .unwrap_or("");
+        let found = if owner.is_empty() {
+            None
+        } else {
+            self.nodes_in_file(&candidate.file_path)?.iter().find(|n| {
+                n.kind == "trait" && n.name == owner
+                    && n.start_line <= candidate.start_line
+                    && n.end_line >= candidate.start_line
+            }).cloned()
+        };
+        self.rust_trait_of_memo
+            .insert(candidate.id.clone(), found.as_ref().map(|t| t.id.clone()));
+        Ok(found)
+    }
+
     /// isCrossFileReachable (name-matcher.ts).
     pub(super) fn is_cross_file_reachable(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
         if r.language != "markdown"
@@ -331,8 +366,35 @@ impl KernelResolver {
         Ok(!self.is_sealed_module(&candidate.file_path)? && !self.is_unexported_module_binding(candidate)?)
     }
 
+    /// Whether the reference's own import names the file `target` is in: a
+    /// default or named binding whose specifier resolves to that file. A
+    /// function value reached this way is import-justified, so a module's
+    /// unexported-binding rule does not bar it.
+    pub(super) fn ref_imports_target_file(&mut self, target: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        let name = r.reference_name.trim();
+        if name.is_empty() { return Ok(false); }
+        let mappings = self.import_mappings(&r.file_path)?;
+        for mapping in mappings.iter() {
+            if mapping.local_name != name { continue; }
+            let Some(hit) = self.resolve_via_import(&r.clone().naming(&mapping.local_name, "references"))? else { continue; };
+            if hit.node.file_path == target.file_path { return Ok(true); }
+        }
+        Ok(false)
+    }
+
     /// isVisibleAcrossFiles (name-matcher.ts).
     pub(super) fn is_visible_across_files(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        self.is_visible_across_files_for(candidate, r, true)
+    }
+
+    /// `is_visible_across_files` for a pick a strategy made from the code's own
+    /// structure — a receiver's type, a function value — rather than from the
+    /// name. Upstream guards only the name strategies with this rule
+    /// (index.ts:1867), so a module's unexported binding is no bar to a typed
+    /// pick: `items$.getState().inc()` reaches the store action `inc`, and an
+    /// imported component reaches its default export. Every language's own
+    /// privacy still applies.
+    pub(super) fn is_visible_across_files_for(&mut self, candidate: &KNode, r: &ResolveRefIn, name_pick: bool) -> Res<bool> {
         if candidate.language == "go" {
             if self.go_external_qualified(r)? { return Ok(false); }
             if let Some(imp) = self.go_ref_qualifier(r)? {
@@ -373,13 +435,33 @@ impl KernelResolver {
             return Ok(false);
         }
         if lang == "go" {
-            return Ok(go_name_visible(candidate, r));
+            return self.go_name_visible(candidate, r);
+        }
+        // A Dart `_name` is its library's, which spans the library file and
+        // its parts: riverpod_generator's `class Counter extends _$Counter`
+        // names the class it wrote into `main.g.dart` (upstream f7820b58).
+        if lang == "dart" {
+            return Ok(candidate.visibility.as_deref() != Some("private")
+                || (r.language == "dart"
+                    && self.dart_same_library(&r.file_path, &candidate.file_path)));
         }
         if lang == "rust" {
             if candidate.visibility.as_deref() != Some("private") {
                 return Ok(true);
             }
             if self.is_rust_trait_impl_method(candidate)? {
+                return Ok(true);
+            }
+            // A method a trait declares carries no `pub` of its own: it is
+            // the trait's, reached through a value whose type the call's
+            // receiver declares (rust_written_call marks the ref typed). A
+            // guess by its name alone stays out.
+            if candidate.kind == "method"
+                && r.row_id.is_some_and(|id| self.rust_typed_refs.contains(&id))
+                && self
+                    .rust_trait_of(candidate)?
+                    .is_none_or(|t| t.visibility.as_deref() != Some("private"))
+            {
                 return Ok(true);
             }
             let owner = rust_module_dir(&candidate.file_path);
@@ -403,6 +485,9 @@ impl KernelResolver {
         // is not busted's `it(…)` in every other spec file.
         if (lang == "lua" || lang == "luau") && self.is_lua_local(candidate) {
             return Ok(self.lua_alias_target(r)?.flatten().is_some_and(|n| n.id == candidate.id));
+        }
+        if !name_pick && is_esm_family(&candidate.language) {
+            return Ok(true);
         }
         self.is_cross_file_reachable(candidate, r)
     }
@@ -442,7 +527,7 @@ impl KernelResolver {
 
     /// The name in a Go file's `package` clause (the first line that starts
     /// with `package`, outside block comments).
-    fn go_package_clause(&mut self, file: &str) -> Option<String> {
+    pub(super) fn go_package_clause(&mut self, file: &str) -> Option<String> {
         let lines = self.read_file(file)?;
         let mut in_block = false;
         for line in lines.iter() {
@@ -462,6 +547,32 @@ impl KernelResolver {
             }
         }
         None
+    }
+
+    /// isGoNameVisible (name-matcher.ts): by the name's first letter, not the
+    /// extractor's flag (unset for every Go method, exported or not); an
+    /// unexported name is its own package's. A package is its directory AND
+    /// package clause: `a_test` files beside `a` files are a package of their
+    /// own whose bare top-level names reach `a` only through an import —
+    /// qualified, or bare after a dot import and exported (#2581).
+    pub(super) fn go_name_visible(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        let dir = pos_dirname(&candidate.file_path);
+        if dir != pos_dirname(&r.file_path) {
+            return Ok(candidate.name.chars().next().is_some_and(|c| c.is_ascii_uppercase()));
+        }
+        if candidate.file_path == r.file_path
+            || matches!(candidate.kind.as_str(), "method" | "property" | "field" | "enum_member")
+            || r.reference_name.contains('.')
+        {
+            return Ok(true);
+        }
+        let own = self.go_package_clause(&r.file_path);
+        let theirs = self.go_package_clause(&candidate.file_path);
+        if own.is_none() || theirs.is_none() || own == theirs {
+            return Ok(true);
+        }
+        Ok(candidate.name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            && self.go_dot_imports(&r.file_path)?.dirs.iter().any(|d| *d == dir))
     }
 
     /// isBarePhpCall (name-matcher.ts): a PHP `calls` ref written without a
@@ -783,7 +894,11 @@ impl KernelResolver {
                 // And a Go name that isn't exported, only its own package's: prometheus
                 // tsdb's `[]*memSeries` is head.go's, not `tsdb/agent`'s, which scored the
                 // same by directory proximity and was then vetoed as invisible.
-                && (n.language != "go" || go_name_visible(&n, r))
+                && (n.language != "go" || self.go_name_visible(&n, r)?)
+                // A Dart `_name` another library declares: the reference's
+                // own library's declaration wins instead of the namesake
+                // picked and then declined (upstream f7820b58 / #2466).
+                && !(r.language == "dart" && n.language == "dart" && n.visibility.as_deref() == Some("private") && n.file_path != r.file_path && !self.dart_same_library(&r.file_path, &n.file_path))
                 && !(matches!(r.language.as_str(),"lua"|"luau") && r.reference_kind=="calls" && !r.reference_name.contains(['.',':']) && n.kind=="method")
                 && !(r.language=="python" && r.reference_kind=="calls" && n.file_path!=r.file_path && self.is_receiver_less_call(r)? && self.python_locally_bound(&r.reference_name,r)? && !self.python_fixture_reachable(&n,&r.file_path)) {
                 kept.push(n);
@@ -950,13 +1065,68 @@ impl KernelResolver {
         }
         if self.is_cross_file_reachable(&best, r)? {
             let proximity = compute_path_proximity(&r.file_path, &best.file_path);
+            let confidence = if self.is_decisive_same_file_match(&best, r, &candidates)? {
+                0.9
+            } else if proximity >= 30 {
+                0.7
+            } else {
+                0.4
+            };
             return Ok(Some(KCand {
                 node: best,
-                confidence: if proximity >= 30 { 0.7 } else { 0.4 },
+                confidence,
                 resolved_by: "exact-match",
             }));
         }
         Ok(None)
+    }
+
+    /// Whether `findBestMatch` picked `best` because it is THE definition in
+    /// the call site's own file, so the edge deserves a same-file confidence
+    /// rather than the directory-proximity one. Proximity measures shared
+    /// folders, so a same-file match in a shallow path scored 0.4 like a guess
+    /// across unrelated modules. Decisive only when:
+    /// - `best` is the ONLY same-file candidate — several are separated by
+    ///   line distance, which is not evidence;
+    /// - a member of a type, module or namespace belongs to one the caller is
+    ///   inside — a bare call does not reach a sibling class's method just
+    ///   because it is written in that file. A method's owner is always such a
+    ///   scope; another kind's is judged when the file declares it as anything
+    ///   but a function; and
+    /// - `best` is not the caller itself.
+    ///
+    /// (name-matcher.ts isDecisiveSameFileMatch, upstream cde4cd74.)
+    fn is_decisive_same_file_match(
+        &self,
+        best: &Arc<KNode>,
+        r: &ResolveRefIn,
+        candidates: &[Arc<KNode>],
+    ) -> Res<bool> {
+        if best.file_path != r.file_path || best.id == r.from_node_id {
+            return Ok(false);
+        }
+        if candidates.iter().any(|c| c.id != best.id && c.file_path == r.file_path) {
+            return Ok(false);
+        }
+        let sep = best.qualified_name.rfind("::").unwrap_or(0);
+        if sep == 0 {
+            return Ok(best.kind != "method");
+        }
+        let owner = &best.qualified_name[..sep];
+        if best.kind != "method" {
+            let declared = self.nodes_in_file(&best.file_path)?;
+            if declared
+                .iter()
+                .filter(|n| n.qualified_name == owner)
+                .all(|n| n.kind == "function" || n.kind == "method")
+            {
+                return Ok(true);
+            }
+        }
+        let Some(from) = self.node_by_id(&r.from_node_id)? else {
+            return Ok(false);
+        };
+        Ok(from.qualified_name == owner || from.qualified_name.starts_with(&format!("{owner}::")))
     }
 
     /// The candidates a PHP `$this->m()` / `self::m()` / `parent::m()` call
@@ -1988,12 +2158,4 @@ mod js_unit_tests {
     fn utf16_total(s: &str) -> usize {
         s.chars().map(char::len_utf16).sum()
     }
-}
-
-/// isGoNameVisible (name-matcher.ts): by the name's first letter, not the
-/// extractor's flag (unset for every Go method, exported or not); an
-/// unexported name is its own package's directory's.
-fn go_name_visible(candidate: &KNode, r: &ResolveRefIn) -> bool {
-    candidate.name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
-        || pos_dirname(&candidate.file_path) == pos_dirname(&r.file_path)
 }

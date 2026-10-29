@@ -696,9 +696,10 @@ pub(super) fn is_importable_kind(kind: &str) -> bool {
     !matches!(kind, "property" | "field" | "method" | "enum_member" | "parameter")
 }
 
-/// PRIVATE_IS_FILE_LOCAL (name-matcher.ts).
+/// PRIVATE_IS_FILE_LOCAL (name-matcher.ts). A Dart `_name` is its library's,
+/// which can span several files: see is_visible_across_files (f7820b58).
 pub(super) fn private_is_file_local(lang: &str) -> bool {
-    matches!(lang, "kotlin" | "java" | "csharp" | "swift" | "scala" | "dart" | "php")
+    matches!(lang, "kotlin" | "java" | "csharp" | "swift" | "scala" | "php")
 }
 
 /// NO_NESTED_FUNCTIONS (name-matcher.ts).
@@ -1009,6 +1010,34 @@ pub(super) static PYTHON_BUILT_IN_METHODS: LazyLock<HashSet<&'static str>> = Laz
     .collect()
 });
 
+/// PYTHON_BUILT_IN_TYPES (index.ts isPythonBuiltinNamedMethodCall): receiver
+/// spellings that ARE the builtin type — `dict.get` is the dict's own method,
+/// never a project class's.
+pub(super) static PYTHON_BUILT_IN_TYPES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    [
+        "list", "dict", "set", "tuple", "str", "int", "float", "bool",
+        "bytes", "bytearray", "frozenset", "object", "super",
+    ]
+    .into_iter()
+    .collect()
+});
+
+/// PYTHON_RUNTIME_TYPES (name-matcher.ts pythonAnnotationEvidence /
+/// pythonValueEvidence): annotation or `Ctor()` names that produce a runtime
+/// container, not a project class.
+pub(super) static PYTHON_RUNTIME_TYPES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    [
+        "list", "dict", "set", "frozenset", "tuple", "str", "bytes", "bytearray",
+        "int", "float", "complex", "bool", "object", "type", "range", "slice",
+        "List", "Dict", "Set", "FrozenSet", "Tuple", "Sequence", "Mapping",
+        "MutableMapping", "MutableSequence", "Iterable", "Iterator", "Callable",
+        "deque", "defaultdict", "OrderedDict", "Counter",
+        "collections.deque", "collections.defaultdict", "collections.OrderedDict", "collections.Counter",
+    ]
+    .into_iter()
+    .collect()
+});
+
 // GO_STDLIB_PACKAGES (index.ts isBuiltInOrExternal `pkg.member` arm) — live
 // for non-bare names (`pkg.Member` where pkg is a stdlib import).
 pub(super) static GO_STDLIB_PACKAGES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
@@ -1202,6 +1231,12 @@ pub(super) fn is_test_path(path: &str) -> bool {
         // Unit-test trees: LLVM's and Breakpad's `unittests/`, glog's `dcheck_unittest/`. Not a
         // bare `unittest/`: CPython's `Lib/unittest/` is the framework itself.
         || re!(r"(?:^|/)(?:unittests|[\w.]+[-_]unittests?)/").is_match(&lower)
+}
+
+/// isManualMockPath (query-utils.ts #2455): a Jest or Vitest manual mock —
+/// a file under a `__mocks__/` directory.
+pub(super) fn is_manual_mock_path(path: &str) -> bool {
+    re!(r"(?:^|/)__mocks__/").is_match(&path.replace('\\', "/").to_lowercase())
 }
 
 #[cfg(test)]

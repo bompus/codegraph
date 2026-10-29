@@ -26,6 +26,11 @@ pub(in crate::resolve) struct VbMemo {
     pub(in crate::resolve) code: HashMap<String, Rc<Vec<String>>>,
     pub(in crate::resolve) projects: HashMap<String, Option<String>>,
     pub(in crate::resolve) headers: HashMap<String, Rc<VbHeader>>,
+    pub(in crate::resolve) namespaces: Option<Rc<HashSet<String>>>,
+    pub(in crate::resolve) ns_around: HashMap<(String, i64), Rc<Vec<String>>>,
+    pub(in crate::resolve) ns_named: HashMap<String, Option<Rc<Vec<String>>>>,
+    pub(in crate::resolve) no_args: HashMap<String, bool>,
+    pub(in crate::resolve) namesakes: HashMap<String, bool>,
 }
 #[derive(Clone)]
 pub(in crate::resolve) enum VbBinding {
@@ -732,5 +737,329 @@ impl KernelResolver {
             }
         }
         Ok(None)
+    }
+    /// knownNamespaces: every full namespace name the project's VB.NET code
+    /// declares (root namespaces included), lowercased and dot-joined.
+    pub(in crate::resolve) fn vb_known_namespaces(&mut self) -> Res<Rc<HashSet<String>>> {
+        if let Some(hit) = &self.vb.namespaces {
+            return Ok(hit.clone());
+        }
+        let mut known = HashSet::new();
+        let mut add = |segments: &[String]| {
+            for i in 1..=segments.len() {
+                known.insert(segments[..i].join("."));
+            }
+        };
+        let namespaces: Vec<Arc<KNode>> = self
+            .table()?
+            .nodes
+            .iter()
+            .filter(|n| n.language == "vbnet" && n.kind == "namespace")
+            .cloned()
+            .collect();
+        for n in &namespaces {
+            add(&self.vb_full(n));
+        }
+        let files: Vec<String> = self
+            .table()?
+            .by_file
+            .keys()
+            .filter(|f| f.to_ascii_lowercase().ends_with(".vb"))
+            .cloned()
+            .collect();
+        for file in files {
+            add(&self.vb_header(&file).root);
+        }
+        let out = Rc::new(known);
+        self.vb.namespaces = Some(out.clone());
+        Ok(out)
+    }
+    /// namespaceAround: the full segments of the namespace a line sits in —
+    /// the project's root namespace, then the `Namespace` block around it.
+    pub(in crate::resolve) fn vb_namespace_around(&mut self, file: &str, line: i64) -> Res<Rc<Vec<String>>> {
+        let key = (file.to_string(), line);
+        if let Some(hit) = self.vb.ns_around.get(&key) {
+            return Ok(hit.clone());
+        }
+        let root = self.vb_header(file).root.clone();
+        let around = self.vb_around(file, line)?;
+        let outer = around.last();
+        let out = match outer.and_then(|n| n.qualified_name.find("::").map(|cut| n.qualified_name[..cut].to_ascii_lowercase())) {
+            Some(head)
+                if self
+                    .nodes_in_file(file)?
+                    .iter()
+                    .any(|n| n.kind == "namespace" && n.qualified_name.eq_ignore_ascii_case(&head)) =>
+            {
+                let mut v = root;
+                v.extend(head.split('.').map(str::to_string));
+                v
+            }
+            _ => root,
+        };
+        let out = Rc::new(out);
+        self.vb.ns_around.insert(key, out.clone());
+        Ok(out)
+    }
+    /// namespaceNamed: the full segments of the namespace a first path segment
+    /// names where it is written — nested inside the namespaces around the
+    /// read, innermost first, else inside an imported one. None when the name
+    /// is no namespace there.
+    pub(in crate::resolve) fn vb_namespace_named(
+        &mut self,
+        name: &str,
+        r: &ResolveRefIn,
+    ) -> Res<Option<Rc<Vec<String>>>> {
+        let lower = name.to_ascii_lowercase();
+        let key = format!("{}:{}:{lower}", r.file_path, r.line);
+        if let Some(hit) = self.vb.ns_named.get(&key) {
+            return Ok(hit.clone());
+        }
+        let known = self.vb_known_namespaces()?;
+        let around = self.vb_namespace_around(&r.file_path, r.line)?;
+        let mut out = None;
+        for i in (0..=around.len()).rev() {
+            let mut candidate = around[..i].to_vec();
+            candidate.push(lower.clone());
+            if known.contains(&candidate.join(".")) {
+                out = Some(candidate);
+                break;
+            }
+        }
+        if out.is_none() {
+            for imported in self.vb_header(&r.file_path).imports.clone() {
+                let mut candidate: Vec<String> = imported.split('.').map(str::to_string).collect();
+                candidate.push(lower.clone());
+                if known.contains(&candidate.join(".")) {
+                    out = Some(candidate);
+                    break;
+                }
+            }
+        }
+        let out = out.map(Rc::new);
+        self.vb.ns_named.insert(key, out.clone());
+        Ok(out)
+    }
+    /// typesInNamespace: the project types named `name` declared directly in
+    /// namespace `ns` (full segments) — the caller's project's when it has
+    /// one, and None when that leaves two different types.
+    pub(in crate::resolve) fn vb_types_in_namespace(
+        &mut self,
+        ns: &[String],
+        name: &str,
+        r: &ResolveRefIn,
+    ) -> Res<Option<Vec<Arc<KNode>>>> {
+        let key = ns.join(".");
+        let mut found: Vec<Arc<KNode>> = Vec::new();
+        for n in self.nodes_by_lower_name(name)?.iter() {
+            if n.language != "vbnet" || !(vb_type_kind(&n.kind) || n.kind == "enum") {
+                continue;
+            }
+            let full = self.vb_full(n);
+            if full[..full.len() - 1].join(".") == key {
+                found.push(n.clone());
+            }
+        }
+        let own: Vec<_> = found
+            .iter()
+            .filter(|n| self.vb_same_project(&n.file_path, &r.file_path))
+            .cloned()
+            .collect();
+        if !own.is_empty() {
+            found = own;
+        }
+        let mut distinct = HashSet::new();
+        for n in &found {
+            distinct.insert((
+                self.vb_project(&n.file_path),
+                n.qualified_name.to_ascii_lowercase(),
+            ));
+        }
+        if distinct.len() > 1 {
+            return Ok(None);
+        }
+        found.sort_by_key(|n| n.file_path != r.file_path);
+        Ok(Some(found))
+    }
+    /// moduleMemberIn: a member named `name` of a `Module` declared directly
+    /// in namespace `ns`, which VB.NET reads through the namespace.
+    pub(in crate::resolve) fn vb_module_member_in(
+        &mut self,
+        ns: &[String],
+        name: &str,
+        r: &ResolveRefIn,
+    ) -> Res<Option<Arc<KNode>>> {
+        let key = ns.join(".");
+        for n in self.vb_module_members(name, r)?.iter() {
+            if !(vb_value_kind(&n.kind) || n.kind == "method") {
+                continue;
+            }
+            let full = self.vb_full(n);
+            if full.len() >= 2 && full[..full.len() - 2].join(".") == key {
+                return Ok(Some(n.clone()));
+            }
+        }
+        Ok(None)
+    }
+    /// memberAround: the field, property, function or Module member a
+    /// receiver-less `name` reads where a call is (upstream memberAround).
+    pub(in crate::resolve) fn vb_member_around(
+        &mut self,
+        name: &str,
+        r: &ResolveRefIn,
+    ) -> Res<Option<VbMember>> {
+        for owner in self.vb_around(&r.file_path, r.line)? {
+            for ancestor in self.vb_ancestry(&owner)? {
+                if let Some(node) = self
+                    .vb_members(&ancestor.node, name)?
+                    .into_iter()
+                    .find(|n| vb_value_kind(&n.kind) || n.kind == "method")
+                {
+                    return Ok(Some(VbMember {
+                        node,
+                        args: ancestor.args,
+                    }));
+                }
+            }
+        }
+        if let Some(node) = self
+            .vb_module_members(name, r)?
+            .into_iter()
+            .find(|n| vb_value_kind(&n.kind) || n.kind == "method")
+        {
+            return Ok(Some(VbMember {
+                node,
+                args: HashMap::new(),
+            }));
+        }
+        Ok(None)
+    }
+    /// takesNoArguments: whether VB.NET can call a method with no arguments —
+    /// it declares no parameter, or only `Optional` ones and a `ParamArray`.
+    /// Read from its declaration; true when that can't be read.
+    pub(in crate::resolve) fn vb_takes_no_arguments(&mut self, n: &KNode) -> Res<bool> {
+        if let Some(hit) = self.vb.no_args.get(&n.id) {
+            return Ok(*hit);
+        }
+        let code = self
+            .vb_lines(&n.file_path)
+            .iter()
+            .skip((n.start_line - 1).max(0) as usize)
+            .take(7)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let name = regex::escape(n.name.trim_matches(['[', ']']));
+        let head = Self::cached_regex(&format!(
+            r"(?i)\b(?:Sub|Function)\s+(\[?{name}\]?)(?:[^\w$%&!#@]|$)"
+        ))?
+        .captures(&code);
+        let mut none = true;
+        if let Some(head) = head {
+            let mut at = head.get(1).unwrap().end();
+            if re!(r"(?i)^\s*\(\s*Of\b").is_match(&code[at..]) {
+                // `Function Parse(Of T)(text As String)`: the type parameters come first.
+                at = code[at..]
+                    .find('(')
+                    .and_then(|i| vb_close(&code, at + i))
+                    .map_or(0, |close| close + 1);
+            }
+            let open = (at > 0).then(|| re!(r"^\s*\(").find(&code[at..])).flatten();
+            let params = open.and_then(|m| {
+                let open_at = at + m.end() - 1;
+                vb_close(&code, open_at).map(|close| vb_args(&code[open_at + 1..close]))
+            });
+            none = params.is_none_or(|params| {
+                params.iter().all(|p| {
+                    let param = re!(r"<[^<>]*>").replace_all(p, "");
+                    let param = param.trim_start_matches([' ', '\t', '_']);
+                    param.is_empty()
+                        || re!(r"(?i)^(?:(?:ByVal|ByRef)\s+)*(?:Optional|ParamArray)\b")
+                            .is_match(param)
+                })
+            });
+        }
+        self.vb.no_args.insert(n.id.clone(), none);
+        Ok(none)
+    }
+    /// runnableOverload: the overload of `member` VB.NET runs where a
+    /// reference names it without parentheses — one that takes no arguments,
+    /// and never the member the reference is in. `member` itself when the
+    /// overloads don't tell; None when the only one is the containing member.
+    pub(in crate::resolve) fn vb_runnable_overload(
+        &mut self,
+        member: Arc<KNode>,
+        r: &ResolveRefIn,
+    ) -> Res<Option<Arc<KNode>>> {
+        let owner = match vb_parent_qn(&member) {
+            Some(qn) => self
+                .nodes_by_qualified_name(qn)?
+                .iter()
+                .find(|n| n.language == "vbnet" && vb_type_kind(&n.kind))
+                .cloned(),
+            None => None,
+        };
+        let project = self.vb_project(&member.file_path);
+        let overloads: Vec<Arc<KNode>> = match owner {
+            Some(owner) => self
+                .vb_members(&owner, &member.name)?
+                .into_iter()
+                .filter(|n| {
+                    n.kind == "method" && self.vb_project(&n.file_path) == project
+                })
+                .collect(),
+            None => vec![],
+        };
+        let others: Vec<_> = overloads
+            .into_iter()
+            .filter(|n| n.id != r.from_node_id)
+            .collect();
+        if others.is_empty() {
+            return Ok((member.id != r.from_node_id).then_some(member));
+        }
+        let mut runnable = Vec::new();
+        for n in &others {
+            if self.vb_takes_no_arguments(n)? {
+                runnable.push(n.clone());
+            }
+        }
+        let pool = if runnable.is_empty() { &others } else { &runnable };
+        Ok(Some(
+            pool.iter()
+                .find(|n| n.id == member.id)
+                .cloned()
+                .unwrap_or_else(|| pool[0].clone()),
+        ))
+    }
+    /// isOutsideNamesake: a member declared as a type of its own name that
+    /// isn't one of the project's (`Responser As Responser`), or naming two —
+    /// a read through its name may be one through that type.
+    pub(in crate::resolve) fn vb_is_outside_namesake(
+        &mut self,
+        member: &Arc<KNode>,
+        args: &HashMap<String, VbType>,
+    ) -> Res<bool> {
+        if args.is_empty() {
+            if let Some(hit) = self.vb.namesakes.get(&member.id) {
+                return Ok(*hit);
+            }
+        }
+        let declared = self.vb_member_type(&VbMember {
+            node: member.clone(),
+            args: args.clone(),
+        })?;
+        let mut namesake = false;
+        if let Some(d) = declared.filter(|d| {
+            !d.array
+                && d.name
+                    .eq_ignore_ascii_case(member.name.trim_matches(['[', ']']))
+        }) {
+            let (owners, ambiguous) = self.vb_types_at(&d, true)?;
+            namesake = ambiguous || owners.is_empty();
+        }
+        if args.is_empty() {
+            self.vb.namesakes.insert(member.id.clone(), namesake);
+        }
+        Ok(namesake)
     }
 }

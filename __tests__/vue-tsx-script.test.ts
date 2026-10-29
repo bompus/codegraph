@@ -19,7 +19,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import CodeGraph from '../src/index';
-import { readGrammarWasmBytes } from '../src/extraction/grammars';
+import { hasTreeSitterGrammar } from '../src/extraction/grammars';
 import { syntaxRegionsFor } from '../src/extraction/syntax-tokens';
 import type { Node } from '../src/types';
 
@@ -128,9 +128,15 @@ describe('Vue <script lang="tsx">', () => {
     expect(named(graph.getNodesInFile('src/Legacy.vue'), 'function', 'sum')).toBeDefined();
   });
 
-  it('loads the TSX grammar for a Vue project, and not for a Svelte one', async () => {
-    expect(Object.keys(await readGrammarWasmBytes(['vue'])).sort()).toEqual(['javascript', 'tsx', 'typescript']);
-    expect(Object.keys(await readGrammarWasmBytes(['svelte'])).sort()).toEqual(['javascript', 'typescript']);
+  it('reads a Vue tsx block with the TSX grammar, which the kernel always carries', async () => {
+    // Upstream preloads wasm grammars per project and had to add TSX to Vue's
+    // set; the fork's kernel compiles every grammar in, so the contract is
+    // that TSX parses — the indexing tests above then prove a .vue project's
+    // tsx block never lacks a grammar.
+    expect(hasTreeSitterGrammar('tsx')).toBe(true);
+    const graph = await indexProject();
+    expect(errorsOf(graph, 'src/Title.vue')).toEqual([]);
+    expect(errorsOf(graph, 'src/Card.vue')).toEqual([]);
   });
 
   it('is highlighted in the viewer with the grammar it was indexed with', () => {

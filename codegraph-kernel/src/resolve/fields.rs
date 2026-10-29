@@ -60,7 +60,10 @@ impl KernelResolver {
                     continue;
                 };
                 // The package directory that declares the field's type: the
-                // imported package for `pkg.Type`, else the struct's own.
+                // imported package for `pkg.Type`; for a bare name the
+                // struct's own package or one its file dot-imports — none of
+                // the project's for a name only an outside package can give
+                // the file.
                 let pkg_dir = if raw_type.contains('.') {
                     let pkg = raw_type.split('.').next().unwrap_or("");
                     match self.go_imported_package_dir(&s.file_path, pkg)? {
@@ -68,7 +71,10 @@ impl KernelResolver {
                         None => continue,
                     }
                 } else {
-                    pos_dirname(&s.file_path).to_string()
+                    match self.go_bare_type_dir(&raw_type, &s.file_path)? {
+                        Some(dir) => dir,
+                        None => continue,
+                    }
                 };
                 let Some(field_type) = raw_type.split('.').next_back() else {
                     continue;
@@ -81,12 +87,168 @@ impl KernelResolver {
                 {
                     continue;
                 }
+                // Nor is an alias of an outside type (`ctx Ctx` with
+                // `type Ctx = context.Context`): read in the struct's file.
+                if matches!(
+                    self.go_written_type(&raw_type, &r.clone().at(&s))?,
+                    Some(super::go_asserted::GoAsserted::Outside)
+                ) {
+                    continue;
+                }
                 if let Some(c) = self.go_method_in_package(field_type, method, &pkg_dir, r)? {
                     return Ok(Some(c));
                 }
             }
         }
         Ok(None)
+    }
+
+    /// goDotImports (name-matcher.ts): the project package directories
+    /// `file_path` dot-imports (`import . "…"`), whether a dot import lies
+    /// outside the project's modules, and — only when an outside one does —
+    /// the names the file's own `type` declarations use.
+    pub(super) fn go_dot_imports(&mut self, file_path: &str) -> Res<GoDotImports> {
+        if let Some(hit) = self.go_dot_imports_memo.get(file_path) {
+            return Ok(hit.clone());
+        }
+        let mut found = GoDotImports::default();
+        for import in self.import_mappings(file_path)?.iter().filter(|i| i.local_name == ".") {
+            if let Some(dir) = self.go_package_dir(&import.source, file_path) {
+                found.dirs.push(dir);
+            } else if !import.source.starts_with('.') && !import.source.contains("/internal/") {
+                found.outside = true;
+            }
+        }
+        if found.outside {
+            let mut types = HashSet::new();
+            if let Some(lines) = self.read_file(file_path) {
+                for line in lines.iter() {
+                    for m in re!(r"(?:^|[^\w.])type\s+([A-Za-z_]\w*)").captures_iter(&strip_line_comments(line)) {
+                        types.insert(m[1].to_string());
+                    }
+                }
+            }
+            found.types = types;
+        }
+        self.go_dot_imports_memo.insert(file_path.to_string(), found.clone());
+        Ok(found)
+    }
+
+    /// goPackageTypes (name-matcher.ts): the Go type declarations named
+    /// `name` in the package at `dir`.
+    pub(super) fn go_package_types(&mut self, name: &str, dir: &str) -> Res<Vec<Arc<KNode>>> {
+        Ok(self.nodes_by_name(name)?.iter()
+            .filter(|n| n.language == "go"
+                && matches!(n.kind.as_str(), "struct" | "interface" | "type_alias")
+                && pos_dirname(&n.file_path) == dir)
+            .cloned().collect())
+    }
+
+    /// goBareTypeDir (name-matcher.ts): the package directory Go reads a
+    /// bare type name from — the file's own package, else a package of the
+    /// project the file dot-imports that declares it. `None` for an
+    /// exported name only a package from outside the project can give the
+    /// file (`. "github.com/onsi/gomega"`): no type of the project's. The
+    /// file's own package when no package declares the name — a type the
+    /// index doesn't hold, like one a function declares.
+    pub(super) fn go_bare_type_dir(&mut self, name: &str, file_path: &str) -> Res<Option<String>> {
+        let own = pos_dirname(file_path).to_string();
+        let dots = self.go_dot_imports(file_path)?;
+        if (dots.dirs.is_empty() && !dots.outside) || !self.go_package_types(name, &own)?.is_empty() {
+            return Ok(Some(own));
+        }
+        for dir in &dots.dirs {
+            if !self.go_package_types(name, dir)?.is_empty() {
+                return Ok(Some(dir.clone()));
+            }
+        }
+        if !dots.outside || !re!(r"^[A-Z]\w*$").is_match(name) {
+            return Ok(Some(own));
+        }
+        Ok(dots.types.contains(name).then_some(own))
+    }
+
+    /// goAliasTarget (name-matcher.ts): the project type a `type X = T`
+    /// declaration names — `Null` when X is no project type's (a builtin or
+    /// a type from outside the modules), `Unknown` when the node is no alias
+    /// or its target can't be read.
+    pub(super) fn go_alias_target(&mut self, type_node: &KNode) -> Res<GoAliasTarget> {
+        if type_node.kind != "type_alias" {
+            return Ok(GoAliasTarget::Unknown);
+        }
+        if let Some(hit) = self.go_alias_target_memo.get(&type_node.id) {
+            return Ok(hit.clone());
+        }
+        let Some(lines) = self.read_file(&type_node.file_path) else {
+            return Ok(GoAliasTarget::Unknown);
+        };
+        // From the alias's name, where the node starts, to the end of its type.
+        let decl = lines.iter()
+            .skip((type_node.start_line - 1).max(0) as usize)
+            .take((type_node.end_line - type_node.start_line + 1).max(0) as usize)
+            .enumerate()
+            .map(|(i, l)| {
+                let s = if i == 0 { &l[type_node.start_column.max(0) as usize..] } else { l.as_str() };
+                strip_line_comments(s).to_string()
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let decl = re!(r"/\*.*?\*/").replace_all(&decl, "");
+        // `Name =` or `Name[T any] =`; a defined type has no `=` there.
+        let head = re!(r"^\s*[A-Za-z_]\w*\s*(?:\[[^\]]*\])?\s*=").captures(&decl);
+        let target = match head {
+            None => GoAliasTarget::Unknown,
+            Some(head) => {
+                let m = re!(r"^\s*(?:\*\s*)?([A-Za-z_]\w*)(?:\s*\.\s*([A-Za-z_]\w*))?\s*(?:\[.*\])?\s*;?\s*$")
+                    .captures(&decl[head.get(0).unwrap().end()..]);
+                match m {
+                    None => GoAliasTarget::Null,
+                    Some(m) => {
+                        let (bare, name) = match m.get(2) {
+                            Some(second) => (false, second.as_str().to_string()),
+                            None => (true, m[1].to_string()),
+                        };
+                        let pkg_dir = if bare {
+                            self.go_bare_type_dir(&name, &type_node.file_path)?
+                        } else {
+                            self.go_imported_package_dir(&type_node.file_path, &m[1])?
+                        };
+                        match pkg_dir {
+                            Some(dir) if !bare || !GO_BUILTIN_FIELD_TYPES.contains(name.as_str()) => {
+                                GoAliasTarget::Target(name, dir)
+                            }
+                            _ => GoAliasTarget::Null,
+                        }
+                    }
+                }
+            }
+        };
+        self.go_alias_target_memo.insert(type_node.id.clone(), target.clone());
+        Ok(target)
+    }
+
+    /// goDotImportedSupertype (name-matcher.ts): what a Go embedding written
+    /// bare (`*Manager`) names — the type of the package the file
+    /// dot-imports that declares it, not another package's namesake, and
+    /// nothing for a name only a package from outside the project can give
+    /// the file. `None` vetoes the pick; `Some` gives the node to use,
+    /// which may be `cand` unchanged.
+    pub(super) fn go_dot_imported_supertype(&mut self, cand: &Arc<KNode>, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        if !re!(r"^[A-Za-z_]\w*$").is_match(&r.reference_name) {
+            return Ok(Some(cand.clone()));
+        }
+        let own = pos_dirname(&r.file_path).to_string();
+        let Some(dir) = self.go_bare_type_dir(&r.reference_name, &r.file_path)? else {
+            return Ok(None);
+        };
+        if dir == own || self.go_written_qualifier(r)?.is_some() {
+            return Ok(Some(cand.clone()));
+        }
+        if pos_dirname(&cand.file_path) == dir {
+            return Ok(Some(cand.clone()));
+        }
+        let types = self.go_package_types(&r.reference_name, &dir)?;
+        Ok(prefer_call_site_file(types, &r.file_path).into_iter().next().or_else(|| Some(cand.clone())))
     }
 
     /// The module directory of the package `file_path` imports as `pkg`:
@@ -140,7 +302,14 @@ impl KernelResolver {
             .collect();
         let in_pkg: Vec<Arc<KNode>> =
             named.into_iter().filter(|m| pos_dirname(&m.file_path) == pkg_dir).collect();
-        if in_pkg.is_empty() { return self.go_promoted_method(type_name, method, pkg_dir, r); }
+        if in_pkg.is_empty() {
+            // A file of the package the index couldn't read may declare the
+            // method — the graph's gap is not a promoted method's place.
+            if self.go_unread_file_declares(type_name, method, pkg_dir)? {
+                return Ok(None);
+            }
+            return self.go_promoted_method(type_name, method, pkg_dir, r);
+        }
         if r.reference_kind == "function_ref" && in_pkg.len() != 1 { return Ok(None); }
         let ordered = prefer_call_site_file(in_pkg, &r.file_path);
         Ok(Some(KCand { node: ordered[0].clone(), confidence: 0.85, resolved_by: "instance-method" }))
@@ -161,7 +330,9 @@ impl KernelResolver {
             return Ok(self.go_imported_package_dir(file, pkg)?
                 .map(|dir| (name.to_string(), dir)));
         }
-        Ok(Some((named.to_string(), pos_dirname(file).to_string())))
+        // A bare type name reads from the file's own package or one it
+        // dot-imports (goBareTypeDir): `None` when it can't be told.
+        Ok(self.go_bare_type_dir(named, file)?.map(|dir| (named.to_string(), dir)))
     }
 
     /// A named term in an interface is a supertype only if its declaration
@@ -418,6 +589,7 @@ impl KernelResolver {
                 }
                 let rest = &line[at + field.len() + caps.get(0).map_or(0, |m| m.end())..];
                 return Ok(Some(TsFieldDecl {
+                    element: ts_field_element(&caps[1], rest, &source, line_no),
                     ty: caps[1].to_string(),
                     value_type: false,
                     typed_collection: guard1_tail_re().is_match(rest),
@@ -444,7 +616,9 @@ impl KernelResolver {
                         continue;
                     }
                     let rest = &line[m.end..];
+                    let element = if *value_type { None } else { ts_field_element(&line[gs..ge], rest, &source, line_no) };
                     return Ok(Some(TsFieldDecl {
+                        element,
                         ty: line[gs..ge].to_string(),
                         value_type: *value_type,
                         typed_collection: guard1_tail_re().is_match(rest),
@@ -467,6 +641,7 @@ impl KernelResolver {
                 if declares && self.ts_init_is_read(owner, &source, start + i, &init)? {
                     let rest = &line[init.end..];
                     return Ok(Some(TsFieldDecl {
+                        element: None,
                         ty: init.ty,
                         value_type: false,
                         typed_collection: guard1_tail_re().is_match(rest),
@@ -1096,15 +1271,39 @@ impl KernelResolver {
         self.resolve_rust_module_file(&segs[..segs.len() - 1], &owner.file_path)
     }
 
+    /// `this.<field>[k].<method>()` calls the element's type: what the field's
+    /// declaration writes for it, or nothing. A type parameter of the
+    /// declaring class names no type (`class Store<Item> { items: Item[] }`),
+    /// whatever project class shares its name.
+    fn ts_field_held(&mut self, decl: TsFieldDecl, cls: &KNode, element: bool) -> Res<Option<TsFieldDecl>> {
+        if !element {
+            return Ok(Some(decl));
+        }
+        let Some(element_ty) = decl.element.clone() else { return Ok(None) };
+        if decl.value_type || self.ts_class_type_parameter(cls, &element_ty) {
+            return Ok(None);
+        }
+        Ok(Some(TsFieldDecl {
+            element: None,
+            ty: element_ty,
+            value_type: false,
+            typed_collection: false,
+            array: false,
+            nullable: false,
+        }))
+    }
+
     /// matchTsThisFieldCall — the `this.field.method` entry point of
     /// matchMethodCall's requireReceiverEvidence=false arm. The owner is the
     /// enclosing class written on the calling method's qualified name, so it
     /// is not a guess — same exclusive discipline as the go/rust field arms.
+    /// `element` selects the field's element type (`this.<field>[].<method>`).
     pub(super) fn match_ts_this_field_call(
         &mut self,
         field: &str,
         method: &str,
         r: &ResolveRefIn,
+        element: bool,
     ) -> Res<Option<KCand>> {
         if field.is_empty() || field.contains('.') {
             return Ok(None);
@@ -1126,7 +1325,7 @@ impl KernelResolver {
         if owner.is_empty() {
             return Ok(None);
         }
-        self.match_ts_field_call_free(owner, field, method, r)
+        self.match_ts_field_call_free(owner, field, method, r, element)
     }
 
     /// matchTsFieldCall without boundOwner — the unbound variant used by the
@@ -1141,6 +1340,7 @@ impl KernelResolver {
         field: &str,
         method: &str,
         r: &ResolveRefIn,
+        element: bool,
     ) -> Res<Option<KCand>> {
         let owners = prefer_call_site_file(
             self.nodes_by_name(owner)?
@@ -1159,14 +1359,17 @@ impl KernelResolver {
         // nothing about this one's field.
         let mut found: Vec<(TsFieldDecl, Arc<KNode>)> = Vec::new();
         for cls in owners.iter().filter(|c| c.file_path == r.file_path) {
-            if let Some(hit) = self.ts_field_through_bases(cls, field, r, 0)? {
-                found.push(hit);
+            if let Some((decl, cls)) = self.ts_field_through_bases(cls, field, r, 0)? {
+                if let Some(decl) = self.ts_field_held(decl, &cls, element)? {
+                    found.push((decl, cls));
+                }
                 break;
             }
         }
         if found.is_empty() {
             for cls in owners.iter().filter(|c| c.file_path != r.file_path) {
-                let Some(decl) = self.ts_field_decl(cls, field)? else { continue };
+                let Some(read) = self.ts_field_decl(cls, field)? else { continue };
+                let Some(decl) = self.ts_field_held(read, cls, element)? else { continue };
                 if self.ts_type_visible_in(&decl.ty, r)? {
                     // The type is the class the call's file names.
                     let mut at = (**cls).clone();
@@ -1524,6 +1727,28 @@ fn ts_array_suffix_re() -> Rc<Regex> {
     re!(r"^\s*(?:<[^;=(){}<>]*(?:<[^;=(){}<>]*>[^;=(){}<>]*)*>)?\s*\[\s*\]")
 }
 
+/// goDotImports' answer (name-matcher.ts).
+#[derive(Clone, Default)]
+pub(super) struct GoDotImports {
+    pub(super) dirs: Vec<String>,
+    pub(super) outside: bool,
+    pub(super) types: HashSet<String>,
+}
+
+/// goAliasTarget's answer (name-matcher.ts).
+#[derive(Clone)]
+pub(super) enum GoAliasTarget {
+    /// A project type the alias names (`name`, package `dir`). Carried for
+    /// the callers that follow an alias to its type (the unread-file and
+    /// indexed-receiver Go ports); the alias-outside check only reads Null.
+    #[allow(dead_code)]
+    Target(String, String),
+    /// No project type — a builtin or a type from outside the modules.
+    Null,
+    /// Not a type alias, or its target can't be read.
+    Unknown,
+}
+
 /// A TypeScript class-field declaration found by `ts_field_decl`.
 pub(super) struct TsFieldDecl {
     /// The declared type text (`Mailer`, `ns.Mailer`, the `typeof` operand).
@@ -1536,6 +1761,103 @@ pub(super) struct TsFieldDecl {
     pub(super) array: bool,
     /// The only union members after the type are `undefined`/`null`.
     pub(super) nullable: bool,
+    /// What one of the field's elements holds: `Item` of `Item[]`, `Array<Item>` or `Record<string, Item>`.
+    pub(super) element: Option<String>,
+}
+
+/// Whether what follows a field's type joins it with another type: `| Other[]`,
+/// `& Extra`. `| null` and `| undefined` do not.
+fn ts_joins_another_type(tail: &str) -> bool {
+    let mut rest = tail.trim_start();
+    while let Some(t) = rest.strip_prefix('|') {
+        let t = t.trim_start();
+        if let Some(t) = t.strip_prefix("null").or_else(|| t.strip_prefix("undefined")) {
+            let mut b = t.as_bytes().iter();
+            if matches!(b.next(), None | Some(b' ' | b'\t' | b'|' | b'&' | b';' | b'=' | b')' | b',' | b'<' | b'{' | b'[' | b'/' | b'\n' | b'\r')) {
+                rest = t.trim_start();
+                continue;
+            }
+        }
+        break;
+    }
+    rest.starts_with('|') || rest.starts_with('&')
+}
+
+/// Container types whose element type is one of their type arguments, and which.
+fn ts_element_container(ty: &str) -> Option<(usize, usize)> {
+    match ty {
+        "Array" | "ReadonlyArray" => Some((1, 0)),
+        "Record" => Some((2, 1)),
+        _ => None,
+    }
+}
+
+/// The type an element of a field holds, from the field's written type (`ty`)
+/// and what follows it on the line (`rest`): `Item` of `Item[]`, `Array<Item>`
+/// and `Record<string, Item>`. None for any other type, an array of arrays, an
+/// element that is not a plain type name (a union, a generic), or a field
+/// typed as a union with another type (`Item[] | Other[]`); `| null` and
+/// `| undefined` leave the element as it is.
+fn ts_field_element_type(ty: &str, rest: &str) -> Option<String> {
+    let plain = |t: &str| -> Option<String> {
+        let ok = !t.is_empty()
+            && t.bytes().next().is_some_and(|b| b.is_ascii_alphabetic() || b == b'_' || b == b'$')
+            && t.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b == b'.');
+        ok.then(|| t.to_string())
+    };
+    let trimmed = rest.trim_start();
+    if let Some(tail) = trimmed.strip_prefix("[]") {
+        return (!tail.trim_start().starts_with('[') && !ts_joins_another_type(tail)).then(|| ty.to_string());
+    }
+    let (args_n, at) = ts_element_container(ty)?;
+    if !trimmed.starts_with('<') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut from = rest.len() - trimmed.len() + 1;
+    let mut args: Vec<String> = Vec::new();
+    let bytes = rest.as_bytes();
+    let mut i = from;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'<' | b'(' | b'[' | b'{' => depth += 1,
+            b'>' | b')' | b']' | b'}' if depth > 0 => depth -= 1,
+            b',' if depth == 0 => {
+                args.push(rest[from..i].trim().to_string());
+                from = i + 1;
+            }
+            b'>' if depth == 0 => {
+                args.push(rest[from..i].trim().to_string());
+                let tail = &rest[i + 1..];
+                if tail.trim_start().starts_with('[') || ts_joins_another_type(tail) {
+                    return None;
+                }
+                return (args.len() == args_n).then(|| args.get(at)).flatten().and_then(|a| plain(a));
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The field's element type, with the multi-line guard of tsFieldRead: a type
+/// that goes on below with `| Other[]` holds no one element type.
+fn ts_field_element(ty: &str, rest: &str, source: &SourceFile, line_no: i64) -> Option<String> {
+    let element = ts_field_element_type(ty, rest)?;
+    let mut below = String::new();
+    let mut r = line_no as usize;
+    while let Some(raw) = source.get(r) {
+        let line = strip_line_comments(raw);
+        let t = line.trim_start();
+        if !t.starts_with('|') && !t.starts_with('&') {
+            break;
+        }
+        below.push(' ');
+        below.push_str(t);
+        r += 1;
+    }
+    (!ts_joins_another_type(&below)).then_some(element)
 }
 
 /// Whether the class's constructor passes `field` as an argument of `super(...)`,

@@ -34,7 +34,7 @@ impl KernelResolver {
         if import_path.starts_with('.') {
             return false;
         }
-        if self.workspaces.is_some() && self.resolve_workspace_import(import_path).is_some() {
+        if self.workspaces.is_some() && self.resolve_workspace_import(import_path, from_file).is_some() {
             return false;
         }
         if is_esm_import_language(language) {
@@ -79,27 +79,52 @@ impl KernelResolver {
         false
     }
 
+    /// The longest package name `import_path` names among `names` — `name` or
+    /// `name/…` (longestName, workspace-packages.ts).
+    fn longest_package_name<'a>(import_path: &str, names: impl Iterator<Item = &'a String>) -> Option<&'a str> {
+        let mut best = None;
+        for name in names {
+            if (import_path == name.as_str() || import_path.starts_with(&format!("{}/", name)))
+                && best.is_none_or(|b: &str| name.len() > b.len())
+            {
+                best = Some(name.as_str());
+            }
+        }
+        best
+    }
+
+    /// matchPackage (workspace-packages.ts): the path dependency the nearest
+    /// manifest above `from_file` maps the import to, else a workspace member.
+    fn match_workspace_package(&self, import_path: &str, from_file: &str) -> Option<(String, String)> {
+        let ws = self.workspaces.as_ref()?;
+        // scopedPackage: manifests above the importing file declare their own
+        // `file:`/`link:`/`portal:` dependencies for the files under them.
+        let mut dir = from_file.replace('\\', "/");
+        while !dir.is_empty() {
+            dir = dir.rfind('/').map_or(String::new(), |s| dir[..s].to_string());
+            if let Some(names) = ws.scoped_by_name.get(&dir) {
+                if let Some(name) = Self::longest_package_name(import_path, names.keys()) {
+                    return Some((name.to_string(), names[name].clone()));
+                }
+            }
+        }
+        let name = Self::longest_package_name(import_path, ws.by_name.keys())?;
+        Some((name.to_string(), ws.by_name[name].clone()))
+    }
+
     /// resolveWorkspaceImport (workspace-packages.ts): sourceEntries first,
-    /// then longest matching package name; a bare member import resolves to
-    /// its declared entry when the manifest names one.
-    pub(super) fn resolve_workspace_import(&self, import_path: &str) -> Option<String> {
+    /// then the matching package; a bare member import resolves to its
+    /// declared entry when the manifest names one.
+    pub(super) fn resolve_workspace_import(&self, import_path: &str, from_file: &str) -> Option<String> {
         let ws = self.workspaces.as_ref()?;
         if let Some((_, src)) = ws.source_entries.iter().find(|(k, _)| k == import_path) {
             return Some(src.clone());
         }
-        let mut best: Option<(&str, &str)> = None;
-        for (name, dir) in &ws.by_name {
-            if (import_path == name.as_str() || import_path.starts_with(&format!("{}/", name)))
-                && best.is_none_or(|(b, _)| name.len() > b.len())
-            {
-                best = Some((name, dir));
-            }
-        }
-        let (name, dir) = best?;
+        let (name, dir) = self.match_workspace_package(import_path, from_file)?;
         let subpath = &import_path[name.len()..]; // '' or '/widgets'
         if subpath.is_empty() {
             if let Some(entry_by_name) = &ws.entry_by_name {
-                if let Some(entry) = entry_by_name.get(name) {
+                if let Some(entry) = entry_by_name.get(&name) {
                     return Some(entry.clone());
                 }
             }
@@ -109,6 +134,99 @@ impl KernelResolver {
             re!(r"/{2,}")
         }
         Some(multi_slash().replace_all(&joined, "/").to_string())
+    }
+
+    /// workspaceImportTargets (workspace-packages.ts): what the package's
+    /// manifest declares for the import, and its directory form.
+    fn workspace_import_targets(&self, import_path: &str, from_file: &str) -> Option<WorkspaceTargets> {
+        let ws = self.workspaces.as_ref()?;
+        let (name, dir) = self.match_workspace_package(import_path, from_file)?;
+        let subpath = &import_path[name.len()..]; // '' or '/widgets'
+        let joined = format!("{}{}", dir, subpath);
+        let directory = re!(r"/{2,}").replace_all(&joined, "/").to_string();
+        let ohpm = if subpath.is_empty() {
+            ws.entry_by_name.as_ref().and_then(|m| m.get(&name)).cloned()
+        } else {
+            None
+        };
+        let declared = match ohpm {
+            Some(entry) => vec![entry],
+            None => self.declared_workspace_entries(dir.as_str(), subpath),
+        };
+        Some(WorkspaceTargets { declared, directory, package_dir: dir })
+    }
+
+    /// declaredEntries: the targets a package's manifest declares for
+    /// `subpath` (`''` or `/widgets`), best first: its `exports` entry, then
+    /// the root's `main`-style fields.
+    fn declared_workspace_entries(&self, package_dir: &str, subpath: &str) -> Vec<String> {
+        let Some(entries) = self.workspaces.as_ref().and_then(|ws| ws.entries_by_dir.get(package_dir)) else {
+            return vec![];
+        };
+        let exported = exported_targets(&entries.exports, &format!(".{subpath}"));
+        if !subpath.is_empty() {
+            return exported;
+        }
+        let mut out = exported;
+        for m in &entries.main {
+            if !out.contains(m) {
+                out.push(m.clone());
+            }
+        }
+        out
+    }
+
+    /// indexedTarget (import-resolver.ts): `target` as a file the index
+    /// holds — as written, with the language's extensions or index files, or
+    /// as the source of an emitted `.js`. Only the index counts: build output
+    /// a local build left on disk is not linked.
+    fn indexed_target(&self, target: &str, language: &str) -> Option<String> {
+        let as_is = indexed_spelling(target, language);
+        if self.known_file(&as_is) {
+            return Some(as_is);
+        }
+        for ext in extension_resolution(language) {
+            let candidate = indexed_spelling(&format!("{target}{ext}"), language);
+            if self.known_file(&candidate) {
+                return Some(candidate);
+            }
+        }
+        // findSourceForEmittedSpecifier restricted to the index.
+        let sources = emitted_to_source(&as_is, language)?;
+        let stem_len = as_is.rfind('.')?;
+        let stem = &as_is[..stem_len];
+        for ext in sources {
+            let candidate = format!("{}{}", stem, ext);
+            if self.known_file(&candidate) {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    /// builtSourceOf: `target`, build output the index lacks, as the indexed
+    /// source it is built from (`dist/index.js` → `src/index.ts`).
+    fn built_source_of(&self, target: &str, package_dir: &str, language: &str) -> Option<String> {
+        for source in built_sources_of(target, package_dir) {
+            if let Some(hit) = self.indexed_target(&source, language) {
+                return Some(hit);
+            }
+        }
+        None
+    }
+
+    /// declaredWorkspaceEntry: the first declared target the index holds, or
+    /// that is build output the index lacks read as its source.
+    fn declared_workspace_entry(&self, targets: &WorkspaceTargets, language: &str) -> Option<String> {
+        for target in &targets.declared {
+            if let Some(hit) = self
+                .indexed_target(target, language)
+                .or_else(|| self.built_source_of(target, &targets.package_dir, language))
+            {
+                return Some(hit);
+            }
+        }
+        None
     }
 
     /// applyAliases (path-aliases.ts): candidate paths relative to
@@ -181,15 +299,20 @@ impl KernelResolver {
 
     /// The first existing file among `base` + each of the language's
     /// extensions, then `base` itself, then the source an emitted `.js`/`.d.ts`
-    /// path was compiled from.
+    /// path was compiled from — each spelled as the index keys it
+    /// (indexedSpelling, upstream 8651990a / #2577).
     pub(super) fn probe_extensions(&self, base: &str, language: &str) -> Option<String> {
         extension_resolution(language)
             .iter()
             .filter(|ext| !base.is_empty() || ext.starts_with('/'))
             .map(|ext| if base.is_empty() { ext.trim_start_matches('/').to_string() } else { format!("{base}{ext}") })
+            .map(|candidate| indexed_spelling(&candidate, language))
             .find(|candidate| self.file_exists(candidate))
-            .or_else(|| self.file_exists(base).then(|| base.to_string()))
-            .or_else(|| self.find_source_for_emitted(base, language))
+            .or_else(|| {
+                let as_is = indexed_spelling(base, language);
+                self.file_exists(&as_is).then_some(as_is)
+            })
+            .or_else(|| self.find_source_for_emitted(&indexed_spelling(base, language), language))
     }
 
     /// resolveAliasedImport (import-resolver.ts): tsconfig paths → workspace
@@ -228,9 +351,22 @@ impl KernelResolver {
             }
         }
         if self.workspaces.is_some() {
-            if let Some(base) = self.resolve_workspace_import(import_path) {
-                if let Some(hit) = self.probe_extensions(&base, language) {
-                    return Ok(Some(hit));
+            // The entry the package's manifest declares for the import (#2502),
+            // else the member's directory where extension/index permutations
+            // find its barrel, else the source its build output mirrors.
+            if let Some(targets) = self.workspace_import_targets(import_path, from_file) {
+                if let Some(declared) = self.declared_workspace_entry(&targets, language) {
+                    return Ok(Some(declared));
+                }
+                let direct = self.probe_extensions(&targets.directory, language);
+                if direct.as_ref().is_some_and(|d| self.known_file(d)) {
+                    return Ok(direct);
+                }
+                if let Some(built) = self.built_source_of(&targets.directory, &targets.package_dir, language) {
+                    return Ok(Some(built));
+                }
+                if direct.is_some() {
+                    return Ok(direct);
                 }
             }
         }
@@ -1564,6 +1700,11 @@ impl KernelResolver {
             if let [node] = nodes.as_slice() {
                 return Ok(Some(KCand { node: node.clone(), confidence: 0.9, resolved_by: "import" }));
             }
+            // A name the package defines once per build target: the twin the
+            // reference's file builds with, or nothing (#2581).
+            if let Some(node) = self.go_pick_twin(&nodes, r)? {
+                return Ok(Some(KCand { node, confidence: 0.9, resolved_by: "import" }));
+            }
         }
         Ok(None)
     }
@@ -1761,6 +1902,111 @@ fn plain_import_names(line: &str, source: &str) -> Option<bool> {
         return None;
     }
     Some(clause.split(',').any(|name| name.trim() == source))
+}
+
+/// indexedSpelling (import-resolver.ts, upstream 8651990a / #2577): a path as
+/// the index keys its files. The alias, workspace and direct-path branches
+/// join an import specifier as written, so `@/widgets/Chart/` made
+/// `src/widgets/Chart//index.tsx` and `src/widgets/./Chart` made
+/// `src/widgets/./Chart/index.tsx` — spellings no file node or `files` row is
+/// keyed by. An ES-module specifier is read lexically, so `.` and empty
+/// segments drop and `..` folds; a trailing slash still names a folder. Other
+/// languages keep the path as found — a C include's `a/../b.h` follows the
+/// folder `a` on disk, symlinks included.
+fn indexed_spelling(file_path: &str, language: &str) -> String {
+    let dirty = file_path.contains("//")
+        || file_path.split('/').any(|seg| seg == "." || seg == "..");
+    if is_esm_import_language(language) && dirty {
+        pos_normalize(file_path)
+    } else {
+        file_path.to_string()
+    }
+}
+
+/// WorkspaceImportTargets (workspace-packages.ts): where an import of a
+/// project package lands before any file is probed.
+struct WorkspaceTargets {
+    /// The entries the package declares for the import, best first.
+    declared: Vec<String>,
+    /// The package's directory plus the import's subpath, extension-less.
+    directory: String,
+    /// The package's directory.
+    package_dir: String,
+}
+
+/// exportedTargets (workspace-packages.ts): `exports`' targets for `key` —
+/// the exact key's, else the `*` pattern's with the longest prefix, its `*`
+/// filled in.
+fn exported_targets(exports: &[(String, Vec<String>)], key: &str) -> Vec<String> {
+    for (k, targets) in exports {
+        if k == key {
+            return targets.clone();
+        }
+    }
+    let mut best: Option<(usize, String, &Vec<String>)> = None;
+    for (pattern, targets) in exports {
+        let Some(star) = pattern.find('*') else { continue };
+        if pattern[star + 1..].contains('*') {
+            continue;
+        }
+        let (prefix, suffix) = (&pattern[..star], &pattern[star + 1..]);
+        if key.len() < prefix.len() + suffix.len() || !key.starts_with(prefix) || !key.ends_with(suffix) {
+            continue;
+        }
+        if best.as_ref().is_some_and(|(b, _, _)| prefix.len() <= *b) {
+            continue;
+        }
+        best = Some((
+            prefix.len(),
+            key[prefix.len()..key.len() - suffix.len()].to_string(),
+            targets,
+        ));
+    }
+    match best {
+        Some((_, matched, targets)) => targets.iter().map(|t| t.replace('*', &matched)).collect(),
+        None => vec![],
+    }
+}
+
+/// builtSourcesOf (import-resolver.ts): `target` inside `package_dir`'s build
+/// output (`dist/`, `lib/`, `esm/`…) as the `src/` sources it is built from,
+/// best first.
+fn built_sources_of(target: &str, package_dir: &str) -> Vec<String> {
+    let prefix = if package_dir.is_empty() {
+        String::new()
+    } else {
+        format!("{package_dir}/")
+    };
+    if !target.starts_with(&prefix) {
+        return vec![];
+    }
+    let in_package = &target[prefix.len()..];
+    fn build_root() -> Rc<Regex> {
+        re!(r"^(?:dist|build|lib|out|output|es|esm|cjs|umd)/")
+    }
+    fn build_format() -> Rc<Regex> {
+        re!(r"^(?:esm|cjs|es|mjs|module|modules|commonjs|types|typings|umd|node|browser|src)/")
+    }
+    fn emitted_extension() -> Rc<Regex> {
+        re!(r"(?:\.d)?\.(?:[cm]?[jt]s|[jt]sx)$")
+    }
+    let Some(root) = build_root().find(in_package) else {
+        return vec![];
+    };
+    let mirrored = &in_package[root.end()..];
+    let format = build_format().find(mirrored);
+    let mut stems = vec![mirrored.to_string()];
+    if let Some(f) = format {
+        stems.push(mirrored[f.end()..].to_string());
+    }
+    let mut seen = HashSet::new();
+    stems
+        .iter()
+        .map(|rest| emitted_extension().replace(rest, "").to_string())
+        .filter(|stem| !stem.is_empty() && !stem.starts_with("src/"))
+        .filter(|stem| seen.insert(stem.clone()))
+        .map(|stem| format!("{prefix}src/{stem}"))
+        .collect()
 }
 
 #[cfg(test)]

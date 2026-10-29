@@ -214,6 +214,12 @@ impl KernelResolver {
         if n.language != "kotlin" {
             return Ok(false);
         }
+        // isReceiverLessKotlinCall — a name written through a receiver
+        // (`text().reverse`) answers to that receiver, not to member scope;
+        // scope only judges what a receiver-less name can reach (#2822).
+        if !self.is_receiver_less_call(r)? {
+            return Ok(true);
+        }
         if !self.is_kotlin_member(n)? {
             return Ok(true);
         }

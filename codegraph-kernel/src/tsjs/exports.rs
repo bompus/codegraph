@@ -79,11 +79,21 @@ impl<'t> Walker<'t> {
                 self.emit_reexport_binding("default", "default", &spec, expr);
             } else if right.kind() == "identifier" {
                 self.later_exports.entry(self.text(right).to_string()).or_insert(("default".to_string(), EXPORT_CJS));
+            } else if right.kind() == "class" {
+                // `module.exports = class Router {…}`: the class is the
+                // module's value — the local name it declares is the
+                // binding a `require` reaches (#2499).
+                if let Some(name) = right.child_by_field_name("name") {
+                    self.later_exports.entry(self.text(name).to_string()).or_insert(("default".to_string(), EXPORT_CJS));
+                }
             }
             return;
         }
         let fn_valued = matches!(right.kind(), "function_expression" | "arrow_function" | "generator_function");
-        if (right.kind() != "identifier" && !fn_valued) || !matches!(left.kind(), "member_expression" | "subscript_expression") {
+        // A named class expression is the member's value too: `exports.Store
+        // = class StoreImpl {…}` binds `Store` to `StoreImpl` (#2499).
+        let class_named = right.kind() == "class" && right.child_by_field_name("name").is_some();
+        if (right.kind() != "identifier" && !fn_valued && !class_named) || !matches!(left.kind(), "member_expression" | "subscript_expression") {
             return;
         }
         let Some(obj) = left.child_by_field_name("object") else { return };
@@ -100,7 +110,16 @@ impl<'t> Walker<'t> {
                 if fn_valued {
                     self.cjs_fn_exports.push((key, self.line_of(expr)));
                 } else {
-                    self.later_exports.entry(self.text(right).to_string()).or_insert((key, EXPORT_CJS));
+                    // A class binds by the name it declares (`exports.X =
+                    // class Y`), a bare identifier by its own text.
+                    let local = if class_named {
+                        right.child_by_field_name("name").map(|n| self.text(n).to_string())
+                    } else {
+                        Some(self.text(right).to_string())
+                    };
+                    if let Some(local) = local {
+                        self.later_exports.entry(local).or_insert((key, EXPORT_CJS));
+                    }
                 }
             }
         }

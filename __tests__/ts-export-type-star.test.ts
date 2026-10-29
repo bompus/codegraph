@@ -159,12 +159,19 @@ describe('a type-only star re-export parses in both engines', () => {
     }
   }
 
-  it.runIf(kernelAvailable)('keeps a re-export as written in a file the kernel hands to the wasm parser', () => {
-    // `export const = ;` is an error, so the kernel defers the whole file.
+  it.runIf(kernelAvailable)('keeps a re-export as written in a file with parse errors', () => {
+    // `export const = ;` is an error. Upstream's kernel defers such a file to
+    // the wasm parser; the fork's extracts the recovered native tree and flags
+    // it not-parsed-clean, so this path asserts the signature survives instead
+    // of the defer.
     const source = 'export type * from "./types.js";\nexport const = ;\n';
     delete process.env.CODEGRAPH_KERNEL;
     process.env.CODEGRAPH_KERNEL_LANGS = 'all';
-    expect(tryKernelExtract('src/broken.ts', source, 'typescript')).toBeNull();
+    const kernelResult = tryKernelExtract('src/broken.ts', source, 'typescript');
+    expect(kernelResult).not.toBeNull();
+    expect(kernelResult?.nodes.filter((n) => n.kind === 'import').map((n) => n.signature)).toEqual([
+      'export type * from "./types.js";',
+    ]);
     const result = extractFromSource('src/broken.ts', source, 'typescript');
     expect(result.nodes.filter((n) => n.kind === 'import').map((n) => n.signature)).toEqual([
       'export type * from "./types.js";',

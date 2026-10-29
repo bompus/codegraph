@@ -13,6 +13,7 @@
 //! name some other way and is left to the other receiver inference.
 
 use super::*;
+use super::fields::GoAliasTarget;
 use tree_sitter::Node as TsNode;
 
 /// What a Go type written at a call site names.
@@ -30,7 +31,7 @@ enum Declared {
     Other,
 }
 
-fn text_of<'a>(node: TsNode, text: &'a str) -> &'a str {
+pub(super) fn text_of<'a>(node: TsNode, text: &'a str) -> &'a str {
     &text[node.start_byte()..node.end_byte()]
 }
 
@@ -50,10 +51,10 @@ fn declared_by(names: &[TsNode], values: Option<TsNode>, typed: bool, name: &str
     Some(asserted.map_or(Declared::Other, Declared::Asserted))
 }
 
-fn identifiers<'t>(list: TsNode<'t>) -> Vec<TsNode<'t>> {
-    if list.kind() == "identifier" { return vec![list]; }
+pub(super) fn identifiers<'t>(list: TsNode<'t>) -> Vec<TsNode<'t>> {
+    if matches!(list.kind(), "identifier" | "blank_identifier") { return vec![list]; }
     let mut cursor = list.walk();
-    list.named_children(&mut cursor).filter(|n| n.kind() == "identifier").collect()
+    list.named_children(&mut cursor).filter(|n| matches!(n.kind(), "identifier" | "blank_identifier")).collect()
 }
 
 /// `name`'s declaration among one statement, if the statement declares it.
@@ -170,7 +171,14 @@ impl KernelResolver {
     /// the index cannot tell (a type literal, a type declared inside a
     /// function, a type parameter): the call goes to the other strategies.
     pub(super) fn go_written_type(&mut self, written: &str, r: &ResolveRefIn) -> Res<Option<GoAsserted>> {
-        let Some(hit) = re!(r"^\*?\s*(?:([A-Za-z_]\w*)\s*\.\s*)?([A-Za-z_]\w*)\s*(?:\[[\s\S]*\])?$").captures(written.trim()) else { return Ok(None); };
+        let w = written.trim();
+        // A type the source spells without a named holder — `func() T`,
+        // `struct{…}`, `[]T`, `map[K]V`, `chan T`, `interface{…}` — is no
+        // project type's: terminal, not a name-match cue.
+        if re!(r"^\*?\s*(func\b|struct\b|interface\b|map\s*\[|chan\b|<-|\[)").is_match(w) {
+            return Ok(Some(GoAsserted::Outside));
+        }
+        let Some(hit) = re!(r"^\*?\s*(?:([A-Za-z_]\w*)\s*\.\s*)?([A-Za-z_]\w*)\s*(?:\[[\s\S]*\])?$").captures(w) else { return Ok(None); };
         let qualifier = hit.get(1).map(|m| m.as_str().to_string());
         let name = hit[2].to_string();
         let declared = self.nodes_by_name(&name)?.iter()
@@ -183,15 +191,30 @@ impl KernelResolver {
                 Some(_) => return Ok(None),
             }
         } else {
-            let mut dirs = vec![pos_dirname(&r.file_path).to_string()];
-            for import in self.import_mappings(&r.file_path)?.iter().filter(|i| i.local_name == ".") {
-                if let Some(dir) = self.go_package_dir(&import.source, &r.file_path) { dirs.push(dir); }
+            let Some(dir) = self.go_bare_type_dir(&name, &r.file_path)? else {
+                return Ok(Some(GoAsserted::Outside));
+            };
+            if !declared.contains(&dir) {
+                return Ok(GO_BUILTIN_FIELD_TYPES.contains(name.as_str()).then_some(GoAsserted::Outside));
             }
-            match dirs.into_iter().find(|d| declared.contains(d)) {
-                Some(dir) => dir,
-                None => return Ok(GO_BUILTIN_FIELD_TYPES.contains(name.as_str()).then_some(GoAsserted::Outside)),
-            }
+            dir
         };
+        // An alias of a type from outside the project (`type Ctx =
+        // context.Context`) has that type's methods, none the project
+        // declares. Every declaration an outside alias means none here.
+        let types = self.go_package_types(&name, &dir)?;
+        if !types.is_empty() {
+            let mut all_outside_alias = true;
+            for t in &types {
+                if !matches!(self.go_alias_target(t)?, GoAliasTarget::Null) {
+                    all_outside_alias = false;
+                    break;
+                }
+            }
+            if all_outside_alias {
+                return Ok(Some(GoAsserted::Outside));
+            }
+        }
         Ok(Some(GoAsserted::Project { name, dir }))
     }
 
@@ -203,32 +226,81 @@ impl KernelResolver {
     }
 
     /// The verdict for `receiver.method` when the receiver is an asserted
-    /// local: the method the asserted type has, or nothing. `None`: not an
-    /// asserted local; the other strategies decide.
+    /// local: the method the asserted type has, or nothing — a miss and a
+    /// type the index cannot read are both terminal; the fork never guesses
+    /// a callee for an asserted receiver by name. `None`: not an asserted
+    /// local; the other strategies decide.
     pub(super) fn go_asserted_member(&mut self, receiver: &str, method: &str, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
-        Ok(match self.go_asserted_local(receiver, r)? {
-            None => None,
-            Some(GoAsserted::Outside) => Some(None),
-            Some(GoAsserted::Project { name, dir }) => Some(self.go_method_in_package(&name, method, &dir, r)?),
-        })
+        let Some(written) = self.go_asserted_local_type(receiver, r) else { return Ok(None); };
+        Ok(Some(match self.go_written_type(&written, r)? {
+            Some(GoAsserted::Outside) => None,
+            Some(GoAsserted::Project { name, dir }) => self.go_method_in_package(&name, method, &dir, r)?,
+            None => {
+                // An exported type the file declares — `type T interface`
+                // inside the function — is no index node; its call goes to
+                // the name strategies, as before. A literal, an unexported
+                // or an unknown name stays refused: the fork never guesses
+                // a callee for an asserted receiver it cannot type.
+                let bare = written.trim_start_matches('*').rsplit('.').next().unwrap_or("");
+                let local = Self::go_named_type(&written).is_some()
+                    && bare.chars().next().is_some_and(|c| c.is_uppercase())
+                    && self.go_bare_type_dir(bare, &r.file_path)?.is_some();
+                if local { self.go_mc_untyped_local = true; return Ok(None); }
+                None
+            }
+        }))
     }
 }
 
 /// An actual lexical declaration, including the name's position for reading
 /// its initializer. Used by func-field synthesis through the native bridge.
-fn local_declaration_in<'a>(scope: TsNode<'a>, name: &str, site: usize, text: &str) -> Option<(TsNode<'a>, Option<String>)> {
-    fn names<'a>(decl: TsNode<'a>, name: &str, text: &str) -> Option<(TsNode<'a>, Option<String>)> {
-        let mut cursor = decl.walk();
-        let target = decl.children_by_field_name("name", &mut cursor).find(|n| text_of(*n, text) == name)?;
-        Some((target, decl.child_by_field_name("type").map(|t| text_of(t, text).to_string())))
+pub(super) fn local_declaration_in<'a>(scope: TsNode<'a>, name: &str, site: usize, text: &str) -> Option<(TsNode<'a>, Option<String>)> {
+    /// `x := &pkg.T{…}`, `x := T{…}`, `x := new(T)` and `var x = &T{…}`
+    /// write their type in the value; other right-hand sides say nothing.
+    /// `k` is the name's place among the declaration's names — the value
+    /// list's same place is its initializer.
+    fn value_type<'a>(value: Option<TsNode<'a>>, k: usize, text: &'a str) -> Option<String> {
+        let mut v = value?;
+        if v.kind() == "expression_list" {
+            v = if v.named_child_count() > k { v.named_child(k)? } else { v.named_child(v.named_child_count() - 1)? };
+        }
+        while v.kind() == "parenthesized_expression" {
+            v = v.named_child(0)?;
+        }
+        if v.kind() == "unary_expression" {
+            if text.get(v.start_byte()..v.start_byte() + 1)? != "&" { return None; }
+            v = v.named_child(0)?;
+        }
+        match v.kind() {
+            "composite_literal" => v.child_by_field_name("type").map(|t| text_of(t, text).to_string()),
+            // A type switch's `x := v.(type)` binds a per-clause type the
+            // declaration does not spell: unreadable, never a project type.
+            "type_assertion_expression" => Some(match v.child_by_field_name("type") {
+                Some(t) if text_of(t, text) != "type" => text_of(t, text).to_string(),
+                _ => "<type>".to_string(),
+            }),
+            "call_expression" => {
+                let function = v.child_by_field_name("function")?;
+                if function.kind() != "identifier" || !matches!(text_of(function, text), "new" | "make") { return None; }
+                v.child_by_field_name("arguments")?.named_child(0).map(|t| text_of(t, text).to_string())
+            }
+            _ => None,
+        }
     }
     fn statement<'a>(stmt: TsNode<'a>, name: &str, text: &str) -> Option<(TsNode<'a>, Option<String>)> {
         match stmt.kind() {
             "short_var_declaration" | "range_clause" => {
-                let target = identifiers(stmt.child_by_field_name("left")?).into_iter().find(|n| text_of(*n, text) == name)?;
-                Some((target, None))
+                let names = identifiers(stmt.child_by_field_name("left")?);
+                let (k, target) = names.iter().enumerate().find(|(_, n)| text_of(**n, text) == name).map(|(k, n)| (k, *n))?;
+                Some((target, value_type(stmt.child_by_field_name("right"), k, text)))
             }
-            "var_spec" | "const_spec" | "parameter_declaration" | "variadic_parameter_declaration" => names(stmt, name, text),
+            "var_spec" | "const_spec" | "parameter_declaration" | "variadic_parameter_declaration" => {
+                let mut c = stmt.walk();
+                let names: Vec<_> = stmt.children_by_field_name("name", &mut c).collect();
+                let (k, target) = names.iter().enumerate().find(|(_, n)| text_of(**n, text) == name).map(|(k, n)| (k, *n))?;
+                let declared = stmt.child_by_field_name("type").map(|t| text_of(t, text).to_string());
+                Some((target, declared.or_else(|| value_type(stmt.child_by_field_name("value"), k, text))))
+            }
             "var_declaration" | "const_declaration" | "var_spec_list" | "parameter_list" => {
                 let mut c = stmt.walk();
                 stmt.named_children(&mut c).filter_map(|s| statement(s, name, text)).last()
@@ -243,7 +315,17 @@ fn local_declaration_in<'a>(scope: TsNode<'a>, name: &str, site: usize, text: &s
         }
         "if_statement" | "expression_switch_statement" | "type_switch_statement" | "for_statement" => {
             if let Some(alias) = scope.child_by_field_name("alias").filter(|n| n.end_byte() <= site) {
-                if let Some(target) = identifiers(alias).into_iter().find(|n| text_of(*n, text) == name) { return Some((target,None)); }
+                let decl = if alias.kind() == "short_var_declaration" { Some(alias) } else {
+                    let mut c = alias.walk();
+                    let mut it = alias.named_children(&mut c);
+                    it.find(|n| n.kind() == "short_var_declaration")
+                };
+                if let Some(d) = decl {
+                    let names = identifiers(d.child_by_field_name("left")?);
+                    if let Some((k, target)) = names.iter().enumerate().find(|(_, n)| text_of(**n, text) == name).map(|(k, n)| (k, *n)) {
+                        return Some((target, value_type(d.child_by_field_name("right"), k, text)));
+                    }
+                }
             }
             let mut c=scope.walk();
             for child in scope.named_children(&mut c).filter(|n| n.end_byte() <= site) {

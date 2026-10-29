@@ -3,10 +3,10 @@ use super::super::rust_modules::rust_paths::*;
 use super::super::*;
 
 #[derive(Clone, Debug)]
-struct Written {
-    text: String,
-    file: String,
-    at: usize,
+pub(super) struct Written {
+    pub(super) text: String,
+    pub(super) file: String,
+    pub(super) at: usize,
 }
 impl Written {
     fn with(&self, text: impl Into<String>) -> Self {
@@ -218,7 +218,7 @@ impl KernelResolver {
             cursor = cursor.parent()?;
         }
     }
-    fn rust_type_decls(&mut self, w: &Written) -> Res<Vec<Arc<KNode>>> {
+    pub(super) fn rust_type_decls(&mut self, w: &Written) -> Res<Vec<Arc<KNode>>> {
         let (head, _, _) = type_head(&w.text);
         let leaf = head.rsplit("::").next().unwrap_or(&head);
         let mut path: Vec<String> = head.split("::").map(str::to_string).collect();
@@ -855,6 +855,25 @@ impl KernelResolver {
                     }
                 }
                 if path.len() == 1 {
+                    let last = path[0].as_str();
+                    // A tuple struct (`Wrapper(x)`) or a `Some`/`Ok`/`Err`
+                    // variant makes a value of its own type; a SCREAMING name
+                    // is a const's call on nothing the index types.
+                    if last.starts_with(|c: char| c.is_ascii_uppercase()) {
+                        if last.len() > 1
+                            && last.chars().all(|c| {
+                                c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'
+                            })
+                        {
+                            return Ok(None);
+                        }
+                        let ty = match last {
+                            "Some" => "Option<_>",
+                            "Ok" | "Err" => "Result<_, _>",
+                            _ => last,
+                        };
+                        return Ok(Some(written(ty.to_string())));
+                    }
                     let mut scope = n;
                     loop {
                         let local = rust_children(scope).into_iter().find(|item|
@@ -1213,7 +1232,7 @@ impl KernelResolver {
             },
         }))
     }
-    fn rust_project_named(&mut self, name: &str) -> Res<bool> {
+    pub(super) fn rust_project_named(&mut self, name: &str) -> Res<bool> {
         Ok(self.nodes_by_name(name)?.iter().any(|n| {
             n.language == "rust"
                 && matches!(
@@ -1674,7 +1693,7 @@ impl KernelResolver {
             None
         })
     }
-    fn rust_impl_start(&mut self, file: &str, line: i64, col: i64) -> Option<usize> {
+    pub(super) fn rust_impl_start(&mut self, file: &str, line: i64, col: i64) -> Option<usize> {
         let (s, t) = self.rust_tree_for(file)?;
         rust_ancestor(
             rust_at(&t, s.text(), line, col),
@@ -1729,6 +1748,7 @@ impl KernelResolver {
         // chain arm types each link's return by name instead.
         if call_chain_re().is_match(&r.reference_name) {
             if let Some(hit) = self.match_call_chain(r)? {
+                self.mark_rust_typed(r);
                 return Ok(Some(Some(hit)));
             }
         }
@@ -1793,7 +1813,10 @@ impl KernelResolver {
                 }
                 if base.kind() == "call_expression" && base.child_by_field_name("function")
                     .is_some_and(|f| matches!(f.kind(), "scoped_identifier" | "generic_function")) {
-                    if let Some(hit) = self.match_call_chain(r)? { return Ok(Some(Some(hit))); }
+                    if let Some(hit) = self.match_call_chain(r)? {
+                        self.mark_rust_typed(r);
+                        return Ok(Some(Some(hit)));
+                    }
                 }
                 return Ok(Some(None));
             }
@@ -1865,11 +1888,150 @@ impl KernelResolver {
                 return Ok(None);
             }
         }
-        let node = self.rust_method_on(&written, &method, r, 0)?;
+        // A field chain or struct literal receiver — `vis.map.get("a")`,
+        // `Xyz { x: 1.0 }.to_val()` — whose type the receiver is written with
+        // says what the call reaches (matchRustWrittenReceiverCall). A type no
+        // declaration the index holds names — one a macro declares, like
+        // tokio's `type AtomicUnsignedShort = …` inside `cfg_has_atomic_u64!`
+        // — says nothing of it, unless a wrapper around it has the method
+        // itself (`Arc::clone`): the name strategies decide.
+        let leaf = head.rsplit("::").next().unwrap_or(&head);
+        if function.kind() == "field_expression" {
+            // `read.kind === 'named'`: a plain type path — not `Self`, a
+            // `&[T]`, a generic parameter's bound (`R: AsyncRead`), or a type
+            // std or a dependency owns (rust_written_outside).
+            let named = leaf != "Self"
+                && re!(r"^[A-Za-z_]\w*(?:::\s*[A-Za-z_]\w*)*$").is_match(&head)
+                && self
+                    .rust_generic_traits(leaf, &written.file, written.at)
+                    .is_none()
+                && !self.rust_written_outside(&written, leaf, &head)?;
+            if named
+                && !own_wrapper_method(&type_head(&written.text).0, &method)
+                && !self.rust_project_named(leaf)?
+                && self.rust_type_decls(&written)?.is_empty()
+                && self.rust_methods_named(leaf, &method)?.is_empty()
+            {
+                return Ok(None);
+            }
+        }
+        let node = match self.rust_method_on(&written, &method, r, 0)? {
+            Some(node) => Some(node),
+            // A provided method of a project trait the type derives counts
+            // (axum-extra's #[derive(TypedPath)]).
+            None if function.kind() == "field_expression" => {
+                self.rust_derived_trait_method(&written, &method, r)?
+            }
+            None => None,
+        };
+        if node.is_some() {
+            self.mark_rust_typed(r);
+        }
         Ok(Some(node.map(|node| KCand {
             node,
             confidence: 0.9,
             resolved_by: if function.kind() == "field_expression" { "instance-method" } else { "qualified-name" },
         })))
+    }
+
+    /// The names a Rust type's `#[derive(…)]` attributes write, each by its
+    /// path's last segment.
+    fn rust_derived_names(&mut self, decl: &KNode) -> Res<Vec<String>> {
+        let Some((source, tree)) = self.rust_tree_for(&decl.file_path) else {
+            return Ok(Vec::new());
+        };
+        let text = source.text();
+        let Some(node) = self.rust_declaration_node(
+            decl,
+            &tree,
+            text,
+            &["struct_item", "enum_item", "union_item"],
+        ) else {
+            return Ok(Vec::new());
+        };
+        let mut names = Vec::new();
+        let mut attr = node.prev_named_sibling();
+        while let Some(a) = attr {
+            if a.kind() != "attribute_item" {
+                break;
+            }
+            for m in re!(r"\bderive\s*\(([^()]*)\)").captures_iter(rust_text(a, text)) {
+                for part in m[1].split(',') {
+                    if let Some(name) = part
+                        .trim()
+                        .rsplit("::")
+                        .next()
+                        .map(str::trim)
+                        .filter(|s| re!(r"^[A-Za-z_]\w*$").is_match(s))
+                    {
+                        names.push(name.to_string());
+                    }
+                }
+            }
+            attr = a.prev_named_sibling();
+        }
+        Ok(names)
+    }
+
+    /// Whether a Rust method's declaration writes a body — a provided trait
+    /// method is a `function_item`; a required one a `function_signature_item`.
+    fn rust_has_body(&mut self, m: &KNode) -> bool {
+        let Some((source, tree)) = self.rust_tree_for(&m.file_path) else {
+            return false;
+        };
+        self.rust_declaration_node(m, &tree, source.text(), &["function_item"])
+            .is_some()
+    }
+
+    /// The method a Rust project trait that a type derives provides, for a
+    /// call on a value of the type: `#[derive(TypedPath)] struct UsersShow {…}`
+    /// reaches axum-extra's `TypedPath::with_query_params` through the impl
+    /// the derive writes, which the index doesn't hold. None unless exactly
+    /// one derived trait in scope at the call declares the method with a body.
+    fn rust_derived_trait_method(
+        &mut self,
+        w: &Written,
+        method: &str,
+        r: &ResolveRefIn,
+    ) -> Res<Option<Arc<KNode>>> {
+        let decls = self.rust_type_decls(w)?;
+        let types: Vec<_> = decls
+            .into_iter()
+            .filter(|n| matches!(n.kind.as_str(), "struct" | "enum" | "union"))
+            .collect();
+        if types.len() != 1 {
+            return Ok(None);
+        }
+        let mut found: Vec<Arc<KNode>> = Vec::new();
+        for name in self.rust_derived_names(&types[0])? {
+            let traits: Vec<_> = self
+                .nodes_by_name(&name)?
+                .iter()
+                .filter(|n| n.kind == "trait" && n.language == "rust" && n.name == name)
+                .cloned()
+                .collect();
+            if traits.is_empty() {
+                continue;
+            }
+            for m in self.rust_trait_methods(w, &[name], method, 0)? {
+                let Some(trait_node) = self.rust_trait_of(&m)? else {
+                    continue;
+                };
+                if self.rust_has_body(&m)
+                    && self.rust_trait_in_scope(&trait_node.name, r, &m)?
+                {
+                    found.push(m);
+                }
+            }
+        }
+        found.sort_by(|a, b| a.id.cmp(&b.id));
+        found.dedup_by(|a, b| a.id == b.id);
+        let mut owners = HashSet::new();
+        for m in &found {
+            if let Some(t) = self.rust_trait_of(m)? {
+                owners.insert(t.id.clone());
+            }
+        }
+        Ok((owners.len() == 1).then(|| found.first().cloned()).flatten())
     }
 }

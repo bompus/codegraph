@@ -314,6 +314,14 @@ impl KernelResolver {
             let ty=simple_type(text(ty,source)).to_string();
             return Ok(self.resolve_bound_type(&ty,&site,0)?.map(|_|KotlinReceiverHit{ty,site,heuristic:false}));
         }
+        if matches!(node.kind(),"postfix_unary_expression"|"postfix_expression") {
+            return match node.named_child(0) {Some(inner)=>self.kotlin_expression_type(inner,source,r,implicit,depth+1),None=>Ok(None)};
+        }
+        if node.kind()=="this_expression" {
+            let enclosing=self.nodes_in_file(&site.file_path)?.iter().filter(|n|super::call_shape::type_kind(&n.kind) && n.start_line<=site.line && n.end_line>=site.line).min_by_key(|n|n.end_line-n.start_line).cloned();
+            let Some(owner)=enclosing else {return Ok(None)};
+            return Ok(Some(KotlinReceiverHit{ty:owner.name.clone(),site:site.clone().at(&owner),heuristic:false}));
+        }
         if node.kind() == "simple_identifier" {
             if let Some(hit)=self.kotlin_narrowed_identifier(node,source,&site,depth)? {return Ok(Some(hit));}
             let name = text(node, source);
@@ -394,6 +402,18 @@ impl KernelResolver {
                     None => {
                         let enclosing=self.nodes_in_file(&site.file_path)?.iter().filter(|n|super::call_shape::type_kind(&n.kind) && n.start_line<=site.line && n.end_line>=site.line).min_by_key(|n|n.end_line-n.start_line).cloned();
                         if let Some(owner)=enclosing {member=self.match_bound_type_member(&owner.name,name,&site)?.map(|c|c.node);}
+                        // `fun Shop.reopen() { newBuilder() }` — inside an extension body a bare
+                        // call reaches the receiver type's members: the caller's qualified owner
+                        // (kotlinCallResultType's same-owner pool, #2822).
+                        if member.is_none() {
+                            if let Some(caller)=self.node_by_opt_id(Some(site.from_node_id.as_str()))? {
+                                if let Some((owner,_))=caller.qualified_name.rsplit_once("::") {
+                                    for spelling in [owner.replace("::","."), owner.rsplit([':','.']).next().unwrap_or(owner).to_string()] {
+                                        if let Some(m)=self.match_bound_type_member(&spelling,name,&site)? {member=Some(m.node);break;}
+                                    }
+                                }
+                            }
+                        }
                         let candidates: Vec<_> = self.nodes_by_name(name)?.iter().filter(|n| n.language == "kotlin" && n.kind == "function").cloned().collect();
                         let mut visible = Vec::new();
                         for n in candidates { if self.kotlin_top_level_visible(&n, &site)? { visible.push(n); } }
@@ -507,5 +527,154 @@ impl KernelResolver {
         }
         // A project scope function can return a different type.
         Ok(!self.kotlin_user_member(&receiver.ty, "apply", &site)? && !self.kotlin_user_scope_callee(func, "apply", file.text(), &site)?)
+    }
+
+    /// matchKotlinCallResultCall (name-matcher.ts #2822): `repository().pending(1)`
+    /// is emitted as bare `pending` at the property's column; the receiver is
+    /// the inner call's declared return, so the method is the one that type
+    /// declares — never a same-named method elsewhere. `Some(None)` is
+    /// upstream's terminal `null`; `None` is `undefined`, leaving the name
+    /// strategies their old behavior.
+    pub(super) fn match_kotlin_call_result_call(&mut self, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
+        if r.language != "kotlin" || r.reference_kind != "calls" || !re!(r"^[A-Za-z_]\w*$").is_match(&r.reference_name) { return Ok(None); }
+        let Some(hit) = self.kotlin_call_result_receiver(r)? else { return Ok(None) };
+        let hit = self.kotlin_scoped_hit(hit)?;
+        let owner = self.resolve_bound_type(&hit.ty, &hit.site, 0)?;
+        // isKotlinProjectType — a type from outside the project is no help.
+        if owner.is_none() { return Ok(None); }
+        let found = self.kotlin_receiver_member(&hit, &r.reference_name, r)?;
+        match found {
+            Some(member) => Ok(Some(Some(KCand { node: member, confidence: 0.85, resolved_by: "instance-method" }))),
+            None => {
+                // An extension the index doesn't keep under the type may be it
+                // (a top-level function, or one kept under a bare/nested
+                // receiver name): keep the old name-match behavior.
+                let extension = self.nodes_by_name(&r.reference_name)?.iter().any(|n| {
+                    n.language == "kotlin" && (n.kind == "function"
+                        || (n.kind == "method" && !n.qualified_name.rsplit_once("::").is_some_and(|(path, _)| path.contains("::"))))
+                });
+                if extension { Ok(None) } else { Ok(Some(None)) }
+            }
+        }
+    }
+
+    /// `repository().pending` — the bare ref sits on the property identifier,
+    /// and its navigation's receiver being a `call_expression` is the shape.
+    /// The inner call is unqualified (`repository(`, `this.repository(`, as
+    /// upstream's KOTLIN_UNQUALIFIED_CALL requires) and the outer suffix names
+    /// the ref: `repository().other().pending()` keeps the inner call a call.
+    fn kotlin_call_result_receiver(&mut self, r: &ResolveRefIn) -> Res<Option<KotlinReceiverHit>> {
+        let Some(file) = self.read_file(&r.file_path) else { return Ok(None) };
+        let Some(tree) = self.parsed_tree(&file, r) else { return Ok(None) };
+        let source = file.text();
+        let node = descendant_for_position(tree.root_node(), source, ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
+        if node.kind() != "simple_identifier" { return Ok(None); }
+        let Some(suffix) = node.parent().filter(|p| p.kind() == "navigation_suffix") else { return Ok(None) };
+        let Some(nav) = suffix.parent().filter(|p| p.kind() == "navigation_expression") else { return Ok(None) };
+        let Some(mut recv) = nav.named_child(0) else { return Ok(None) };
+        while matches!(recv.kind(), "postfix_unary_expression" | "postfix_expression" | "parenthesized_expression") {
+            let Some(inner) = recv.named_child(0) else { return Ok(None) };
+            recv = inner;
+        }
+        if recv.kind() != "call_expression" || nav.parent().is_none_or(|p| p.kind() != "call_expression") { return Ok(None); }
+        if !Self::kotlin_unqualified_callee(recv, source) { return Ok(None); }
+        self.kotlin_expression_type(recv, source, r, None, 0)
+    }
+
+    /// KOTLIN_UNQUALIFIED_CALL — `(?:this\s*\.\s*)?[a-z_]\w*\s*(<…>)?(`: the
+    /// callee of `call` is a lowercase bare name or `this.`-qualified.
+    fn kotlin_unqualified_callee(call: Node, source: &str) -> bool {
+        let Some(func) = call.named_child(0) else { return false };
+        match func.kind() {
+            "simple_identifier" => text(func, source).chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_'),
+            "navigation_expression" => func.named_child(0).is_some_and(|h| h.kind() == "this_expression")
+                && property(func).is_some_and(|p| text(p, source).chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_')),
+            _ => false,
+        }
+    }
+
+    /// kotlinLocalCallResultType — `val repo = repository()` types the local
+    /// by the call's declared return; `var repo = this.repository()!!` too.
+    /// The initializer must be an unqualified call alone (#2805).
+    pub(super) fn kotlin_local_call_result_type(&mut self, receiver: &str, site: &ResolveRefIn) -> Res<Option<String>> {
+        let bindings = self.bindings(&site.file_path)?;
+        let Some(binding) = innermost_binding(&bindings, receiver, Some(site.line)).filter(|b| b.kind != "import") else { return Ok(None) };
+        let decl = self.node_by_opt_id(binding.node_id.as_deref())?;
+        let path = decl.as_ref().map_or(site.file_path.as_str(), |n| n.file_path.as_str());
+        let Some(file) = self.read_file(path) else { return Ok(None) };
+        let Some(tree) = self.parsed_tree(&file, site) else { return Ok(None) };
+        let prop = match &decl {
+            Some(d) => Self::kotlin_decl_tree_node(&tree, file.text(), d, "property_declaration"),
+            None => Self::kotlin_local_property(tree.root_node(), file.text(), binding),
+        };
+        let Some(prop) = prop else { return Ok(None) };
+        let Some(mut init) = named_children(prop).into_iter().last() else { return Ok(None) };
+        while matches!(init.kind(), "postfix_unary_expression" | "postfix_expression" | "parenthesized_expression") {
+            let Some(inner) = init.named_child(0) else { return Ok(None) };
+            init = inner;
+        }
+        if init.kind() != "call_expression" || !Self::kotlin_unqualified_callee(init, file.text()) { return Ok(None); }
+        let Some(hit) = self.kotlin_expression_type(init, file.text(), site, None, 0)? else { return Ok(None) };
+        let hit = self.kotlin_scoped_hit(hit)?;
+        if self.resolve_bound_type(&hit.ty, &hit.site, 0)?.is_none() { return Ok(None); }
+        Ok(Some(hit.ty))
+    }
+
+    /// The `hit` retyped by the callee's signature when it points at one:
+    /// `return_type` keeps a user_type's first identifier (`Request`), while
+    /// kotlinDeclaredReturnType reads the signature's whole path
+    /// (`Request.Builder`) and kotlinScopedReturnType writes a lone nested
+    /// name through its declaring outer (`Builder` → `Shop.Builder`).
+    fn kotlin_scoped_hit(&mut self, hit: KotlinReceiverHit) -> Res<KotlinReceiverHit> {
+        let members: Vec<_> = self.nodes_in_file(&hit.site.file_path)?.iter()
+            .filter(|n| matches!(n.kind.as_str(), "function" | "method") && n.start_line == hit.site.line).cloned().collect();
+        let [member] = members.as_slice() else { return Ok(hit) };
+        let Some(ty) = self.kotlin_scoped_return_type(member)? else { return Ok(hit) };
+        Ok(KotlinReceiverHit { ty, site: hit.site, heuristic: hit.heuristic })
+    }
+
+    /// kotlinScopedReturnType — the signature's declared return path, a lone
+    /// name taken as the nested type of the innermost declaring scope that
+    /// has it: `fun newBuilder(): Builder` in `Shop` returns `Shop.Builder`.
+    fn kotlin_scoped_return_type(&mut self, member: &KNode) -> Res<Option<String>> {
+        let Some(written) = member.signature.as_deref().and_then(Self::kotlin_declared_return_type) else { return Ok(None) };
+        if written.contains('.') { return Ok(Some(written)); }
+        let scopes: Vec<&str> = member.qualified_name.split("::").collect();
+        let scopes = &scopes[..scopes.len().saturating_sub(1)];
+        for i in (1..=scopes.len()).rev() {
+            let scope = scopes[..i].join("::");
+            let is_type = |q: String| -> Res<bool> { Ok(self.nodes_by_qualified_name(&q)?.iter().any(|n| super::call_shape::type_kind(&n.kind) || n.kind == "module")) };
+            if is_type(scope.clone())? && is_type(format!("{scope}::{written}"))? {
+                return Ok(Some(format!("{}.{}", scopes[i - 1], written)));
+            }
+        }
+        Ok(Some(written))
+    }
+
+    /// kotlinDeclaredReturnType — the signature's `(): path` after the closing
+    /// paren, from its outermost type on, without `?`, `<>` or a package:
+    /// `(source: Buffer): Hpack.Reader` → `Hpack.Reader`.
+    fn kotlin_declared_return_type(sig: &str) -> Option<String> {
+        let sig = sig.trim();
+        if !sig.starts_with('(') { return None; }
+        let bytes = sig.as_bytes();
+        let (mut depth, mut close, mut i) = (0usize, None, 0usize);
+        while i < bytes.len() {
+            let c = bytes[i];
+            if c == b'"' || c == b'\'' {
+                i += 1;
+                while i < bytes.len() && bytes[i] != c { i += if bytes[i] == b'\\' { 2 } else { 1 }; }
+            } else if c == b'(' { depth += 1; }
+            else if c == b')' { depth -= 1; if depth == 0 { close = Some(i); break; } }
+            i += 1;
+        }
+        let written = sig.get(close? + 1..)?.trim_start().strip_prefix(':')?.trim();
+        let written = written.trim_end_matches('?');
+        let written = if written.ends_with('>') { written.find('<').map_or(written, |at| written[..at].trim_end()) } else { written };
+        let path: Vec<&str> = written.split('.').map(str::trim).collect();
+        if !path.iter().all(|p| re!(r"^[A-Za-z_]\w*$").is_match(p)) { return None; }
+        let types: Vec<&str> = path.iter().skip_while(|p| !p.starts_with(|c: char| c.is_ascii_uppercase())).copied().collect();
+        if types.is_empty() || !types.iter().all(|p| p.starts_with(|c: char| c.is_ascii_uppercase())) { return None; }
+        Some(types.join("."))
     }
 }

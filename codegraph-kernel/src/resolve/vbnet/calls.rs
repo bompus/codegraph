@@ -5,13 +5,23 @@ struct VbReceiver {
     typed: Option<VbType>,
     through_type: bool,
     color_color: bool,
+    namespace: Option<Rc<Vec<String>>>,
+}
+
+impl VbReceiver {
+    fn owned(owners: Vec<Arc<KNode>>, typed: Option<VbType>, through_type: bool, color_color: bool) -> Self {
+        VbReceiver { owners, typed, through_type, color_color, namespace: None }
+    }
+    fn ns(namespace: Rc<Vec<String>>) -> Self {
+        VbReceiver { owners: vec![], typed: None, through_type: false, color_color: false, namespace: Some(namespace) }
+    }
 }
 
 
 impl KernelResolver {
     fn vb_value_receiver(&mut self, typed: Option<VbType>) -> Res<Option<VbReceiver>> {
         let Some(t) = typed.filter(|t| vb_key(t) != "object") else { return Ok(None); };
-        Ok(self.vb_owners(&t)?.map(|owners| VbReceiver { owners, typed: Some(t), through_type: false, color_color: false }))
+        Ok(self.vb_owners(&t)?.map(|owners| VbReceiver::owned(owners, Some(t), false, false)))
     }
     fn vb_path_receiver(&mut self, head: &str, links: &[&str], r: &ResolveRefIn) -> Res<Option<VbReceiver>> {
         let mut at = if head.starts_with('{') {
@@ -25,50 +35,229 @@ impl KernelResolver {
                     let base = self.vb_supers(&own)?.into_iter().find(|(_, implemented)| !implemented).map(|(t, _)| t);
                     self.vb_value_receiver(base)?
                 }
-                Some(own) => Some(VbReceiver { typed: Some(vb_simple(&own.name, r)), owners: vec![own], through_type: false, color_color: false }),
+                Some(own) => Some(VbReceiver::owned(vec![own.clone()], Some(vb_simple(&own.name, r)), false, false)),
                 None => None,
             }
         } else {
             let name = head.trim_matches(['[', ']']);
             let bound = self.vb_receiver_type(name, r, 0)?;
             let written = match &bound { None => Some(vb_simple(name, r)), Some(Some(t)) if !t.array && t.name.eq_ignore_ascii_case(name) => Some(t.clone()), _ => None };
-            if let Some(written) = written {
-                let (owners, ambiguous) = self.vb_types_at(&written, true)?;
-                (!ambiguous && !owners.is_empty()).then_some(VbReceiver { owners, typed: None, through_type: true, color_color: bound.is_some() })
-            } else { self.vb_value_receiver(bound.flatten())? }
+            match written {
+                Some(written) => {
+                    let (owners, ambiguous) = self.vb_types_at(&written, true)?;
+                    if ambiguous {
+                        None
+                    } else if !owners.is_empty() {
+                        Some(VbReceiver::owned(owners, None, true, bound.is_some()))
+                    } else {
+                        match bound.is_none() {
+                            true => self.vb_namespace_named(name, r)?.map(VbReceiver::ns),
+                            false => None,
+                        }
+                    }
+                }
+                None => self.vb_value_receiver(bound.flatten())?,
+            }
         };
         for link in links {
             let Some(prior) = at else { return Ok(None); };
             let name = link.trim_matches(['[', ']']);
+            if let Some(ns) = prior.namespace {
+                let types = self.vb_types_in_namespace(&ns, name, r)?;
+                at = match types {
+                    None => return Ok(None),
+                    Some(types) if !types.is_empty() => Some(VbReceiver::owned(types, None, true, false)),
+                    Some(_) => {
+                        let mut nested = (*ns).clone();
+                        nested.push(name.to_ascii_lowercase());
+                        if self.vb_known_namespaces()?.contains(&nested.join(".")) {
+                            Some(VbReceiver::ns(Rc::new(nested)))
+                        } else {
+                            let member = self.vb_module_member_in(&ns, name, r)?;
+                            let Some(member) = member else { return Ok(None); };
+                            let typed = self.vb_member_type(&VbMember { node: member, args: HashMap::new() })?;
+                            self.vb_value_receiver(typed)?
+                        }
+                    }
+                };
+                continue;
+            }
+            if prior.owners.is_empty() { return Ok(None); }
             let found = self.vb_member_on(&prior.owners, name, r, true, prior.typed.as_ref(), true)?
                 .or(self.vb_member_on(&prior.owners, &format!("[{name}]"), r, true, prior.typed.as_ref(), true)?);
             let Some(found) = found else { return Ok(None); };
             at = if vb_like_kind(&found.node.kind) {
-                prior.through_type.then_some(VbReceiver { owners: vec![found.node], typed: None, through_type: true, color_color: false })
+                prior.through_type.then_some(VbReceiver::owned(vec![found.node], None, true, false))
             } else { let typed = self.vb_member_type(&found)?; self.vb_value_receiver(typed)? };
         }
         Ok(at)
     }
+    /// The overload VB.NET runs where a method is named without parentheses,
+    /// unless `AddressOf`/`NameOf` only names it.
+    fn vb_run(&mut self, member: Arc<KNode>, named: bool, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        if member.kind != "method" || named {
+            return Ok(Some(member));
+        }
+        self.vb_runnable_overload(member, r)
+    }
+    /// The field, property or Module variable a bare name before the dot
+    /// reads as well, where VB.NET binds the name to one (`Button1` in
+    /// `Button1.Text`). Null for a parameter or local of that name, for `Me`,
+    /// `MyBase` and `{T}`, for a `With` block's name, and for an outside
+    /// namesake (`Responser As Responser`).
+    fn vb_head_member(&mut self, head: &str, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        if head.starts_with('{') || re!(r"(?i)^(Me|MyClass|MyBase)$").is_match(head) {
+            return Ok(None);
+        }
+        let name = head.trim_matches(['[', ']']);
+        let Some(line) = self.read_file(&r.file_path).and_then(|f| f.get((r.line - 1).max(0) as usize).cloned()) else {
+            return Ok(None);
+        };
+        let mut byte = super::names::js_unit_to_byte(&line, r.column.max(0) as usize).min(line.len());
+        let bracketed = line.as_bytes().get(byte) == Some(&b'[');
+        if bracketed {
+            byte += 1;
+        }
+        if line.len() < byte + name.len() || !line[byte..byte + name.len()].eq_ignore_ascii_case(name) {
+            return Ok(None);
+        }
+        byte += name.len();
+        if bracketed {
+            if line.as_bytes().get(byte) != Some(&b']') {
+                return Ok(None);
+            }
+            byte += 1;
+        }
+        while matches!(line.as_bytes().get(byte), Some(b' ' | b'\t')) {
+            byte += 1;
+        }
+        if line.as_bytes().get(byte) != Some(&b'.') {
+            return Ok(None);
+        }
+        if self.vb_local_bound(name, r)? {
+            return Ok(None);
+        }
+        let Some(found) = self.vb_member_around(name, r)? else {
+            return Ok(None);
+        };
+        let member = found.node;
+        if !vb_value_kind(&member.kind) || member.id == r.from_node_id {
+            return Ok(None);
+        }
+        // Another project's Module is one this code can't name without a reference to it.
+        let foreign = self.vb_project(&member.file_path) != self.vb_project(&r.file_path);
+        if foreign {
+            if let Some(qn) = vb_parent_qn(&member) {
+                let module = self
+                    .nodes_by_qualified_name(qn)?
+                    .iter()
+                    .any(|n| self.vb_module(n));
+                if module {
+                    return Ok(None);
+                }
+            }
+        }
+        if self.vb_is_outside_namesake(&member, &found.args)? {
+            return Ok(None);
+        }
+        Ok(Some(member))
+    }
+    /// withHead: the bare-name member before the dot is linked beside what is
+    /// read through it — alone when nothing reads through it, and never when
+    /// the read calls the member.
+    fn vb_with_head(&mut self, read: Option<VbHit>, head: &str, links: &[&str], r: &ResolveRefIn) -> Res<Option<VbHit>> {
+        let head_member = if links.is_empty() {
+            self.vb_head_member(head, r)?
+        } else {
+            None
+        };
+        Ok(match (head_member, read) {
+            (None, read) => read,
+            (Some(head), None) => Some(VbHit {
+                candidate: KCand { node: head, confidence: 0.9, resolved_by: "instance-method" },
+                edge_kind: None,
+                also: vec![],
+            }),
+            (Some(head), Some(mut read)) => {
+                if read.edge_kind.as_deref() != Some("calls") {
+                    read.also.push(head.id.clone());
+                }
+                Some(read)
+            }
+        })
+    }
     fn vb_member_read(&mut self, head: &str, links: &[&str], name: &str, r: &ResolveRefIn) -> Res<Option<VbHit>> {
         let Some(at) = self.vb_path_receiver(head, links, r)? else { return Ok(None); };
         let name = name.trim_matches(['[', ']']);
-        let found = self.vb_member_on(&at.owners, name, r, true, at.typed.as_ref(), true)?
-            .or(self.vb_member_on(&at.owners, &format!("[{name}]"), r, true, at.typed.as_ref(), true)?);
+        let line = self.read_file(&r.file_path).and_then(|f| f.get((r.line - 1).max(0) as usize).cloned()).unwrap_or_default();
+        let named = re!(r"(?i)\b(?:AddressOf\s+|NameOf\s*\(\s*)$").is_match(super::names::js_prefix(&line, r.column.max(0) as usize));
+        if let Some(ns) = &at.namespace {
+            // A type, or a Module's member, read through its namespace.
+            let types = self.vb_types_in_namespace(ns, name, r)?;
+            let target = match types {
+                Some(types) => match types.into_iter().next() {
+                    Some(first) => Some(first),
+                    None => match self.vb_module_member_in(ns, name, r)? {
+                        Some(member) => self.vb_run(member, named, r)?,
+                        None => None,
+                    },
+                },
+                None => None,
+            };
+            let Some(target) = target.filter(|t| t.id != r.from_node_id) else {
+                return Ok(None);
+            };
+            return Ok(Some(VbHit {
+                candidate: KCand {
+                    node: target.clone(),
+                    confidence: if target.kind == "method" { 0.85 } else { 0.9 },
+                    resolved_by: "qualified-name",
+                },
+                edge_kind: (target.kind == "method" && !named).then(|| "calls".to_string()),
+                also: vec![],
+            }));
+        }
+        if at.owners.is_empty() {
+            return self.vb_with_head(None, head, links, r);
+        }
+        if !at.through_type {
+            // The member the name means: the nearest the type declares or inherits.
+            let found = self.vb_member_on(&at.owners, name, r, true, at.typed.as_ref(), false)?
+                .or(self.vb_member_on(&at.owners, &format!("[{name}]"), r, true, at.typed.as_ref(), false)?);
+            let member = match found {
+                Some(found) => self.vb_run(found.node, named, r)?,
+                None => None,
+            };
+            let hit = member.filter(|m| m.id != r.from_node_id).map(|member| {
+                VbHit {
+                    candidate: KCand { node: member.clone(), confidence: 0.9, resolved_by: "instance-method" },
+                    edge_kind: (member.kind == "method" && !named).then(|| "calls".to_string()),
+                    also: vec![],
+                }
+            });
+            return self.vb_with_head(hit, head, links, r);
+        }
+        let found = self.vb_member_on(&at.owners, name, r, true, None, true)?
+            .or(self.vb_member_on(&at.owners, &format!("[{name}]"), r, true, None, true)?);
         let Some(mut found) = found else { return Ok(None); };
-        if found.node.id == r.from_node_id { return Ok(None); }
-        if !at.through_type && !matches!(found.node.kind.as_str(), "method" | "field" | "property" | "constant" | "variable") { return Ok(None); }
-        if at.through_type && !found.node.is_static {
+        if !found.node.is_static {
             if let Some(shared) = self.nodes_by_qualified_name(&found.node.qualified_name)?.iter().find(|n| n.is_static && n.file_path == found.node.file_path && n.id != r.from_node_id) { found.node = shared.clone(); }
         }
+        found.node = self.vb_run(found.node.clone(), named, r)?.unwrap_or(found.node);
         let constant = self.read_file(&found.node.file_path).and_then(|f| f.get((found.node.start_line - 1).max(0) as usize).cloned())
             .is_some_and(|line| re!(r"(?i)^\s*(?:(?:Public|Private|Protected|Friend|Shadows)\s+)*Const\b").is_match(&line));
         let shared = found.node.is_static || constant || matches!(found.node.kind.as_str(), "constant" | "enum_member") || at.owners.iter().any(|n| self.vb_module(n));
-        let through_value = !at.through_type || at.color_color && !shared;
-        let line = self.read_file(&r.file_path).and_then(|f| f.get((r.line - 1).max(0) as usize).cloned()).unwrap_or_default();
-        let named = re!(r"(?i)\b(?:AddressOf\s+|NameOf\s*\(\s*)$").is_match(super::names::js_prefix(&line, r.column.max(0) as usize));
+        if at.color_color && !shared {
+            return self.vb_with_head(Some(VbHit {
+                candidate: KCand { node: found.node.clone(), confidence: 0.9, resolved_by: "instance-method" },
+                edge_kind: (found.node.kind == "method" && !named).then(|| "calls".to_string()),
+                also: vec![],
+            }), head, links, r);
+        }
         let edge_kind = (found.node.kind == "method" && !named).then(|| "calls".to_string());
-        if through_value || found.node.kind == "method" || !links.is_empty() {
-            return Ok(Some(VbHit { candidate: KCand { node: found.node, confidence: if through_value { 0.9 } else { 0.85 }, resolved_by: if through_value { "instance-method" } else { "qualified-name" } }, edge_kind, also: vec![] }));
+        if found.node.kind == "method" || !links.is_empty() {
+            let confidence = if found.node.kind == "method" { 0.85 } else { 0.9 };
+            return Ok(Some(VbHit { candidate: KCand { node: found.node, confidence, resolved_by: "qualified-name" }, edge_kind, also: vec![] }));
         }
         self.vb_read_through(found.node, &at.owners, r, 0.9, edge_kind.as_deref())
     }

@@ -265,10 +265,14 @@ function rowToNode(row: NodeRow): Node {
 /**
  * Convert database row to Edge object
  */
-/** A failed python ref through one attribute (`self.c.send`) or a call receiver (`make().send`). */
+/** A failed python ref through one attribute (`self.c.send`), a call receiver
+ * (`make().send`), or a receiver-typed local's call (`reg.get`) — the last is
+ * the builtin-named-method shape the typed-local evidence pass may later
+ * satisfy once the file it reads its type from changes (#2583). One or two
+ * dots, not three: `a.b.c.d` chains never come back through a local's type. */
 const FAILED_PY_ATTR_REF = `status = 'failed' AND language = 'python'
-  AND reference_name NOT GLOB '*.*.*.*'
-  AND (reference_name GLOB '*.*.*' OR reference_name GLOB '*().*')`;
+  AND reference_name GLOB '*.*'
+  AND reference_name NOT GLOB '*.*.*.*'`;
 
 function rowToEdge(row: EdgeRow): Edge {
   return {

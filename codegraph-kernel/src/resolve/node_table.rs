@@ -351,6 +351,7 @@ pub(super) struct QueryLookups {
     by_lower: HashMap<String, NodeList>,
     by_qname: HashMap<String, NodeList>,
     by_file: HashMap<String, NodeList>,
+    by_kind: HashMap<String, NodeList>,
     by_id: HashMap<String, Option<Arc<KNode>>>,
     known_files: HashMap<String, bool>,
     /// `SELECT path FROM files`, sorted — the Lua/Rust file buckets.
@@ -362,6 +363,7 @@ pub(super) enum LookupKey<'a> {
     Lower(&'a str),
     QualifiedName(&'a str),
     File(&'a str),
+    Kind(&'a str),
 }
 
 impl QueryLookups {
@@ -387,6 +389,7 @@ impl QueryLookups {
             ),
             LookupKey::QualifiedName(k) => (self.by_qname.get(k), "WHERE qualified_name = ?1 ORDER BY rowid", k.to_string()),
             LookupKey::File(k) => (self.by_file.get(k), "WHERE file_path = ?1 ORDER BY start_line, rowid", k.to_string()),
+            LookupKey::Kind(k) => (self.by_kind.get(k), "WHERE kind = ?1 ORDER BY file_path, start_line, rowid", k.to_string()),
         };
         if let Some(hit) = memo_hit {
             return Ok(hit.clone());
@@ -400,6 +403,7 @@ impl QueryLookups {
             LookupKey::Lower(_) => &mut self.by_lower,
             LookupKey::QualifiedName(_) => &mut self.by_qname,
             LookupKey::File(_) => &mut self.by_file,
+            LookupKey::Kind(_) => &mut self.by_kind,
         };
         memo.insert(arg, list.clone());
         Ok(list)
@@ -544,11 +548,23 @@ pub(super) struct FileExportIndexK {
 
 /// WorkspacePackages (workspace-packages.ts).
 #[derive(Clone, Debug, Default)]
+/// workspace-packages.ts PackageEntries.
+pub(super) struct WorkspaceEntriesK {
+    /// `exports` key → targets, best first (ordered like the map was read).
+    pub(super) exports: Vec<(String, Vec<String>)>,
+    /// source/module/main/types/typings targets, best first.
+    pub(super) main: Vec<String>,
+}
+
 pub(super) struct WorkspaceK {
     pub(super) source_entries: Vec<(String, String)>,
     pub(super) by_name: HashMap<String, String>,
     pub(super) entry_by_name: Option<HashMap<String, String>>,
     pub(super) local_link_names: HashSet<String>,
+    /// Package directory → its manifest's declared entries.
+    pub(super) entries_by_dir: HashMap<String, WorkspaceEntriesK>,
+    /// Manifest directory → path-dependency name → package directory.
+    pub(super) scoped_by_name: HashMap<String, HashMap<String, String>>,
 }
 
 // ---------------------------------------------------------------------------

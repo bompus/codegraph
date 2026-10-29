@@ -100,6 +100,31 @@ pub struct KernelScopedAliasIn {
     pub map: KernelAliasMapIn,
 }
 
+/// A string-keyed entry whose value is a list — `exports` subpath → targets.
+#[cfg_attr(feature = "addon", napi(object))]
+pub struct KernelKvList {
+    pub key: String,
+    pub values: Vec<String>,
+}
+
+/// A package directory's declared entries (workspace-packages.ts PackageEntries).
+#[cfg_attr(feature = "addon", napi(object))]
+pub struct KernelPackageEntriesIn {
+    /// Package directory relative to projectRoot.
+    pub dir: String,
+    /// `exports` key (`.`, `./widgets`, `./schema/*`) → its targets, best first.
+    pub exports: Vec<KernelKvList>,
+    /// source/module/main/types/typings targets, best first.
+    pub main: Vec<String>,
+}
+
+/// A manifest directory's path-dependency names → package directories.
+#[cfg_attr(feature = "addon", napi(object))]
+pub struct KernelScopedPackageIn {
+    pub dir: String,
+    pub names: Vec<KernelKv>,
+}
+
 #[cfg_attr(feature = "addon", napi(object))]
 pub struct KernelWorkspaceIn {
     /// Import-source path prefix → workspace package name (longest prefix wins).
@@ -110,6 +135,10 @@ pub struct KernelWorkspaceIn {
     pub entry_by_name: Option<Vec<KernelKv>>,
     /// Link-source package names skipped during directory checks.
     pub local_link_names: Option<Vec<String>>,
+    /// Package directory → its manifest's declared entries (exports, main fields).
+    pub entries_by_dir: Option<Vec<KernelPackageEntriesIn>>,
+    /// Manifest directory → `file:`/`link:`/`portal:` dependency name → package dir.
+    pub scoped_by_name: Option<Vec<KernelScopedPackageIn>>,
 }
 
 #[cfg_attr(feature = "addon", napi(object))]
@@ -400,6 +429,11 @@ impl SourceFile {
         self.text.get_or_init(|| self.lines.join("\n"))
     }
 
+    /// The 0-based line, or None past the file's end.
+    pub(super) fn line(&self, i: usize) -> Option<&str> {
+        self.lines.get(i).map(String::as_str)
+    }
+
     fn dart_tokens(&self) -> &[dart_libraries::DartToken] {
         self.dart_tokens.get_or_init(|| dart_libraries::tokens(self.text()))
     }
@@ -591,6 +625,8 @@ mod fields;
 mod rust_impls;
 mod ts_known;
 mod go_asserted;
+mod go_build;
+mod go_value;
 mod method_call;
 mod pipeline;
 mod file_refs;
@@ -663,6 +699,23 @@ pub struct KernelResolver {
     /// The run token the table is shared under (see NodeTable); None keeps
     /// the table private.
     generation: Option<String>,
+    /// manualMockNames (#2455): the names every Jest/Vitest manual mock
+    /// (`__mocks__/`) declares; `None` when the project has none.
+    mock_names: OnceCell<Option<Rc<query::MockNames>>>,
+    /// Set for one `resolve_ref` from non-test code: node lookups then
+    /// answer as if no `__mocks__/` file were indexed (mocklessContextFor).
+    mockless: std::cell::Cell<bool>,
+    /// classExpressions (#2499): the named class expressions' index; `None`
+    /// when the project has none.
+    class_expr_index: OnceCell<Option<Rc<query::ClassExprIndex>>>,
+    /// Set for one `resolve_ref` written outside every named class
+    /// expression: node lookups then answer as if the classes those
+    /// expressions declare and their members were not indexed
+    /// (classExpressionFreeContextFor).
+    class_expr_free: std::cell::Cell<bool>,
+    /// classExpressionOnlyNames' set: the names only class expressions'
+    /// classes and members carry.
+    class_expr_only: OnceCell<Rc<HashSet<String>>>,
     /// A file's bindings rows. Lookups cluster by file, so 128 files keep
     /// nearly every hit: unbounded, n8n's workers held 86-140 MB each.
     bindings_cache: Lru<Rc<Vec<KBinding>>>,
@@ -681,6 +734,30 @@ pub struct KernelResolver {
     /// cppProjectScopeNames: every name a C or C++ qualifier may start with in this project.
     cpp_scope_names: Option<Rc<HashSet<String>>>,
     rust_trait_memo: HashMap<String, bool>,
+    /// RUST_TYPED_REFS (name-matcher.ts): refs a Rust typed-receiver path
+    /// resolved, by row id — a trait-declared method such a ref lands on is
+    /// the trait's, not a name guess.
+    rust_typed_refs: HashSet<i64>,
+    /// rustTraitOf, by method id → the enclosing trait node's id.
+    rust_trait_of_memo: HashMap<String, Option<String>>,
+    /// goDotImports, by file path.
+    go_dot_imports_memo: HashMap<String, fields::GoDotImports>,
+    /// A Go bound-receiver arm proved the receiver has no project method —
+    /// the miss is terminal, not a name-match candidate (`goHasNoProjectMethods`,
+    /// declared-type literals, field-chain and asserted-outside vetoes).
+    go_mc_terminal: bool,
+    /// The receiver is an asserted local whose type a function declares —
+    /// no index type answers, and upstream's strategy-3 name match applies.
+    go_mc_untyped_local: bool,
+    /// goAliasTarget, by type node id.
+    go_alias_target_memo: HashMap<String, fields::GoAliasTarget>,
+    /// goUnreadFileMethods, by file path: `None` when the file can't be read.
+    go_unread_methods_memo: HashMap<String, Option<HashSet<String>>>,
+    /// goFileConstraint, by file path: `None` builds everywhere or can't be
+    /// read.
+    go_build_constraint_memo: HashMap<String, Option<Rc<go_build::GoFileConstraint>>>,
+    /// preferGoBuildTwin's same-package same-name pool, by target node id.
+    go_build_twins_memo: HashMap<String, Rc<Vec<Arc<KNode>>>>,
     /// javaSupertypesOf, by type name.
     java_supers_memo: HashMap<String, Rc<Vec<String>>>,
     /// phpSupertypeQns, by declaration id.
@@ -908,6 +985,39 @@ impl KernelResolver {
                 .local_link_names
                 .map(|v| v.into_iter().collect())
                 .unwrap_or_default(),
+            entries_by_dir: w
+                .entries_by_dir
+                .map(|v| {
+                    v.into_iter()
+                        .map(|e| {
+                            (
+                                e.dir,
+                                WorkspaceEntriesK {
+                                    exports: e
+                                        .exports
+                                        .into_iter()
+                                        .map(|kv| (kv.key, kv.values))
+                                        .collect(),
+                                    main: e.main,
+                                },
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            scoped_by_name: w
+                .scoped_by_name
+                .map(|v| {
+                    v.into_iter()
+                        .map(|s| {
+                            (
+                                s.dir,
+                                s.names.into_iter().map(|kv| (kv.key, kv.value)).collect(),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
         });
         // context.getCppIncludeDirs?.() ?? [] — the TS side resolves
         // compile_commands.json + convention heuristics and passes the list;
@@ -917,6 +1027,11 @@ impl KernelResolver {
             conn: Some(conn),
             live: !snapshot,
             table: std::cell::OnceCell::new(),
+            mock_names: std::cell::OnceCell::new(),
+            mockless: std::cell::Cell::new(false),
+            class_expr_index: std::cell::OnceCell::new(),
+            class_expr_free: std::cell::Cell::new(false),
+            class_expr_only: std::cell::OnceCell::new(),
             lookups: config.query_lookups.unwrap_or(false).then(Default::default),
             db_path: config.db_path,
             generation: config.generation,
@@ -946,6 +1061,15 @@ impl KernelResolver {
             cpp_macro_arguments_memo: HashMap::new(),
             cpp_scope_names: None,
             rust_trait_memo: HashMap::new(),
+            rust_typed_refs: HashSet::new(),
+            rust_trait_of_memo: HashMap::new(),
+            go_dot_imports_memo: HashMap::new(),
+            go_mc_terminal: false,
+            go_mc_untyped_local: false,
+            go_alias_target_memo: HashMap::new(),
+            go_unread_methods_memo: HashMap::new(),
+            go_build_constraint_memo: HashMap::new(),
+            go_build_twins_memo: HashMap::new(),
             java_supers_memo: HashMap::new(),
             php_supers_memo: HashMap::new(),
             vb: vbnet::VbMemo::default(),
@@ -1049,6 +1173,7 @@ impl KernelResolver {
     #[cfg_attr(feature = "addon", napi)]
     pub fn close(&mut self) {
         self.debug_stats("close");
+        prof_dump("close");
         self.release_conn();
         self.table.take();
         self.file_cache.clear();
@@ -1328,7 +1453,10 @@ impl KernelResolver {
             });
             out.push(match hit {
                 Ok(c) => match c {
-                    Some(c) => ResolveOutcome::resolved(&c.node, c.confidence, c.resolved_by, true, None),
+                    Some(c) => {
+                        let outcome = ResolveOutcome::resolved(&c.node, c.confidence, c.resolved_by, true, None);
+                        if r.language == "go" { self.prefer_go_build_twin(outcome, &r)? } else { outcome }
+                    }
                     None => ResolveOutcome::unresolved(),
                 },
                 Err(Halt::Napi(e)) => return Err(e),

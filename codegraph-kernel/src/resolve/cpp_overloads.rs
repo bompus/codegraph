@@ -44,6 +44,9 @@ const CHAR_TYPES: &[&str] = &["char", "wchar_t", "char8_t", "char16_t", "char32_
 const NUMBER_TYPES: &[&str] = &[
     "int", "unsigned", "signed", "short", "long", "float", "double", "size_t", "ssize_t", "ptrdiff_t",
     "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t", "intptr_t", "uintptr_t",
+    // A container's own integer aliases, by convention: nlohmann/json's `operator[](size_type idx)`
+    // takes a `0` over its `T* key` overload.
+    "size_type", "difference_type",
 ];
 const STRING_TYPES: &[&str] = &["string", "wstring", "string_view", "wstring_view", "basic_string", "basic_string_view"];
 
@@ -390,7 +393,10 @@ impl KernelResolver {
         let callee = shared_regex(&format!(r"(?:^|[.:>])\s*{}(?:\s*<[\s\S]*>)?\s*$", regex::escape(name)))?;
         let mut call = descendant_for_position(tree.root_node(), source.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
         loop {
-            if call.kind() == "call_expression" && call.child_by_field_name("function").is_some_and(|f| callee.is_match(&source.text()[f.byte_range()])) { break; }
+            if call.kind() == "call_expression"
+                && (call.child_by_field_name("function").is_some_and(|f| callee.is_match(&source.text()[f.byte_range()]))
+                    || cpp_call_has_operator_error(call, source.text(), name))
+            { break; }
             let Some(parent) = call.parent() else { return Ok(None) };
             call = parent;
         }
@@ -518,6 +524,41 @@ fn opening_paren(text: &str, close: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// Whether `call` is an explicit operator call tree-sitter-cpp could not finish reading: it parses
+/// `b.operator+=(a)` and `s.operator()(4)` as a call on the receiver alone, with the operator's
+/// name stranded in an `ERROR` sibling (`function: (identifier) (ERROR (operator_name))
+/// arguments: …`), so the `function` field never spells the callee. The argument list is still the
+/// call's own; only the name has to come from the error.
+fn cpp_call_has_operator_error(call: tree_sitter::Node, text: &str, name: &str) -> bool {
+    let plain = |spelling: &str| -> String { spelling.chars().filter(|c| !c.is_whitespace()).collect() };
+    let name = plain(name);
+    let mut cursor = call.walk();
+    let mut found = false;
+    for child in call.children(&mut cursor) {
+        if !child.is_error() { continue; }
+        // The grammar still reads the operator's own name when a comment sits
+        // inside the access (`b./* note */operator+=(a)`); the error's raw text
+        // then carries the comment, so compare the name node where there is one.
+        if let Some(operator) = cpp_operator_name_in(child, text) {
+            if plain(operator) == name { found = true; break; }
+            continue;
+        }
+        // No name node: the error starts at the member access, so the text is
+        // `".operator+="` (or the same behind `->`).
+        let spelled = plain(&text[child.byte_range()]);
+        if spelled.trim_start_matches(['.', '-', '>']) == name { found = true; break; }
+    }
+    found
+}
+
+/// The `operator_name` a tree-sitter-cpp error holds, if it read one.
+fn cpp_operator_name_in<'t>(node: tree_sitter::Node, text: &'t str) -> Option<&'t str> {
+    if node.kind() == "operator_name" { return Some(&text[node.byte_range()]); }
+    let mut cursor = node.walk();
+    let children: Vec<_> = node.children(&mut cursor).collect();
+    children.into_iter().find_map(|child| cpp_operator_name_in(child, text))
 }
 
 /// The expanded definition a C++ method that a macro defines carries as its signature

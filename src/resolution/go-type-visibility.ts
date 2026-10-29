@@ -5,7 +5,7 @@ import type { ImportMapping, ResolutionContext, ResolvedRef, UnresolvedRef } fro
 function lineAt(ref: UnresolvedRef, context: ResolutionContext): string | undefined {
   return context.getFileLines?.(ref.filePath)?.[ref.line - 1] ?? context.readFile(ref.filePath)?.split(/\r?\n/)[ref.line - 1];
 }
-function goPackageDir(file: string): string { return path.posix.dirname(file.replace(/\\/g, '/')); }
+function goPackageDir(file: string): string { const dir = path.posix.dirname(file.replace(/\\/g, '/')); return dir === '.' ? '' : dir; }
 function goImportPackageDir(name: string, file: string, context: ResolutionContext): string | null | undefined {
   const imp = context.getImportMappings(file, 'go').find((m) => m.localName === name);
   return imp ? context.getGoPackageDir?.(imp.source, file) ?? null : undefined;
@@ -17,6 +17,83 @@ function preferCallSiteFile(nodes: Node[], file: string): Node[] {
   return [...nodes].sort((a, b) => Number(b.filePath === file) - Number(a.filePath === file));
 }
 export const GO_TYPE_KINDS: ReadonlySet<string> = new Set(['struct', 'interface', 'type_alias']);
+
+/** The project packages a Go file dot-imports, and whether it dot-imports one from outside the project. */
+interface GoDotImports {
+  dirs: string[];
+  outside: boolean;
+  /** The `type` declarations the file's text holds — function-local ones included — read on demand. */
+  types?: Set<string>;
+}
+
+const GO_DOT_IMPORTS = new WeakMap<ResolutionContext, Map<string, GoDotImports>>();
+
+function goDotImports(filePath: string, context: ResolutionContext): GoDotImports {
+  let memo = GO_DOT_IMPORTS.get(context);
+  if (!memo) GO_DOT_IMPORTS.set(context, (memo = new Map()));
+  let found = memo.get(filePath);
+  if (found) return found;
+  found = { dirs: [], outside: false };
+  for (const line of context.getFileLines?.(filePath) ?? context.readFile(filePath)?.split(/\r?\n/) ?? []) {
+    // The imports come before any other declaration.
+    if (/^(?:func|type|var|const)\b/.test(line)) break;
+    const dot = /^\s*(?:import\s+)?\.\s+"([^"]+)"/.exec(line);
+    if (!dot || !context.getGoPackageDir) continue;
+    const dir = context.getGoPackageDir(dot[1]!, filePath);
+    if (dir) found.dirs.push(dir);
+    // A relative or `/internal/` path is the project's own, mapped or not.
+    else if (!dot[1]!.startsWith('.') && !dot[1]!.includes('/internal/')) found.outside = true;
+  }
+  memo.set(filePath, found);
+  return found;
+}
+
+/**
+ * The directory of the package that declares a Go type written bare in
+ * `filePath` (`Controller`, `*Manager`), as Go reads the name: the file's own
+ * package, else a package of the project the file dot-imports that declares
+ * it (harbor's config tests read `Controller` from `. ".../controller/config"`).
+ * Null for an exported name that only a package from outside the project the
+ * file dot-imports can give it (`. "github.com/onsi/gomega"`): no type of the
+ * project's. The file's own package when no package declares the name, as
+ * before: a type the index doesn't hold there, like one a function declares
+ * (ginkgo's `type CompleteSpecContext interface {…}` inside a test), which
+ * hides a dot import's.
+ */
+function goBareTypeDir(name: string, filePath: string, context: ResolutionContext): string | null {
+  const own = goPackageDir(filePath);
+  const dots = goDotImports(filePath, context);
+  if ((dots.dirs.length === 0 && !dots.outside) || goPackageTypes(name, own, context).length > 0) return own;
+  const dir = dots.dirs.find((d) => goPackageTypes(name, d, context).length > 0);
+  if (dir !== undefined) return dir;
+  if (!dots.outside || !/^[A-Z]\w*$/.test(name)) return own;
+  if (!dots.types) {
+    dots.types = new Set();
+    for (const line of context.getFileLines?.(filePath) ?? context.readFile(filePath)?.split(/\r?\n/) ?? []) {
+      for (const m of line.replace(/\/\/.*$/, '').matchAll(/(?:^|[^\w.])type\s+([A-Za-z_]\w*)/g)) dots.types.add(m[1]!);
+    }
+  }
+  return dots.types.has(name) ? own : null;
+}
+
+/**
+ * What a Go embedding written bare (`*Manager`) names when the file's own
+ * package doesn't declare the name: the type of the package the file
+ * dot-imports that does (goBareTypeDir), not another package's namesake name
+ * matching found as near the file, or nothing for a name only a package from
+ * outside the project can give the file. Any other is left as it is.
+ */
+export function goDotImportedSupertype(result: ResolvedRef, ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  const name = ref.referenceName;
+  if (!/^[A-Za-z_]\w*$/.test(name)) return result;
+  const dir = goBareTypeDir(name, ref.filePath, context);
+  if (dir === goPackageDir(ref.filePath) || goRefQualification(ref, context).written !== undefined) return result;
+  if (dir === null) return null;
+  const target = context.getNodeById?.(result.targetNodeId);
+  if (target && goPackageDir(target.filePath) === dir) return result;
+  return { ...result, targetNodeId: preferCallSiteFile(goPackageTypes(name, dir, context), ref.filePath)[0]!.id };
+}
+
 interface GoQualification {
   /** The package name written before the reference's name, as spelled. */
   written?: string;
@@ -97,12 +174,14 @@ export function goTypePositionTarget(result: ResolvedRef, ref: UnresolvedRef, co
   } else {
     const { written, imported } = goRefQualification(ref, context);
     bare = written === undefined;
-    if (bare) pkgDir = goPackageDir(ref.filePath);
-    else if (imported) pkgDir = context.getGoPackageDir?.(imported.source, ref.filePath) ?? null;
+    if (bare) {
+      pkgDir = goBareTypeDir(name, ref.filePath, context);
+      if (pkgDir === null) return null;
+    } else if (imported) pkgDir = context.getGoPackageDir?.(imported.source, ref.filePath) ?? null;
   }
-  if (pkgDir === '') pkgDir = '.';
   if (isType && (!bare || goPackageDir(target.filePath) === pkgDir)) return result;
-  const types = pkgDir != null ? goPackageTypes(name, pkgDir, context) : [];
+  // `''` is a real directory — a module's root package — not a miss.
+  const types = pkgDir !== null && pkgDir !== undefined ? goPackageTypes(name, pkgDir, context) : [];
   if (types.length > 0) return { ...result, targetNodeId: preferCallSiteFile(types, ref.filePath)[0]!.id };
   return isType ? result : null;
 }

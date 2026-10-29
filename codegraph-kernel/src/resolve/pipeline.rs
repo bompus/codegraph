@@ -2,6 +2,12 @@
 
 use super::*;
 
+/// TYPE_COMPANION_VALUE_KINDS (index.ts #2801): the values a TypeScript
+/// type may share its name with in its file, which a call or `new` of the
+/// name means.
+static TYPE_COMPANION_VALUE_KINDS: &[&str] =
+    &["function", "class", "component", "constant", "variable"];
+
 impl KernelResolver {
     // -----------------------------------------------------------------------
     // Non-bare c/cpp `imports` refs — the #include-path slice (resolveOneInner
@@ -662,13 +668,28 @@ if super::lang_scope::is_dart_member_read(r) {
 
     /// gateTargetKind (index.ts): the imports/inheritance target-kind gates
     /// plus the out-of-repo import check.
-    pub(super) fn gate_target_kind(&mut self, cand: KCand, r: &ResolveRefIn) -> Res<Option<KCand>> {
+    pub(super) fn gate_target_kind(&mut self, mut cand: KCand, r: &ResolveRefIn) -> Res<Option<KCand>> {
         if r.language == "python" && r.reference_kind == "calls" && self.is_python_property(&cand.node) {
             return Ok(None);
         }
         // A `#define` is a value, never a callee (#1838).
         if r.reference_kind == "calls" && cpp::is_define(&cand.node) {
             return Ok(None);
+        }
+        // A TypeScript interface or type alias is no value: nothing calls
+        // one or makes an instance of it. A strategy that found one by name
+        // meant the value its file declares beside it (`interface Ok` and
+        // `function Ok` in a result module); with none there, the name is a
+        // value from elsewhere that the project only types (`new
+        // Response()`, `new Worker()`), and links nothing (#2801).
+        if matches!(r.reference_kind.as_str(), "calls" | "instantiates")
+            && is_esm_import_language(&r.language)
+            && matches!(cand.node.kind.as_str(), "interface" | "type_alias")
+        {
+            let Some(value) = self.same_named_value_of_type(&cand.node)? else {
+                return Ok(None);
+            };
+            cand.node = value;
         }
         if r.reference_kind == "imports" {
             if r.language == "python" && self.is_python_from_import_module(r.clone())
@@ -690,7 +711,6 @@ if super::lang_scope::is_dart_member_read(r) {
         if self.is_import_binding_call_target(&cand.node, r)? {
             return Ok(None);
         }
-        let mut cand = cand;
         if r.language == "go" && cand.node.language == "go" {
             let is_type = matches!(cand.node.kind.as_str(), "struct" | "interface" | "type_alias");
             if r.reference_kind == "calls" && is_type && !r.reference_name.contains('.') && !self.is_bare_go_call(r)? {
@@ -705,13 +725,22 @@ if super::lang_scope::is_dart_member_read(r) {
                 } else if let Some(imp) = self.go_ref_qualifier(r)? {
                     self.go_package_dir(&imp.source, &r.file_path)
                 } else if self.go_written_qualifier(r)?.is_none() {
-                    Some(pos_dirname(&r.file_path).to_string())
+                    self.go_bare_type_dir(name, &r.file_path)?
                 } else { None };
                 if let Some(package) = package {
-                    let types: Vec<_> = self.nodes_by_name(name)?.iter()
-                        .filter(|n| n.language == "go" && matches!(n.kind.as_str(), "struct" | "interface" | "type_alias")
-                            && pos_dirname(&n.file_path) == package)
-                        .cloned().collect();
+                    // The package is its directory AND clause: `a_test`'s
+                    // type position cannot name `a`'s fixture (#2581).
+                    let list = self.nodes_by_name(name)?;
+                    let mut types: Vec<_> = Vec::new();
+                    for n in list.iter() {
+                        if n.language == "go"
+                            && matches!(n.kind.as_str(), "struct" | "interface" | "type_alias")
+                            && pos_dirname(&n.file_path) == package
+                            && self.go_name_visible(n, r)?
+                        {
+                            types.push(n.clone());
+                        }
+                    }
                     if let Some(target) = prefer_call_site_file(types, &r.file_path).first() {
                         cand.node = target.clone();
                     } else { return Ok(None); }
@@ -734,7 +763,28 @@ if super::lang_scope::is_dart_member_read(r) {
         if self.is_bound_to_out_of_repo_import(r)? {
             return Ok(None);
         }
+        // One embedded bare that only a package the file dot-imports
+        // declares is that package's, not a namesake as near the file
+        // (goDotImportedSupertype).
+        if r.language == "go" {
+            let Some(node) = self.go_dot_imported_supertype(&cand.node, r)? else { return Ok(None); };
+            cand.node = node;
+        }
         Ok(Some(cand))
+    }
+
+    /// The value a file declares beside a type of the same name — `export
+    /// function Ok()` beside `export interface Ok`, a class merged with an
+    /// interface — which a call or `new` written with the name reaches
+    /// (sameNamedValueOfType, #2801). The first by position; None when the
+    /// file declares none.
+    fn same_named_value_of_type(&self, ty: &KNode) -> Res<Option<Arc<KNode>>> {
+        Ok(self
+            .nodes_in_file(&ty.file_path)?
+            .iter()
+            .filter(|n| n.name == ty.name && TYPE_COMPANION_VALUE_KINDS.contains(&n.kind.as_str()))
+            .min_by_key(|n| (n.start_line, n.start_column))
+            .cloned())
     }
 
     /// The one supertype-kind node a TypeScript value shares its name and file with.
@@ -870,6 +920,24 @@ if super::lang_scope::is_dart_member_read(r) {
 
     /// The per-ref pipeline: the Rust `::`-path arm, then one route.
     pub(super) fn resolve_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
+        // mocklessContextFor (#2455): a ref from non-test code resolves on a
+        // graph without the project's Jest/Vitest manual mocks — every name
+        // lookup answers as if no `__mocks__/` file were indexed. Test code,
+        // a mock included, keeps the whole graph.
+        let mockless = !is_test_path(&r.file_path) && self.manual_mock_names()?.is_some();
+        // classExpressionFreeContextFor (#2499): a ref written outside every
+        // named class expression resolves on a graph without the classes they
+        // declare and their members.
+        let class_free = self.class_expr_free_for(r)?;
+        let prev = self.mockless.replace(mockless);
+        let prev_free = self.class_expr_free.replace(class_free);
+        let outcome = self.resolve_ref_scoped(r);
+        self.mockless.set(prev);
+        self.class_expr_free.set(prev_free);
+        outcome
+    }
+
+    fn resolve_ref_scoped(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
         let attribute = if r.language == "python" && r.reference_kind == "calls" {
             Some(self.resolve_python_attribute(r.clone())?)
         } else { None };
@@ -900,6 +968,12 @@ if super::lang_scope::is_dart_member_read(r) {
         if let Some(attribute) = attribute {
             if !attribute.type_from.is_empty() { outcome.type_from = Some(attribute.type_from); }
         }
+        // A Go name its package defines under complementary build
+        // constraints resolves to the twin the reference's file builds with
+        // (preferGoBuildTwin, #2581).
+        if r.language == "go" {
+            outcome = self.prefer_go_build_twin(outcome, r)?;
+        }
         Ok(outcome)
     }
 
@@ -929,10 +1003,18 @@ if super::lang_scope::is_dart_member_read(r) {
         }
         if let Some(result) = self.ts_scoped_reference(r)? {
             return match result {
-                Some(candidate) => match self.gate_target_kind(candidate, r)? {
-                    Some(candidate) => self.finish_pre_framework(r, candidate),
-                    None => Ok(self.refused()),
-                },
+                Some(mut candidate) => {
+                    // `extends`/`implements` resolve through the import
+                    // binding at upstream's `import` 0.9; the scoped arm's
+                    // 0.95 is for type-position `references` (#2825's dumps).
+                    if is_inheritance_ref(&r.reference_kind) && candidate.resolved_by == "import" {
+                        candidate.confidence = 0.9;
+                    }
+                    match self.gate_target_kind(candidate, r)? {
+                        Some(candidate) => self.finish_pre_framework(r, candidate),
+                        None => Ok(self.refused()),
+                    }
+                }
                 None => Ok(self.refused()),
             };
         }
@@ -1024,6 +1106,12 @@ if super::lang_scope::is_dart_member_read(r) {
                 None => Ok(ResolveOutcome::unresolved()),
             };
         }
+        // A Kotlin call on an unqualified call's result — `repository().pending()`
+        // — resolves against the inner call's declared return type, never a
+        // same-named method elsewhere (#2822). `Some(None)` is terminal.
+        if let Some(result) = self.match_kotlin_call_result_call(r)? {
+            return match result { Some(candidate) => self.finish_pre_framework(r, candidate), None => Ok(self.refused()) };
+        }
         if is_js_family(&r.language) && r.reference_kind == "calls" {
             // matchJsSuperCall: `super.m()` binds to the nearest `extends`
             // ancestor's method before any name strategy can guess (#2497).
@@ -1062,6 +1150,9 @@ if super::lang_scope::is_dart_member_read(r) {
     /// resolveOneInner's bare slice (a name with no separator).
     pub(super) fn resolve_bare_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
         if let Some(result) = self.go_assertion_call(r)? {
+            return match result { Some(candidate) => self.finish_pre_framework(r, candidate), None => Ok(self.refused()) };
+        }
+        if let Some(result) = self.match_go_expr_call(r)? {
             return match result { Some(candidate) => self.finish_pre_framework(r, candidate), None => Ok(self.refused()) };
         }
         if let Some(result) = self.cpp_complex_call(r)? {
@@ -1223,6 +1314,30 @@ if r.language == "dart" && r.reference_kind == "references"
                     };
                 }
             }
+        }
+        // A definition its language makes file- or library-local cannot be
+        // what a name in another file means, whichever strategy chose it —
+        // name-matcher.ts isVisibleAcrossFiles at index.ts:1867 (#1730), run
+        // on the node after supertype/overload/alias retargets the way
+        // upstream vets the target matchReference reports. Upstream's import,
+        // file-path and framework results never reach that guard, and an
+        // import pick's alias forward can legitimately land on an unexported
+        // module member. A pick a strategy made from the code's structure —
+        // a receiver's type or a function value — keeps every language's own
+        // privacy but not a module's unexported-binding rule, which upstream
+        // applies to the name strategies alone.
+        // A function value the file's own import names is justified by that
+        // import, not by its name: an unexported inner function behind a
+        // default-exported wrapper stays reachable through the default import.
+        let name_pick = match winner.resolved_by {
+            "instance-method" | "field-call" => false,
+            "function-ref" => !self.ref_imports_target_file(&winner.node, r)?,
+            _ => true,
+        };
+        if !matches!(winner.resolved_by, "import" | "framework" | "file-path")
+            && !self.is_visible_across_files_for(&winner.node, r, name_pick)?
+        {
+            return Ok(ResolveOutcome::unresolved());
         }
         Ok(ResolveOutcome::resolved(
             &winner.node,

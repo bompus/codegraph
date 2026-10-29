@@ -1,6 +1,8 @@
 //! Rust associated calls and foreign-type trait implementations (#2697, #2700).
 use super::*;
 use super::iteration::descendant_for_position;
+use super::rust_modules::rust_paths::rust_at;
+use self::rust_types::Written;
 
 const STD_TYPES: &[&str] = &[
     "String", "str", "Vec", "VecDeque", "HashMap", "HashSet", "BTreeMap", "BTreeSet",
@@ -17,6 +19,8 @@ pub(super) struct SelfContext {
     pub(super) trait_name: Option<String>,
     trait_args: Vec<String>,
     is_trait: bool,
+    /// The impl header's `type` field as written (`serde_json::Value`, `&'a mut T`).
+    self_text: String,
 }
 
 fn type_name(node: tree_sitter::Node, text: &str) -> Option<String> {
@@ -39,7 +43,7 @@ impl KernelResolver {
         loop {
             if at.kind() == "trait_item" {
                 return Some(SelfContext { owner: type_name(at.child_by_field_name("name")?, text)?,
-                    root: None, trait_name: None, trait_args: Vec::new(), is_trait: true });
+                    root: None, trait_name: None, trait_args: Vec::new(), is_trait: true, self_text: String::new() });
             }
             if at.kind() == "impl_item" {
                 let ty = at.child_by_field_name("type")?;
@@ -54,7 +58,8 @@ impl KernelResolver {
                         re!(r"[A-Za-z_]\w*").find_iter(&args).map(|m| m.as_str().to_string())
                             .filter(|s| s != "mut" && s != "dyn").collect()
                     }).unwrap_or_default();
-                return Some(SelfContext { owner: type_name(ty, text)?, root, trait_name, trait_args, is_trait: false });
+                return Some(SelfContext { owner: type_name(ty, text)?, root, trait_name, trait_args,
+                    is_trait: false, self_text: written.to_string() });
             }
             at = at.parent()?;
         }
@@ -116,6 +121,296 @@ impl KernelResolver {
             if self.rust_project_type(&ty, false)? { return Ok(self.rust_first_arg_is(&ty, r, &target.name)); }
         }
         Ok(true)
+    }
+
+    /// The `use` path a local name binds at `at` (`use serde_json::Value as J`
+    /// binds `J` to `serde_json::Value`), innermost binding first.
+    fn rust_use_path_at(&mut self, name: &str, file: &str, at: usize) -> Option<Vec<String>> {
+        self.rust_visible_uses(file, at)
+            .into_iter()
+            .find(|(local, _, _)| local == name)
+            .map(|(_, p, _)| p)
+    }
+
+    /// The crate dir a file belongs to: the longest crate dir prefixing it, or
+    /// the root crate's "".
+    fn rust_crate_dir_of(file: &str, graph: &super::rust_crates::RustCrateGraph) -> Option<String> {
+        let mut best = graph.crates.contains_key("").then(String::new);
+        for dir in graph.crates.keys() {
+            if !dir.is_empty()
+                && file.starts_with(&format!("{dir}/"))
+                && best.as_ref().is_none_or(|b| dir.len() > b.len())
+            {
+                best = Some(dir.clone());
+            }
+        }
+        best
+    }
+
+    /// Whether a Rust path's first segment names std, or a crate the manifests
+    /// depend on that the project doesn't hold. A path dependency the project
+    /// holds, a workspace member or not, is the project's.
+    fn is_rust_outside_crate(&mut self, root: &str, r: &ResolveRefIn) -> Res<bool> {
+        if matches!(root, "std" | "core" | "alloc" | "proc_macro") {
+            return Ok(true);
+        }
+        if matches!(root, "crate" | "self" | "super") {
+            return Ok(false);
+        }
+        let graph = self.rust_crate_graph()?;
+        if graph.crates.values().any(|c| c.name == root) {
+            return Ok(false);
+        }
+        let _ = self.rust_use_facts(&r.file_path);
+        let Some(deps) = &self.upstream_rust_deps else {
+            return Ok(false);
+        };
+        if !deps.contains(root) {
+            return Ok(false);
+        }
+        if let Some(own) = Self::rust_crate_dir_of(&r.file_path, &graph) {
+            if graph.crates.get(&own).is_some_and(|c| c.keys.contains_key(root)) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// The name of the type a Rust path `path::type` names from std or a
+    /// dependency, where the file's `use`s or the path itself say it is from
+    /// there — `J` under `use serde_json::Value as J` is `Value` — or None:
+    /// one of the project's, or one nothing written says is from outside it.
+    fn rust_outside_path_type(
+        &mut self,
+        ty: &str,
+        path: &[&str],
+        r: &ResolveRefIn,
+    ) -> Res<Option<String>> {
+        let at = self
+            .rust_tree_for(&r.file_path)
+            .map(|(s, t)| rust_at(&t, s.text(), r.line, r.column).start_byte())
+            .unwrap_or(0);
+        let (root, real);
+        if path.is_empty() {
+            let Some(bound) = self.rust_use_path_at(ty, &r.file_path, at) else {
+                return Ok(None);
+            };
+            if bound.len() < 2 {
+                return Ok(None);
+            }
+            root = bound[0].clone();
+            real = bound.last().unwrap().clone();
+        } else {
+            root = self
+                .rust_use_path_at(path[0], &r.file_path, at)
+                .and_then(|p| p.first().cloned())
+                .unwrap_or_else(|| path[0].to_string());
+            real = ty.to_string();
+        }
+        Ok(self.is_rust_outside_crate(&root, r)?.then_some(real))
+    }
+
+    /// `(segments, name)` of a written Rust path (`serde_json::Value` →
+    /// `(["serde_json"], "Value")`), trailing generic arguments dropped.
+    fn rust_path_head(text: &str) -> Option<(Vec<String>, String)> {
+        let t = text.trim().trim_start_matches("::").trim();
+        let t = if let Some(open) = t.find('<') {
+            let mut depth = 0usize;
+            let mut end = None;
+            for (i, c) in t[open..].char_indices() {
+                match c {
+                    '<' => depth += 1,
+                    '>' => {
+                        depth = depth.checked_sub(1)?;
+                        if depth == 0 {
+                            end = Some(open + i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if end != Some(t.len() - 1) {
+                return None;
+            }
+            t[..open].trim().trim_end_matches("::").trim()
+        } else {
+            t
+        };
+        let parts: Vec<String> = t.split("::").map(|s| s.trim().to_string()).collect();
+        if !parts.iter().all(|p| re!(r"^[A-Za-z_]\w*$").is_match(p)) {
+            return None;
+        }
+        let name = parts.last().cloned()?;
+        Some((parts[..parts.len() - 1].to_vec(), name))
+    }
+
+    /// Whether the type a `Written` names is std's or a dependency's, as the
+    /// written path or the file's `use`s say — the `outside` arm of
+    /// `rustReadType` (#2614): a `std::fs::File` parameter's, a
+    /// `serde_json::Value` the `use` binds, or a `File` leaf the file pulls
+    /// from outside and nothing inside.
+    fn rust_written_outside(
+        &mut self,
+        w: &Written,
+        leaf: &str,
+        head: &str,
+    ) -> Res<bool> {
+        let mut segs: Vec<String> = head.split("::").map(|s| s.trim().to_string()).collect();
+        let single = segs.len() == 1;
+        let mut has_root = !single;
+        if !single {
+            if let Some(bound) = self.rust_use_path_at(&segs[0], &w.file, w.at) {
+                if !bound.is_empty() {
+                    segs.splice(0..1, bound);
+                }
+            }
+        } else if let Some(bound) = self.rust_use_path_at(leaf, &w.file, w.at) {
+            if bound.len() > 1 {
+                segs = bound[..bound.len() - 1].to_vec();
+                has_root = true;
+            }
+        }
+        if has_root {
+            if let Some(root) = segs.first().map(String::as_str) {
+                if matches!(root, "std" | "core" | "alloc") {
+                    return Ok(true);
+                }
+                if !matches!(root, "crate" | "self" | "super")
+                    && !self
+                        .rust_crate_graph()?
+                        .crates
+                        .values()
+                        .any(|c| c.name == root)
+                {
+                    let _ = self.rust_use_facts(&w.file);
+                    if self
+                        .upstream_rust_deps
+                        .as_ref()
+                        .is_some_and(|d| d.contains(root))
+                    {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        if single {
+            let facts = self.rust_use_facts(&w.file).unwrap_or_default();
+            if facts.external.contains(leaf) && !facts.bound.contains(leaf) {
+                return Ok(true);
+            }
+            if STD_TYPES.contains(&leaf) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Whether a Rust call through a type's path can mean `target` (#2614). A
+    /// type the path names from std or a dependency — through the file's `use`
+    /// (`J::from(i)` under `use serde_json::Value as J`, `Value::default()`
+    /// under `use serde_json::Value`) or as written
+    /// (`serde_json::Value::default()`) — is that crate's own: the project
+    /// holds a function of it only as its own impl of a trait for it (`impl
+    /// Blank for serde_json::Value`, `impl From<Fail> for PathBuf`), and a call
+    /// through a trait's path (`W::flush(s)` under `use std::io::Write as W`)
+    /// reaches the project's impls of that trait. A same-named function of a
+    /// project type is another type's: the reporter's `J::from(i)` went to a
+    /// local `impl From<io::Error> for Fail`, a guess by the name alone, and
+    /// `Value::default()` to a project `Value` of its own.
+    pub(super) fn rust_path_call_reachable(&mut self, target: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        if target.language != "rust" {
+            return Ok(true);
+        }
+        let segments: Vec<&str> = r.reference_name.split("::").collect();
+        if segments.len() < 2
+            || !segments.iter().all(|s| re!(r"^[A-Za-z_]\w*$").is_match(s))
+        {
+            return Ok(true);
+        }
+        let ty = segments[segments.len() - 2];
+        if !ty.starts_with(|c: char| c.is_ascii_uppercase()) || ty == "Self" {
+            return Ok(true);
+        }
+        let Some(outside) =
+            self.rust_outside_path_type(ty, &segments[..segments.len() - 2], r)?
+        else {
+            return Ok(true);
+        };
+        if target.kind != "method" {
+            return Ok(false);
+        }
+        let mut site = r.clone().at(target);
+        site.column = target.start_column;
+        let Some(cx) = self.rust_self_context(&site) else {
+            return Ok(false);
+        };
+        if cx.is_trait {
+            return Ok(false);
+        }
+        if cx.trait_name.as_deref() == Some(outside.as_str()) {
+            return Ok(true);
+        }
+        if cx.owner != outside {
+            return Ok(false);
+        }
+        // The type the impl is for, as its own file names it: the outside one,
+        // not a project namesake.
+        let text = re!(r"^(?:&\s*(?:'\w+\s+)?(?:mut\s+)?)+")
+            .replace(&cx.self_text, "")
+            .to_string();
+        let Some((written, name)) = Self::rust_path_head(&text) else {
+            return Ok(false);
+        };
+        let at = self
+            .rust_impl_start(&target.file_path, target.start_line, target.start_column)
+            .unwrap_or(0);
+        let mut segs = written.clone();
+        let mut real = name.clone();
+        if segs.is_empty() {
+            if let Some(bound) = self.rust_use_path_at(&name, &target.file_path, at) {
+                if bound.len() > 1 {
+                    real = bound.last().cloned().unwrap_or(real);
+                    segs = bound[..bound.len() - 1].to_vec();
+                }
+            }
+        } else if let Some(head) = self.rust_use_path_at(&segs[0], &target.file_path, at) {
+            if !head.is_empty() {
+                segs.splice(0..1, head);
+            }
+        }
+        if let Some(root) = segs.first().map(String::as_str) {
+            if matches!(root, "std" | "core" | "alloc") {
+                return Ok(true);
+            }
+            if !matches!(root, "crate" | "self" | "super")
+                && !self
+                    .rust_crate_graph()?
+                    .crates
+                    .values()
+                    .any(|c| c.name == root)
+            {
+                let _ = self.rust_use_facts(&target.file_path);
+                if self
+                    .upstream_rust_deps
+                    .as_ref()
+                    .is_some_and(|deps| deps.contains(root))
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        if !self.rust_project_named(&real)? {
+            return Ok(true);
+        }
+        Ok(!self
+            .rust_type_decls(&Written {
+                text: text.clone(),
+                file: target.file_path.clone(),
+                at,
+            })?
+            .iter()
+            .any(|n| matches!(n.kind.as_str(), "struct" | "enum" | "union")))
     }
 
     fn rust_outside_self(&mut self, cx: &SelfContext, r: &ResolveRefIn) -> Res<bool> {

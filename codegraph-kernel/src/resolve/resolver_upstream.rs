@@ -574,13 +574,18 @@ impl KernelResolver {
         if r.language != "go" || r.reference_kind == "imports" {
             return Ok(None);
         }
-        if let Some((root, _)) = r.reference_name.split_once('.') {
-            if !re!(r"^[A-Za-z_]\w*$").is_match(root) || self.is_shadowed_import(root, r)? { return Ok(None); }
-            if !self.import_mappings(&r.file_path)?.iter().any(|m| m.local_name == root)
-                && self.nodes_by_name(root)?.iter().any(|n| n.language == "go"
-                    && matches!(n.kind.as_str(), "struct" | "interface" | "type_alias")
-                    && pos_dirname(&n.file_path) == pos_dirname(&r.file_path)) { return Ok(None); }
-            return Ok(Some(root.to_string()));
+        if let Some((root, rest)) = r.reference_name.split_once('.') {
+            // The root qualifies the leaf only in a `pkg.Name` ref — in
+            // `pkg.Type[args].M` or `pkg.F().M` it qualifies the receiver,
+            // not the method.
+            if re!(r"^[A-Za-z_]\w*$").is_match(rest) {
+                if !re!(r"^[A-Za-z_]\w*$").is_match(root) || self.is_shadowed_import(root, r)? { return Ok(None); }
+                if !self.import_mappings(&r.file_path)?.iter().any(|m| m.local_name == root)
+                    && self.nodes_by_name(root)?.iter().any(|n| n.language == "go"
+                        && matches!(n.kind.as_str(), "struct" | "interface" | "type_alias")
+                        && pos_dirname(&n.file_path) == pos_dirname(&r.file_path)) { return Ok(None); }
+                return Ok(Some(root.to_string()));
+            }
         }
         let name = r.reference_name.rsplit('.').next().unwrap_or(&r.reference_name);
         if !re!(r"^[A-Za-z_]\w*$").is_match(name) {
@@ -611,7 +616,7 @@ impl KernelResolver {
     }
 
     pub(super) fn go_ref_qualifier(&mut self, r: &ResolveRefIn) -> Res<Option<KImport>> {
-        let Some(root) = self.go_written_qualifier(r)? else { return Ok(None); };
+        let Some(root) = self.go_written_qualifier(r)? else { return Ok(None) };
         Ok(self.import_mappings(&r.file_path)?.iter().find(|imp| imp.local_name == root).cloned())
     }
 

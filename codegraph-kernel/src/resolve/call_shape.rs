@@ -419,7 +419,17 @@ impl KernelResolver {
                 if facts.infix_site == Some(true) && !is_std_method("kotlin",&r.reference_name) {return Ok(true);}
                 if facts.receiver_type.is_none() { facts.receiver_type = Some(self.kotlin_call_receiver_type(r)?); }
                 if let Some(receiver) = facts.receiver_type.as_ref().and_then(Option::as_ref) {
-                    return self.kotlin_receiver_accepts(n, receiver, r);
+                    if self.resolve_bound_type(&receiver.ty, &receiver.site, 0)?.is_some() {
+                        return self.kotlin_receiver_accepts(n, receiver, r);
+                    }
+                    // The receiver's type is no type the project declares
+                    // (`text(): StringBuilder` — the JDK's): only a
+                    // standard-library name constrains it, as upstream's
+                    // kotlinStdChain does; any other name match stands
+                    // unvetoed (#2822).
+                    return Ok(!is_std_method("kotlin", &r.reference_name)
+                        || site.receiver == "this"
+                        || (!site.receiver.is_empty() && shares_receiver_word(&site.receiver, n)));
                 }
                 Ok(!matches!(n.kind.as_str(), "method" | "function") || site.receiver == "this"
                     || (is_std_method("kotlin",&r.reference_name) && !site.receiver.is_empty() && shares_receiver_word(&site.receiver, n))
