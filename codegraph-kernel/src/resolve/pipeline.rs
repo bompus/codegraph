@@ -891,9 +891,15 @@ if super::lang_scope::is_dart_member_read(r) {
         // lookup answers as if no `__mocks__/` file were indexed. Test code,
         // a mock included, keeps the whole graph.
         let mockless = !is_test_path(&r.file_path) && self.manual_mock_names()?.is_some();
+        // classExpressionFreeContextFor (#2499): a ref written outside every
+        // named class expression resolves on a graph without the classes they
+        // declare and their members.
+        let class_free = self.class_expr_free_for(r)?;
         let prev = self.mockless.replace(mockless);
+        let prev_free = self.class_expr_free.replace(class_free);
         let outcome = self.resolve_ref_scoped(r);
         self.mockless.set(prev);
+        self.class_expr_free.set(prev_free);
         outcome
     }
 
@@ -963,10 +969,18 @@ if super::lang_scope::is_dart_member_read(r) {
         }
         if let Some(result) = self.ts_scoped_reference(r)? {
             return match result {
-                Some(candidate) => match self.gate_target_kind(candidate, r)? {
-                    Some(candidate) => self.finish_pre_framework(r, candidate),
-                    None => Ok(self.refused()),
-                },
+                Some(mut candidate) => {
+                    // `extends`/`implements` resolve through the import
+                    // binding at upstream's `import` 0.9; the scoped arm's
+                    // 0.95 is for type-position `references` (#2825's dumps).
+                    if is_inheritance_ref(&r.reference_kind) && candidate.resolved_by == "import" {
+                        candidate.confidence = 0.9;
+                    }
+                    match self.gate_target_kind(candidate, r)? {
+                        Some(candidate) => self.finish_pre_framework(r, candidate),
+                        None => Ok(self.refused()),
+                    }
+                }
                 None => Ok(self.refused()),
             };
         }

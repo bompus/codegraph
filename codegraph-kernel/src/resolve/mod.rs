@@ -429,6 +429,11 @@ impl SourceFile {
         self.text.get_or_init(|| self.lines.join("\n"))
     }
 
+    /// The 0-based line, or None past the file's end.
+    pub(super) fn line(&self, i: usize) -> Option<&str> {
+        self.lines.get(i).map(String::as_str)
+    }
+
     fn dart_tokens(&self) -> &[dart_libraries::DartToken] {
         self.dart_tokens.get_or_init(|| dart_libraries::tokens(self.text()))
     }
@@ -700,6 +705,17 @@ pub struct KernelResolver {
     /// Set for one `resolve_ref` from non-test code: node lookups then
     /// answer as if no `__mocks__/` file were indexed (mocklessContextFor).
     mockless: std::cell::Cell<bool>,
+    /// classExpressions (#2499): the named class expressions' index; `None`
+    /// when the project has none.
+    class_expr_index: OnceCell<Option<Rc<query::ClassExprIndex>>>,
+    /// Set for one `resolve_ref` written outside every named class
+    /// expression: node lookups then answer as if the classes those
+    /// expressions declare and their members were not indexed
+    /// (classExpressionFreeContextFor).
+    class_expr_free: std::cell::Cell<bool>,
+    /// classExpressionOnlyNames' set: the names only class expressions'
+    /// classes and members carry.
+    class_expr_only: OnceCell<Rc<HashSet<String>>>,
     /// A file's bindings rows. Lookups cluster by file, so 128 files keep
     /// nearly every hit: unbounded, n8n's workers held 86-140 MB each.
     bindings_cache: Lru<Rc<Vec<KBinding>>>,
@@ -1013,6 +1029,9 @@ impl KernelResolver {
             table: std::cell::OnceCell::new(),
             mock_names: std::cell::OnceCell::new(),
             mockless: std::cell::Cell::new(false),
+            class_expr_index: std::cell::OnceCell::new(),
+            class_expr_free: std::cell::Cell::new(false),
+            class_expr_only: std::cell::OnceCell::new(),
             lookups: config.query_lookups.unwrap_or(false).then(Default::default),
             db_path: config.db_path,
             generation: config.generation,

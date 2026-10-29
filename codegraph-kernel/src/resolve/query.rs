@@ -36,6 +36,37 @@ fn drop_mock_nodes(list: NodeList) -> NodeList {
     Arc::new(list.iter().filter(|n| !is_manual_mock_path(&n.file_path)).cloned().collect())
 }
 
+/// classExpressions' payload (#2499): the classes named class expressions
+/// declare — by name, by file, the files holding them, and the ids of them
+/// and their members, which a reference outside them resolves without.
+pub(super) struct ClassExprIndex {
+    pub by_name: HashMap<String, Vec<Arc<KNode>>>,
+    pub by_file: HashMap<String, Vec<Arc<KNode>>>,
+    pub files: HashSet<String>,
+    pub hidden_ids: HashSet<String>,
+}
+
+/// CLASS_EXPRESSION_REF_LANGUAGES: the languages a class expression's class
+/// and the references to its name can be written in — TS/JS, and the
+/// scripts of Vue, Svelte and Astro files.
+const CLASS_EXPR_LANGS: &[&str] = &[
+    "typescript", "tsx", "javascript", "jsx", "arkts", "vue", "svelte", "astro",
+];
+
+/// isJsClassExpression — a class a named class expression declares: its
+/// signature is its head (`class Widget extends Base`), which a class
+/// declaration doesn't carry.
+fn is_js_class_expression(n: &KNode) -> bool {
+    n.kind == "class" && n.signature.is_some() && CLASS_EXPR_LANGS.contains(&n.language.as_str())
+}
+
+/// writtenIn — `r` is written inside `node`'s source range.
+fn written_in(n: &KNode, r: &ResolveRefIn) -> bool {
+    n.file_path == r.file_path
+        && (r.line > n.start_line || (r.line == n.start_line && r.column >= n.start_column))
+        && (r.line < n.end_line || (r.line == n.end_line && r.column <= n.end_column))
+}
+
 impl KernelResolver {
     /// The live connection — errors once close() has run. Statements borrow
     /// it, so the Option indirection stays inside this accessor.
@@ -65,50 +96,72 @@ impl KernelResolver {
         })
     }
 
+    /// The class-expression-free view's node filter
+    /// (classExpressionFreeView's `keep`, #2499): the classes named class
+    /// expressions declare and their members, out; order kept.
+    fn drop_class_expr_nodes(&self, list: NodeList) -> Res<NodeList> {
+        let Some(idx) = self.class_expr_index()? else {
+            return Ok(list);
+        };
+        if !list.iter().any(|n| idx.hidden_ids.contains(&n.id)) {
+            return Ok(list);
+        }
+        Ok(Arc::new(list.iter().filter(|n| !idx.hidden_ids.contains(&n.id)).cloned().collect()))
+    }
+
     /// queries.getNodesByName — ORDER BY file_path, start_line.
     pub(super) fn nodes_by_name(&self, name: &str) -> Res<NodeList> {
-        let list = if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::Name(name))) {
+        let mut list = if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::Name(name))) {
             r?
         } else {
             let t = self.table()?;
             t.by_name.get(name).cloned().unwrap_or_else(|| t.empty.clone())
         };
         // Only a name some mock declares can lose a node (mocklessContextFor).
-        if !self.mockless.get() || !self.manual_mock_names()?.is_some_and(|m| m.names.contains(name)) {
-            return Ok(list);
+        if self.mockless.get() && self.manual_mock_names()?.is_some_and(|m| m.names.contains(name)) {
+            list = drop_mock_nodes(list);
         }
-        Ok(drop_mock_nodes(list))
+        if self.class_expr_free.get() {
+            list = self.drop_class_expr_nodes(list)?;
+        }
+        Ok(list)
     }
 
     /// queries.getNodesByLowerName — `WHERE lower(name) = lower(?)`, no
     /// ORDER BY (rowid order, same as the TS reader).
     pub(super) fn nodes_by_lower_name(&self, name: &str) -> Res<NodeList> {
-        let list = if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::Lower(name))) {
+        let mut list = if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::Lower(name))) {
             r?
         } else {
             let t = self.table()?;
             t.by_lower().get(&name.to_ascii_lowercase()).cloned().unwrap_or_else(|| t.empty.clone())
         };
-        if !self.mockless.get()
-            || !self.manual_mock_names()?.is_some_and(|m| m.lower.contains(&name.to_lowercase()))
+        if self.mockless.get()
+            && self.manual_mock_names()?.is_some_and(|m| m.lower.contains(&name.to_lowercase()))
         {
-            return Ok(list);
+            list = drop_mock_nodes(list);
         }
-        Ok(drop_mock_nodes(list))
+        if self.class_expr_free.get() {
+            list = self.drop_class_expr_nodes(list)?;
+        }
+        Ok(list)
     }
 
     /// queries.getNodesByQualifiedName — no ORDER BY (TS uses rowid order).
     pub(super) fn nodes_by_qualified_name(&self, qname: &str) -> Res<NodeList> {
-        let list = if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::QualifiedName(qname))) {
+        let mut list = if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::QualifiedName(qname))) {
             r?
         } else {
             let t = self.table()?;
             t.by_qname.get(qname).cloned().unwrap_or_else(|| t.empty.clone())
         };
-        if !self.mockless.get() || self.manual_mock_names()?.is_none() {
-            return Ok(list);
+        if self.mockless.get() && self.manual_mock_names()?.is_some() {
+            list = drop_mock_nodes(list);
         }
-        Ok(drop_mock_nodes(list))
+        if self.class_expr_free.get() {
+            list = self.drop_class_expr_nodes(list)?;
+        }
+        Ok(list)
     }
 
     /// manualMockNames (resolution/index.ts #2455): the names every Jest or
@@ -125,7 +178,7 @@ impl KernelResolver {
         let mut names = HashSet::new();
         let mut lower = HashSet::new();
         for file in files.iter().filter(|f| is_manual_mock_path(f)) {
-            for n in self.nodes_in_file(file)?.iter() {
+            for n in self.nodes_in_file_unfiltered(file)?.iter() {
                 lower.insert(n.name.to_lowercase());
                 names.insert(n.name.clone());
             }
@@ -134,8 +187,149 @@ impl KernelResolver {
         Ok(self.mock_names.get_or_init(|| v).clone())
     }
 
-    /// queries.getNodesInFile — ORDER BY start_line.
+    /// classExpressions (resolution/index.ts #2499): the classes named class
+    /// expressions declare — by name, by file, the files holding them, and
+    /// the ids of them and their members. A class a CommonJS module exports
+    /// is left out: the module binds it, so it reads as a declaration does.
+    /// Read once — the node table it feeds is a run constant.
+    pub(super) fn class_expr_index(&self) -> Res<Option<Rc<ClassExprIndex>>> {
+        if let Some(v) = self.class_expr_index.get() {
+            return Ok(v.clone());
+        }
+        let mut by_name: HashMap<String, Vec<Arc<KNode>>> = HashMap::new();
+        let mut by_file: HashMap<String, Vec<Arc<KNode>>> = HashMap::new();
+        let mut by_key: HashMap<(String, String), Arc<KNode>> = HashMap::new();
+        let mut files = HashSet::new();
+        let mut hidden_ids = HashSet::new();
+        for n in self.nodes_by_kind("class")?.iter() {
+            if !is_js_class_expression(n) || self.class_expr_common_js_exported(n) {
+                continue;
+            }
+            by_name.entry(n.name.clone()).or_default().push(n.clone());
+            by_file.entry(n.file_path.clone()).or_default().push(n.clone());
+            by_key.insert((n.file_path.clone(), n.qualified_name.clone()), n.clone());
+            files.insert(n.file_path.clone());
+            hidden_ids.insert(n.id.clone());
+        }
+        // A member is its class's when it is declared in its file under its
+        // qualified name (`Widget::run` of `Widget`).
+        for file in &files {
+            for n in self.nodes_in_file_unfiltered(file)?.iter() {
+                if !matches!(n.kind.as_str(), "method" | "property" | "field") {
+                    continue;
+                }
+                if let Some(cut) = n.qualified_name.rfind("::") {
+                    if by_key.contains_key(&(n.file_path.clone(), n.qualified_name[..cut].to_string())) {
+                        hidden_ids.insert(n.id.clone());
+                    }
+                }
+            }
+        }
+        let v = (!by_name.is_empty()).then(|| Rc::new(ClassExprIndex { by_name, by_file, files, hidden_ids }));
+        Ok(self.class_expr_index.get_or_init(|| v).clone())
+    }
+
+    /// isCommonJsExportedClass — `module.exports = class Router {…}` and
+    /// `exports.Store = class Store {…}` are their module's value, which a
+    /// require hands to every importer: the class is not scoped.
+    fn class_expr_common_js_exported(&self, n: &KNode) -> bool {
+        let Some(file) = self.read_file_uncached(&n.file_path) else {
+            return false;
+        };
+        let prev = (n.start_line >= 2)
+            .then(|| file.line((n.start_line - 2) as usize))
+            .flatten()
+            .unwrap_or("");
+        let Some(line) = file.line((n.start_line - 1) as usize) else {
+            return false;
+        };
+        let before = format!(
+            "{prev}\n{}",
+            &line[..usize::try_from(n.start_column).unwrap_or(0).min(line.len())]
+        );
+        re!(r"(?:^|[^\w$.])(?:module\.)?exports(?:\.[A-Za-z_$][\w$]*)?\s*=\s*$").is_match(&before)
+    }
+
+    /// classExpressionFreeContextFor (#2499): a reference written outside
+    /// every named class expression resolves without the classes they
+    /// declare and their members — `new Widget()` elsewhere links nothing,
+    /// and a same-named class, function or binding keeps its links. Inside
+    /// one the whole graph applies, unless the name is another class
+    /// expression's, bound inside that one alone.
+    pub(super) fn class_expr_free_for(&self, r: &ResolveRefIn) -> Res<bool> {
+        if !CLASS_EXPR_LANGS.contains(&r.language.as_str()) {
+            return Ok(false);
+        }
+        let Some(idx) = self.class_expr_index()? else {
+            return Ok(false);
+        };
+        let first = r.reference_name.split('.').next().unwrap_or("");
+        let named = idx.by_name.get(first);
+        let inside = idx
+            .by_file
+            .get(&r.file_path)
+            .is_some_and(|ns| ns.iter().any(|n| written_in(n, r)));
+        Ok(!inside || named.is_some_and(|ns| !ns.iter().any(|n| written_in(n, r))))
+    }
+
+    /// classExpressionOnlyNames (#2499): the names only class expressions'
+    /// classes and members carry — they name nothing in the free view, so
+    /// the prefilter drops the references that would search for them.
+    fn class_expr_only_names(&self) -> Res<Rc<HashSet<String>>> {
+        if let Some(v) = self.class_expr_only.get() {
+            return Ok(v.clone());
+        }
+        let mut only = HashSet::new();
+        if let Some(idx) = self.class_expr_index()? {
+            let mut names = HashSet::new();
+            for id in &idx.hidden_ids {
+                if let Some(n) = self.node_by_id(id)? {
+                    names.insert(n.name.clone());
+                }
+            }
+            for name in names {
+                if self
+                    .nodes_by_name(&name)?
+                    .iter()
+                    .all(|n| idx.hidden_ids.contains(&n.id))
+                {
+                    only.insert(name);
+                }
+            }
+        }
+        Ok(self.class_expr_only.get_or_init(|| Rc::new(only)).clone())
+    }
+
+    /// queries.getNodesByKind — ORDER BY file_path, start_line. The
+    /// class-expression index's raw read: no resolution path iterates nodes
+    /// by kind, so the free view has nothing to hide through it.
+    pub(super) fn nodes_by_kind(&self, kind: &str) -> Res<NodeList> {
+        if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::Kind(kind))) {
+            return r;
+        }
+        let t = self.table()?;
+        Ok(Arc::new(t.nodes.iter().filter(|n| n.kind == kind).cloned().collect()))
+    }
+
+    /// queries.getNodesInFile — ORDER BY start_line. In the
+    /// class-expression-free view the classes' files lose their hidden
+    /// nodes; the lookups an import reads a module's exports by
+    /// (`file_export_index`, `manual_mock_names`) stay whole.
     pub(super) fn nodes_in_file(&self, file_path: &str) -> Res<NodeList> {
+        let list = self.nodes_in_file_unfiltered(file_path)?;
+        if self.class_expr_free.get()
+            && self
+                .class_expr_index()?
+                .is_some_and(|idx| idx.files.contains(file_path))
+        {
+            return self.drop_class_expr_nodes(list);
+        }
+        Ok(list)
+    }
+
+    /// `nodes_in_file` before either resolution view filters it — what the
+    /// indexes and the export lookups read.
+    pub(super) fn nodes_in_file_unfiltered(&self, file_path: &str) -> Res<NodeList> {
         if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::File(file_path))) {
             return r;
         }
@@ -160,12 +354,18 @@ impl KernelResolver {
     }
 
     /// knownSymbols membership (`SELECT DISTINCT name FROM nodes`); false
-    /// once closed.
+    /// once closed. In the class-expression-free view a name only their
+    /// classes and members carry names nothing (classExpressionOnlyNames,
+    /// #2499).
     pub(super) fn known_name(&self, name: &str) -> bool {
-        if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::Name(name))) {
-            return r.is_ok_and(|list| !list.is_empty());
-        }
-        self.table().is_ok_and(|t| t.by_name.contains_key(name))
+        let known = if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::Name(name))) {
+            r.is_ok_and(|list| !list.is_empty())
+        } else {
+            self.table().is_ok_and(|t| t.by_name.contains_key(name))
+        };
+        known
+            && !(self.class_expr_free.get()
+                && self.class_expr_only_names().is_ok_and(|o| o.contains(name)))
     }
 
     /// knownFiles membership (`SELECT path FROM files`); false once closed.
@@ -359,7 +559,7 @@ impl KernelResolver {
         if let Some(v) = self.export_index.get(file_path) {
             return Ok(v.clone());
         }
-        let nodes = self.nodes_in_file(file_path)?;
+        let nodes = self.nodes_in_file_unfiltered(file_path)?;
         let mut by_name: HashMap<String, Arc<KNode>> = HashMap::new();
         let mut default_component: Option<Arc<KNode>> = None;
         for n in nodes.iter() {
