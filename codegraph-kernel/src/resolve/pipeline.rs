@@ -943,6 +943,23 @@ if super::lang_scope::is_dart_member_read(r) {
         } else { None };
         let answer = attribute.as_ref().map(|a| (a.claimed, a.target_node_id.clone()));
         let mut outcome = self.resolve_ref_inner(r, answer)?;
+        // A declaration of a declaration file's `declare module 'x'` is
+        // reached through an import of `x`, never by its bare name from a
+        // file that reaches no `x` (reachesAmbientModule, index.ts's
+        // resolveOne gate).
+        if outcome.status == "resolved" && outcome.resolved_by.as_deref() != Some("import") {
+            if let Some(tid) = outcome.target_node_id.clone() {
+                if let Some(target) = self.node_by_id(&tid)? {
+                    if target.file_path != r.file_path {
+                        if let Some(specifier) = self.ambient_specifier_of(&target)? {
+                            if !self.reaches_ambient_module(r, &specifier, &target.file_path)? {
+                                outcome = ResolveOutcome::unresolved();
+                            }
+                        }
+                    }
+                }
+            }
+        }
         // A Pascal call to data runs only a routine the data holds, in
         // scope, and one to a routine nested in another comes only from
         // inside that one (gatePascalCall, resolveOne).

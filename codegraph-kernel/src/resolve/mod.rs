@@ -267,6 +267,10 @@ pub struct ResolveOutcome {
     /// an import binds, so a sync can park the call under that import's module.
     pub type_head: Option<String>,
     pub type_from: Option<Vec<String>>,
+    /// A function used as a value resolved here (a paren-less Pascal method
+    /// pointer — TS's `metadata: { fnRef: true }` on matchPascalParenlessRef).
+    /// `function_ref` refs get the marker from their reference kind instead.
+    pub fn_ref: Option<bool>,
 }
 
 impl ResolveOutcome {
@@ -284,6 +288,7 @@ impl ResolveOutcome {
             pre_framework: false,
             type_head: None,
             type_from: None,
+            fn_ref: None,
         }
     }
     /// Frameworks are active and the kernel found no name/import candidate —
@@ -336,6 +341,7 @@ impl ResolveOutcome {
             pre_framework: false,
             type_head: None,
             type_from: None,
+            fn_ref: None,
         }
     }
 }
@@ -863,6 +869,15 @@ pub struct KernelResolver {
     /// local_declaration_scope, by candidate id — its own map so the key
     /// needs no "local:"-prefixed format! alloc.
     local_decl_scope_memo: HashMap<String, Option<(i64, i64)>>,
+    /// local_decl_at, by (file, name, site byte) — the typed Go receiver
+    /// path (`go_local_declaration_at`, `go_named_local_written`) and the
+    /// import-shadow gate walk the same ancestors for the same name+site.
+    /// The value keeps the target identifier's byte range so a caller that
+    /// needs the node itself can re-derive it from the tree.
+    go_local_decl_memo: HashMap<(String, String, usize), go_asserted::GoDeclHit>,
+    /// go_asserted_local_type, by (file, name, line, column) — the asserted
+    /// receiver check runs again inside go_named_local_written.
+    go_asserted_type_memo: HashMap<(String, String, i64, i64), Option<String>>,
     language_type_scope_memo: HashMap<String, Rc<language_type_scope::LanguageTypeScope>>,
     scala_package_object_membership_memo: HashMap<String, Option<(String, i64, i64)>>,
     cpp_default_declaration_memo: HashMap<String, declarations_upstream::CppDefaultDeclarationIndex>,
@@ -1124,6 +1139,8 @@ impl KernelResolver {
             bare_receiver_memo: HashMap::new(),
             gen_path_memo: HashMap::new(),
             local_decl_scope_memo: HashMap::new(),
+            go_local_decl_memo: HashMap::new(),
+            go_asserted_type_memo: HashMap::new(),
             language_type_scope_memo: HashMap::new(),
             scala_package_object_membership_memo: HashMap::new(),
             cpp_default_declaration_memo: HashMap::new(),

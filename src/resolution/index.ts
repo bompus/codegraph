@@ -1448,7 +1448,9 @@ export class ReferenceResolver {
       targetNodeId: outcome.targetNodeId,
       edgeKind: outcome.edgeKind as ResolvedRef['edgeKind'],
       alsoTargets: outcome.alsoTargetNodeIds?.map(targetNodeId => ({ targetNodeId })),
-      ...(outcome.typeFrom?.length ? { metadata: { typeFrom: outcome.typeFrom } } : {}),
+      ...(outcome.typeFrom?.length || outcome.fnRef
+        ? { metadata: { ...(outcome.typeFrom?.length ? { typeFrom: outcome.typeFrom } : {}), ...(outcome.fnRef ? { fnRef: true } : {}) } }
+        : {}),
       confidence: outcome.confidence ?? 0,
       resolvedBy: (outcome.resolvedBy ?? 'exact-match') as ResolvedRef['resolvedBy'],
     };

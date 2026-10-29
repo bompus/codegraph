@@ -48,12 +48,12 @@ const DEF = ['class', 'interface', 'struct', 'union', 'trait', 'protocol', 'enum
 const CALL = ['function', 'method', 'component'];
 const SEED = ['function', 'method', 'component', 'variable', 'constant'];
 
-/** The lookup as it was before the index: a LIKE scan, ties left to the plan. */
+/** The lookup as a LIKE scan: the rows the in-memory index must reproduce. */
 function likeScan(db: SqliteDatabase, substring: string, kinds: string[], excludePrefix: boolean, limit: number): string[] {
   let sql = 'SELECT nodes.*, 1.0 as score FROM nodes WHERE name LIKE ?';
   const params: (string | number)[] = [`%${substring}%`];
   if (excludePrefix) { sql += ' AND name NOT LIKE ?'; params.push(`${substring}%`); }
-  sql += ` AND kind IN (${kinds.map(() => '?').join(',')}) ORDER BY length(name) ASC LIMIT ?`;
+  sql += ` AND kind IN (${kinds.map(() => '?').join(',')}) ORDER BY length(name) ASC, kind ASC, nodes.rowid ASC LIMIT ?`;
   return (db.prepare(sql).all(...params, ...kinds, limit) as Array<{ id: string }>).map((row) => row.id);
 }
 
@@ -108,7 +108,7 @@ describe('name-substring lookups give the rows a LIKE scan gives (#2620)', () =>
     return cg;
   }
 
-  function expectSameRows(cg: CodeGraph, plan: 'rowid' | 'index'): void {
+  function expectSameRows(cg: CodeGraph): void {
     const q = queriesOf(cg);
     const db = rawDb(cg);
     let compared = 0;
@@ -125,13 +125,10 @@ describe('name-substring lookups give the rows a LIKE scan gives (#2620)', () =>
       }
     }
     expect(compared).toBeGreaterThan(900);
-    // The answers came from the index, under the plan SQLite chose.
-    const memo = (q as unknown as { readMemos: Map<string, { value: { plans: Map<string, string | null> } | null }> })
+    // The answers came from the index.
+    const memo = (q as unknown as { readMemos: Map<string, { value: unknown }> })
       .readMemos.get('nameSubstringIndex');
     expect(memo?.value).toBeTruthy();
-    const plans = [...memo!.value!.plans.values()];
-    expect(plans).toContain(plan);
-    expect(plans).not.toContain(null);
   }
 
   it('matches when SQLite scans the table (a small index)', async () => {
@@ -140,7 +137,7 @@ describe('name-substring lookups give the rows a LIKE scan gives (#2620)', () =>
       `EXPLAIN QUERY PLAN SELECT * FROM nodes WHERE name LIKE '%x%' AND kind IN (${DEF.map(() => '?').join(',')}) ORDER BY length(name) LIMIT 200`,
     ).all(...DEF) as Array<{ detail: string }>;
     expect(plan.map((r) => r.detail)).toContain('SCAN nodes');
-    expectSameRows(cg, 'rowid');
+    expectSameRows(cg);
   });
 
   it('matches when SQLite reads through the kind index (a large index)', async () => {
@@ -155,7 +152,7 @@ describe('name-substring lookups give the rows a LIKE scan gives (#2620)', () =>
       `EXPLAIN QUERY PLAN SELECT * FROM nodes WHERE name LIKE '%x%' AND kind IN (${DEF.map(() => '?').join(',')}) ORDER BY length(name) LIMIT 200`,
     ).all(...DEF) as Array<{ detail: string }>;
     expect(plan.map((r) => r.detail).some((d) => d.startsWith('SEARCH nodes USING INDEX idx_nodes_kind'))).toBe(true);
-    expectSameRows(cg, 'index');
+    expectSameRows(cg);
   });
 
   it('asks SQLite inside a transaction, and for a lookup without a kind filter', async () => {

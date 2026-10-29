@@ -25,6 +25,11 @@ fn is_member_owner_kind(kind: &str) -> bool {
 /// Lines of a class header the type-parameter reader looks through: decorators, then `class C<…>` over several lines.
 const TS_CLASS_HEAD_LINES: usize = 24;
 
+/// LAST_NAME_KINDS (import-resolver.ts): the kinds whose last name segment an
+/// ambient declaration can answer even when no import binds the name itself.
+const LAST_NAME_KINDS: &[&str] =
+    &["references", "extends", "implements", "type_of", "returns", "instantiates"];
+
 impl KernelResolver {
     /// tsTypeDeclaredIn: the class or interface named `name` that `file` declares.
     pub(super) fn ts_type_declared_in(&mut self, file: &str, name: &str) -> Res<Option<Arc<KNode>>> {
@@ -1091,6 +1096,109 @@ impl KernelResolver {
         let hit = hits.into_iter().next();
         self.ts_ambient_memo.insert(memo_key, hit.as_ref().map(|n| n.file_path.clone()));
         Ok(hit)
+    }
+
+    /// ambientModuleDeclarations (index.ts): the specifier of the ambient
+    /// `declare module 'x'` block a block-level declaration sits in.
+    pub(super) fn ambient_specifier_of(&mut self, node: &KNode) -> Res<Option<String>> {
+        if node.qualified_name != node.name
+            || !matches!(
+                node.kind.as_str(),
+                "function" | "class" | "interface" | "type_alias" | "enum" | "constant" | "variable" | "component"
+            )
+        {
+            return Ok(None);
+        }
+        let Some(scan) = self.ts_scope_scan(&node.file_path) else { return Ok(None) };
+        Ok(scan
+            .blocks
+            .iter()
+            .find(|b| b.ambient && b.contains(node.start_line, node.start_column))
+            .map(|b| b.name.clone()))
+    }
+
+    /// isInModuleBlock: the ref itself sits inside `declare module
+    /// 'specifier'` — its declarations merge with the module's own.
+    fn ref_in_module_block(&mut self, r: &ResolveRefIn, specifier: &str) -> Res<bool> {
+        let Some(scan) = self.ts_scope_scan(&r.file_path) else { return Ok(false) };
+        Ok(scan.blocks.iter().any(|b| {
+            b.ambient
+                && b.name.strip_prefix("node:").unwrap_or(&b.name) == specifier
+                && b.contains(r.line, r.column)
+        }))
+    }
+
+    /// leadsTo (reachesAmbientModule): `source` reaches the ambient specifier
+    /// — it is the specifier, or a project path that resolves to the
+    /// declaring file, or (when `through`) to a file that imports the
+    /// specifier.
+    fn leads_to_ambient(
+        &mut self,
+        source: &str,
+        specifier: &str,
+        declaring_file: &str,
+        r: &ResolveRefIn,
+        through: bool,
+    ) -> Res<bool> {
+        if source == specifier {
+            return Ok(true);
+        }
+        if !(source.starts_with('.') || source.starts_with('/')) {
+            return Ok(false);
+        }
+        let Some(file) = self.resolve_import_path(source, &r.file_path, &r.language)? else {
+            return Ok(false);
+        };
+        if file == declaring_file {
+            return Ok(true);
+        }
+        if !through {
+            return Ok(false);
+        }
+        let rows = self.bindings(&file)?;
+        Ok(rows.iter().any(|b| b.kind == "import" && b.target_spec.as_deref() == Some(specifier)))
+    }
+
+    /// reachesAmbientModule (import-resolver.ts): the ambient declaration is
+    /// reached through an import of its specifier — the ref's own `declare
+    /// module` block merges with it; otherwise the name's binding (or, for a
+    /// last-name-kind ref, any of the file's imports) must reach the
+    /// specifier or the declaring file itself.
+    pub(super) fn reaches_ambient_module(
+        &mut self,
+        r: &ResolveRefIn,
+        specifier: &str,
+        declaring_file: &str,
+    ) -> Res<bool> {
+        if self.ref_in_module_block(r, specifier)? {
+            return Ok(true);
+        }
+        let head = r.reference_name.split('.').next().unwrap_or("");
+        let binding = {
+            let rows = self.bindings(&r.file_path)?;
+            rows.iter()
+                .find(|b| b.kind == "import" && b.name == head)
+                .and_then(|b| b.target_spec.clone())
+        };
+        if let Some(source) = binding {
+            return self.leads_to_ambient(&source, specifier, declaring_file, r, true);
+        }
+        if !LAST_NAME_KINDS.contains(&r.reference_kind.as_str()) {
+            return Ok(false);
+        }
+        let sources: Vec<String> = {
+            let rows = self.bindings(&r.file_path)?;
+            rows.iter()
+                .filter(|b| b.kind == "import")
+                .filter_map(|b| b.target_spec.clone())
+                .collect()
+        };
+        for source in sources {
+            if self.leads_to_ambient(&source, specifier, declaring_file, r, false)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn ts_declared_ambient_receiver(&mut self, receiver: &str, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {

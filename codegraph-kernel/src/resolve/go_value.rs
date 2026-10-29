@@ -517,20 +517,21 @@ impl KernelResolver {
         file_text: &str,
         r: &ResolveRefIn,
     ) -> Res<Option<(String, String)>> {
-        use super::go_asserted::local_declaration_in;
         let file = r.file_path.clone();
-        let mut scope = anchor;
-        let found = loop {
-            if let Some(hit) = local_declaration_in(scope, name, anchor.start_byte(), file_text) {
-                break Some(hit);
-            }
-            match scope.parent() {
-                Some(p) => scope = p,
-                None => break None,
+        // The same walk `go_local_declaration_at` memoizes — the typed path
+        // asks for this name at this site more than once per ref.
+        let key = (file.clone(), name.to_string(), anchor.start_byte());
+        let found = match self.go_local_decl_memo.get(&key) {
+            Some(hit) => hit.clone(),
+            None => {
+                let hit = super::go_asserted::local_decl_at(file_text, name, anchor)
+                    .map(|(t, decl)| (t.start_byte(), t.end_byte(), decl));
+                self.go_local_decl_memo.insert(key, hit.clone());
+                hit
             }
         };
-        if let Some((target, declared)) = found {
-            if let Some(t) = declared {
+        if let Some((ts, te, decl)) = found {
+            if let Some(t) = decl.declared_type {
                 return Ok(Some((t, file)));
             }
             if let Some(w) = self.go_asserted_local_type(name, r) {
@@ -538,7 +539,11 @@ impl KernelResolver {
             }
             // An untyped `:=`/`var` — read the initializer itself:
             // `&m.F`, `f()`, `x[i]`, `[]T(v)` all carry a type.
-            if let Some((rhs, pos, range)) = Self::decl_rhs_node(target, name, file_text) {
+            let target_tree = self.read_file(&file).and_then(|f| self.parsed_tree(&f, r));
+            let target = target_tree
+                .as_ref()
+                .and_then(|tree| tree.root_node().descendant_for_byte_range(ts, te));
+            if let Some((rhs, pos, range)) = target.and_then(|t| Self::decl_rhs_node(t, name, file_text)) {
                 let w = self.go_expr_written_at(rhs, if range { 0 } else { pos }, file_text, r)?
                     .map(|(t, f)| if range { (Self::go_range_pick(&t, pos), f) } else { (t, f) });
                 if let Some(t) = w {

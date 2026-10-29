@@ -791,6 +791,34 @@ impl KernelResolver {
         best
     }
 
+    /// innerScopeShadows (name-matcher.ts): of the same-name nodes, those the
+    /// ref's own file declares strictly inside a function or method — a
+    /// nested declaration shadows an out-of-repo import binding; a top-level
+    /// one does not (#2491).
+    fn inner_scope_shadows(&mut self, nodes: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
+        let local: Vec<Arc<KNode>> = nodes.into_iter().filter(|n| n.file_path == r.file_path).collect();
+        if local.is_empty() {
+            return Ok(local);
+        }
+        let scopes: Vec<Arc<KNode>> = self
+            .nodes_in_file(&r.file_path)?
+            .iter()
+            .filter(|n| n.kind == "function" || n.kind == "method")
+            .cloned()
+            .collect();
+        Ok(local
+            .into_iter()
+            .filter(|n| {
+                scopes.iter().any(|s| {
+                    s.id != n.id
+                        && s.start_line <= n.start_line
+                        && s.end_line >= n.end_line
+                        && (s.start_line < n.start_line || s.end_line > n.end_line)
+                })
+            })
+            .collect())
+    }
+
     /// matchByExactName (name-matcher.ts).
     pub(super) fn match_by_exact_name(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let found = self.match_by_exact_name_uncapped(r)?;
@@ -805,6 +833,18 @@ impl KernelResolver {
         let bare_go = self.is_bare_go_call(r)?;
         let bare_r = self.is_bare_r_call(r);
         let bare_php = self.is_bare_php_call(r)?;
+        // A type, a value or an import the file binds from a package outside
+        // the repository names nothing in it, whatever kind of reference it
+        // is (upstream's early null in matchByExactName, #2491).
+        if !bare_js
+            && is_js_family(&r.language)
+            && r.reference_kind != "calls"
+            && re!(r"^[A-Za-z_$][\w$]*$").is_match(&r.reference_name)
+            && self.js_out_of_repo_binding(r)?
+        {
+            return Ok(None);
+        }
+        let mut out_of_repo_call = false;
         if bare_js {
             if self.is_param_shadowed(r)? {
                 return Ok(None);
@@ -812,8 +852,18 @@ impl KernelResolver {
             if let Some(c) = self.match_js_store_binding_call(r)? {
                 return Ok(Some(c));
             }
+            // `import { useQuery } …`, or an in-scope `await import()`: the
+            // call means the package's, and no other file's same-named
+            // symbol — only a declaration nested in this file's own inner
+            // scope still shadows it.
+            out_of_repo_call = self.js_out_of_repo_binding(r)?;
         }
         let named = self.nodes_by_name(&r.reference_name)?;
+        let named = if out_of_repo_call {
+            Arc::new(self.inner_scope_shadows(named.to_vec(), r)?)
+        } else {
+            named
+        };
         // Big same-name pools make a bare match pathological: a name like
         // `t` gets thousands of candidates whose retain/scope checks
         // dominate a whole batch (pretix's fabric.min.js: ~950ms per

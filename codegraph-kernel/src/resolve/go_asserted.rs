@@ -146,6 +146,14 @@ impl KernelResolver {
     /// of `name` in scope at `r` binds the value of a type assertion.
     pub(super) fn go_asserted_local_type(&mut self, name: &str, r: &ResolveRefIn) -> Option<String> {
         if r.language != "go" || name.is_empty() || !name.bytes().all(|b| b == b'_' || b.is_ascii_alphanumeric()) { return None; }
+        let key = (r.file_path.clone(), name.to_string(), r.line, r.column);
+        if let Some(hit) = self.go_asserted_type_memo.get(&key) { return hit.clone(); }
+        let out = self.go_asserted_local_type_uncached(name, r);
+        self.go_asserted_type_memo.insert(key, out.clone());
+        out
+    }
+
+    fn go_asserted_local_type_uncached(&mut self, name: &str, r: &ResolveRefIn) -> Option<String> {
         let file = self.read_file(&r.file_path)?;
         let text = file.text();
         // Only a file that asserts a type can bind from one.
@@ -344,7 +352,12 @@ pub(super) fn local_declaration_in<'a>(scope: TsNode<'a>, name: &str, site: usiz
 }
 
 #[cfg_attr(feature = "addon", napi(object))]
+#[derive(Clone)]
 pub struct GoLocalDeclaration { pub line: i64, pub column: i64, pub declared_type: Option<String> }
+
+/// A memoized `local_decl_at` result: the target identifier's byte range
+/// plus its declaration, for callers that re-derive the node.
+pub(super) type GoDeclHit = Option<(usize, usize, GoLocalDeclaration)>;
 
 /// Source-only lexical lookup. Synthesis must not attach to the live WAL.
 #[cfg_attr(feature = "addon", napi)]
@@ -367,14 +380,14 @@ impl GoSourceScope {
     }
 }
 
-fn local_at(tree: &tree_sitter::Tree, source: &str, name: &str, line: i64, column: i64) -> Option<GoLocalDeclaration> {
-        let site = super::iteration::descendant_for_position(tree.root_node(), source,
-            ((line - 1).max(0) as usize, column.max(0) as usize));
+/// The ancestor walk shared by `local_at`, the resolver's decl memo and
+/// `go_named_local_written`: the target identifier node plus its declaration.
+pub(super) fn local_decl_at<'a>(source: &str, name: &str, site: TsNode<'a>) -> Option<(TsNode<'a>, GoLocalDeclaration)> {
         let mut scope = Some(site);
         while let Some(node) = scope {
             if let Some((target, ty)) = local_declaration_in(node, name, site.start_byte(), source) {
-                return Some(GoLocalDeclaration { line: target.start_position().row as i64 + 1,
-                    column: target.start_position().column as i64, declared_type: ty });
+                return Some((target, GoLocalDeclaration { line: target.start_position().row as i64 + 1,
+                    column: target.start_position().column as i64, declared_type: ty }));
             }
             if matches!(node.kind(), "function_declaration" | "method_declaration") { break; }
             scope = node.parent();
@@ -382,13 +395,27 @@ fn local_at(tree: &tree_sitter::Tree, source: &str, name: &str, line: i64, colum
         None
 }
 
+fn local_at(tree: &tree_sitter::Tree, source: &str, name: &str, line: i64, column: i64) -> Option<GoLocalDeclaration> {
+        let site = super::iteration::descendant_for_position(tree.root_node(), source,
+            ((line - 1).max(0) as usize, column.max(0) as usize));
+        local_decl_at(source, name, site).map(|(_, decl)| decl)
+}
+
 impl KernelResolver {
     pub(super) fn go_local_declaration_at(&mut self, name: String, file_path: String, line: i64, column: i64) -> Result<Option<GoLocalDeclaration>> {
         let r = ResolveRefIn { row_id: None, from_node_id: String::new(), reference_name: name.clone(), reference_kind: "references".into(),
             line, column, candidates: None, file_path: file_path.clone(), language: "go".into(), failure_reason: None, generated: None };
-        let Some(file) = self.read_file(&file_path) else { return Ok(None) };
-        let Some(tree) = self.parsed_tree(&file, &r) else { return Ok(None) };
-        Ok(local_at(&tree, file.text(), &name, line, column))
+        let out = self.read_file(&file_path).and_then(|file| self.parsed_tree(&file, &r).map(|tree| {
+            let site = super::iteration::descendant_for_position(tree.root_node(), file.text(),
+                ((line - 1).max(0) as usize, column.max(0) as usize));
+            let key = (file_path.clone(), name.clone(), site.start_byte());
+            if let Some(hit) = self.go_local_decl_memo.get(&key) { return hit.clone(); }
+            let hit = local_decl_at(file.text(), &name, site)
+                .map(|(t, decl)| (t.start_byte(), t.end_byte(), decl));
+            self.go_local_decl_memo.insert(key, hit.clone());
+            hit
+        })).unwrap_or_default();
+        Ok(out.map(|(_, _, decl)| decl))
     }
 }
 

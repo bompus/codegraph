@@ -726,6 +726,43 @@ impl KernelResolver {
         Ok(false)
     }
 
+    /// isOutOfRepoBinding (name-matcher.ts #2491): the module the innermost
+    /// in-scope import binding for the ref's name comes from — a dynamic
+    /// `await import()`/`require()` binding, scoped to its block, wins over
+    /// the file's static one — or, for an `imports` ref, the module it
+    /// re-exports. True when that module is outside the repository.
+    pub(super) fn js_out_of_repo_binding(&mut self, r: &ResolveRefIn) -> Res<bool> {
+        if !is_js_family(&r.language) || !re!(r"^[A-Za-z_$][\w$]*$").is_match(&r.reference_name) {
+            return Ok(false);
+        }
+        // The bindings table scopes a dynamic `await import()`/`require()`
+        // row to its block and a static import to the whole file, so the
+        // narrowest import row in scope at the ref is upstream's
+        // `dynamicImportSource(name, ref) ?? binding?.source` in one lookup:
+        // an in-scope dynamic row is narrower and wins, and no in-scope row
+        // at all means no static mapping either.
+        let scoped = {
+            let rows = self.bindings(&r.file_path)?;
+            rows.iter()
+                .filter(|b| {
+                    b.kind == "import"
+                        && b.name == r.reference_name
+                        && r.line >= b.scope_start
+                        && r.line <= b.scope_end
+                })
+                .min_by_key(|b| b.scope_end - b.scope_start)
+                .and_then(|b| b.target_spec.clone())
+        };
+        let Some(source) = scoped.or(if r.reference_kind == "imports" {
+            self.re_export_source(&r.reference_name, r)?
+        } else {
+            None
+        }) else {
+            return Ok(false);
+        };
+        self.is_out_of_repo_import(&source, &r.file_path, &r.language)
+    }
+
     /// isJsBareModuleRef (import-resolver.ts): the `imports` reference to the
     /// module of an import named by one bare segment. A name some import binds
     /// locally is that binding, not the module.
@@ -1687,9 +1724,12 @@ impl KernelResolver {
         let proven = self.go_ref_qualifier(r)?;
         let (receiver, member_name) = if let Some((receiver, member)) = r.reference_name.split_once('.') {
             (receiver.to_string(), member)
-        } else if let Some(imp) = proven { (imp.local_name, r.reference_name.as_str()) }
+        } else if let Some(imp) = &proven { (imp.local_name.clone(), r.reference_name.as_str()) }
         else { return Ok(None); };
-        if member_name.is_empty() || self.is_shadowed_import(&receiver, r)? { return Ok(None); }
+        // `go_ref_qualifier` already shadow-checked the written root — a
+        // second `go_local_declaration_at` walk costs more than it proves.
+        let shadow_checked = proven.is_some_and(|imp| imp.local_name == receiver);
+        if member_name.is_empty() || (!shadow_checked && self.is_shadowed_import(&receiver, r)?) { return Ok(None); }
         for imp in imports {
             if imp.local_name != receiver { continue; }
             let Some(pkg_dir) = self.go_package_dir(&imp.source, &r.file_path) else { continue };

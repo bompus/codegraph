@@ -287,6 +287,8 @@ export interface ResolveOutcome {
   /** On an unresolved TS/JS member call, the head of the type its receiver is declared with. */
   typeHead?: string;
   typeFrom?: string[];
+  /** A function used as a value the kernel resolved (a paren-less Pascal method pointer). */
+  fnRef?: boolean;
 }
 
 export interface KernelResolverLike {
