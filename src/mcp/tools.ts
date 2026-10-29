@@ -6503,7 +6503,9 @@ export class ToolHandler {
           && n.endLine - n.startLine + 1 <= sourceLines.length / 2)
           .map(n => ({ start: n.startLine, end: n.endLine }));
         if (supporting && localCallees.size === 0) needed.push(...requested.filter(r => r.nodeId && r.score === supporting.score));
-        if (region) needed.push(...(fp.endsWith('.vue') && !supporting ? requested.filter(r => !r.nodeId) : [region]));
+        if (region) needed.push(...(fp.endsWith('.vue') && !supporting ? requested.filter(r => !r.nodeId)
+          : coveringTestLines.has(fp) ? requested.filter(r => !r.nodeId)
+          : [region]));
         for (const n of group.nodes) {
           if ((localCallers.has(n.id) || localCallees.has(n.id)) && n.endLine - n.startLine < 200) {
             needed.push({ start: n.startLine, end: n.endLine });

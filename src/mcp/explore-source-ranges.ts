@@ -12,6 +12,13 @@ export interface RequestedSourceRange {
   nodeId?: string;
 }
 
+/**
+ * A test callback at most this many lines renders as one range. A longer one
+ * shows its opening lines plus its matching statements separately: the single
+ * range would truncate before the call site and assertion it wraps.
+ */
+const WHOLE_TEST_MAX_LINES = 80;
+
 /** Source evidence inside an already selected file; never adds graph nodes or edges. */
 export async function requestedSourceRanges(
   filePath: string, source: string, language: Language, query: string, nodes: readonly Node[] = [],
@@ -103,9 +110,11 @@ export async function requestedSourceRanges(
             const callHit = callLines.some(line => line >= node.startPosition.row + 1 && line <= node.endPosition.row + 1);
             const hit = score(node.text) + score(args[0]?.text ?? '') + (callHit ? scoreCeiling : 0);
             if (hit > 0) {
-              ranges.push({
-                start: node.startPosition.row + 1, end: node.endPosition.row + 1, name: 'test', score: hit + 1,
-              });
+              const start = node.startPosition.row + 1;
+              const end = node.endPosition.row + 1;
+              ranges.push(end - start + 1 <= WHOLE_TEST_MAX_LINES
+                ? { start, end, name: 'test', score: hit + 1 }
+                : { start, end: Math.min(end, start + 4), name: 'test', score: hit + 1 });
               // A long test may not fit whole. Its matching setup/assertion
               // statements remain complete units, including multiline arrays.
               const testStatements: SyntaxNode[] = [];

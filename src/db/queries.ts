@@ -23,7 +23,7 @@ import { parseQuery, boundedEditDistance } from '../search/query-parser';
 import { isGeneratedFile } from '../extraction/generated-detection';
 import { splitIdentifierSegments } from '../search/identifier-segments';
 import { isModuleKey, referenceNameTail, MEMBER_TAIL_SQL, MODULE_PARKED_SQL } from './reference-tail';
-import { NAME_SUBSTRING_KINDS, buildNameSubstringIndex, searchNameSubstring, type NameSubstringIndex, type ScanOrder } from './name-substring-index';
+import { NAME_SUBSTRING_KINDS, buildNameSubstringIndex, searchNameSubstring, type NameSubstringIndex } from './name-substring-index';
 
 /**
  * Files that should not be candidates for "dominant file" detection: tests,
@@ -2512,15 +2512,14 @@ export class QueryBuilder {
 
     // Explore asks this four times for every word of its query, and the
     // leading `%` makes each one a scan of every node of those kinds (#2620).
-    // The in-memory index answers with the same rows in the same order: ties
-    // in length come out in the order SQLite's plan for this very statement
-    // reads rows, the kind index's or the table's. Anything it can't answer
-    // exactly (no kind filter, a language filter, a `%` in the word, another
-    // plan, a transaction) is asked of SQLite.
+    // The in-memory index answers with the same rows in the same order: the
+    // ORDER BY states its ties (length, kind, rowid), so the answer does not
+    // depend on SQLite's plan or the index shape (#258). Anything it can't
+    // answer exactly (no kind filter, a language filter, a `%` in the word, a
+    // transaction) is asked of SQLite.
     if (kinds && kinds.length > 0 && !(languages && languages.length > 0)) {
       const index = this.memoizedRead('nameSubstringIndex', () => this.readNameSubstringIndex());
-      const order = index ? this.substringScanOrder(index, sql, params, excludePrefix ? 2 : 1) : null;
-      const rowids = order ? searchNameSubstring(index!.index, substring, kinds, excludePrefix === true, limit, order) : null;
+      const rowids = index ? searchNameSubstring(index, substring, kinds, excludePrefix === true, limit) : null;
       if (rowids) {
         return this.getNodeRowsByRowid(rowids).map((row) => ({ node: rowToNode(row), score: 1.0 }));
       }
@@ -2533,55 +2532,14 @@ export class QueryBuilder {
     }));
   }
 
-  /**
-   * The order SQLite's plan for a substring lookup reads candidate rows in,
-   * which is the order its ORDER BY leaves ties of equal length in: the kind
-   * index's (kind, file_path, start_line, id), or the table's (rowid). Which
-   * one depends on the statistics — a small index is scanned whole — so it is
-   * asked of SQLite once per statement shape. Null for any other plan.
-   */
-  private substringScanOrder(
-    memo: { index: NameSubstringIndex; plans: Map<string, ScanOrder | null> },
-    sql: string,
-    params: readonly (string | number)[],
-    patternCount: number,
-  ): ScanOrder | null {
-    // The patterns (the first `patternCount` parameters) can't change the
-    // plan, since a leading `%` uses no index; the kinds and the limit can.
-    const key = `${sql}\u0000${params.slice(patternCount).join('\u0000')}`;
-    let order = memo.plans.get(key);
-    if (order === undefined) {
-      order = null;
-      try {
-        const details = (this.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as Array<{ detail: string }>)
-          .map((row) => row.detail)
-          .filter((detail) => /^(SCAN|SEARCH) (TABLE )?nodes\b/.test(detail));
-        if (details.length === 1) {
-          if (/^SEARCH (TABLE )?nodes USING (COVERING )?INDEX idx_nodes_kind \(/.test(details[0]!)) order = 'index';
-          else if (/^SCAN (TABLE )?nodes$/.test(details[0]!)) order = 'rowid';
-        }
-      } catch {
-        order = null;
-      }
-      memo.plans.set(key, order);
-    }
-    return order;
-  }
-
-  /**
-   * Every node of the kinds the name-substring index holds, read in
-   * idx_nodes_kind order (kind, file_path, start_line, id): the order its
-   * results break length ties by.
-   */
-  private readNameSubstringIndex(): { index: NameSubstringIndex; plans: Map<string, ScanOrder | null> } | null {
+  /** Every node of the kinds the name-substring index holds. */
+  private readNameSubstringIndex(): NameSubstringIndex | null {
     const rows = this.db
       .prepare(
         `SELECT rowid AS rowid, kind, name FROM nodes WHERE kind IN (${NAME_SUBSTRING_KINDS.map(() => '?').join(',')})`
-        + ' ORDER BY kind, file_path, start_line, id'
       )
       .all(...NAME_SUBSTRING_KINDS) as Array<{ rowid: number; kind: string; name: string }>;
-    const index = buildNameSubstringIndex(rows);
-    return index ? { index, plans: new Map() } : null;
+    return buildNameSubstringIndex(rows);
   }
 
   /** Whole node rows for `rowids`, in that order; a rowid no longer present is skipped. */

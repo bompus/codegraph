@@ -12,11 +12,11 @@
  *
  * It returns exactly what SQLite would. LIKE folds case for ASCII letters only,
  * `_` matches any one character, and `length()` counts characters, not UTF-16
- * units, so all three are done that way here. SQLite leaves rows of equal
- * length in the order its plan read them: through `idx_nodes_kind` (kind,
- * file_path, start_line, id) on a large index, by rowid when it scans a small
- * one. The index keeps both orders, and the caller says which plan SQLite
- * chose. A pattern with a `%` is left to SQLite.
+ * units, so all three are done that way here. The lookup's ORDER BY states its
+ * tie order — length, then kind, then rowid — so the answer does not move with
+ * the index shape (#258). NAME_SUBSTRING_KINDS is alphabetical, so an entry's
+ * kind code compares the way the `kind` column does. A pattern with a `%` is
+ * left to SQLite.
  */
 
 /**
@@ -170,15 +170,9 @@ function patternMatcher(needle: string): { next(hay: string, from: number): numb
 }
 
 /**
- * The order SQLite's plan reads candidate rows in, which its ORDER BY keeps
- * for rows of equal length: the kind index's, or the table's by rowid.
- */
-export type ScanOrder = 'index' | 'rowid';
-
-/**
- * The rowids SQLite's substring lookup returns, in its order, or null when the
- * index can't answer exactly (a `%` in the pattern, an empty pattern, or a
- * kind it doesn't hold). `order` is the order the plan reads rows in.
+ * The rowids SQLite's substring lookup returns, in its ORDER BY order, or null
+ * when the index can't answer exactly (a `%` in the pattern, an empty pattern,
+ * or a kind it doesn't hold).
  */
 export function searchNameSubstring(
   index: NameSubstringIndex,
@@ -186,7 +180,6 @@ export function searchNameSubstring(
   kinds: readonly string[],
   excludePrefix: boolean,
   limit: number,
-  order: ScanOrder,
 ): number[] | null {
   const needle = asciiLower(substring);
   if (needle.length === 0 || needle.includes('%') || needle.includes(SEPARATOR)) return null;
@@ -210,12 +203,15 @@ export function searchNameSubstring(
     }
     at = matcher.next(hay, starts[name + 1]!);
   }
-  // Entry numbers follow the kind index, rowids the table: either breaks
-  // length ties the way SQLite's plan does.
+  // The lookup's ORDER BY ties break by kind (the codes follow the
+  // alphabetical NAME_SUBSTRING_KINDS) and then rowid.
   const rowid = index.entryRowid;
-  hits.sort(order === 'index'
-    ? (a, b) => (entryLength[a]! - entryLength[b]!) || (a - b)
-    : (a, b) => (entryLength[a]! - entryLength[b]!) || (rowid[a]! - rowid[b]!));
+  hits.sort(
+    (a, b) =>
+      (entryLength[a]! - entryLength[b]!) ||
+      (entryKind[a]! - entryKind[b]!) ||
+      (rowid[a]! - rowid[b]!),
+  );
   // A negative LIMIT is no limit in SQLite.
   if (limit >= 0 && hits.length > limit) hits.length = limit;
   return hits.map((entry) => index.entryRowid[entry]!);
