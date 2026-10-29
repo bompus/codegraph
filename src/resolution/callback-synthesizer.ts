@@ -197,6 +197,13 @@ function lineOf(src: string, idx: number): number {
   }
   return lineOfIndex(idx);
 }
+// The passes are done. In a long-lived process (the MCP server, `watch`),
+// the line caches would otherwise keep the last file read until the next
+// synthesis; a pool worker's go with the worker.
+function releaseLineCaches(): void {
+  lineOfSource = null;
+  lineOfIndex = () => 1;
+}
 
 function registrarField(src: string): string | null {
   const m = src.match(/this\.(\w+)\.(?:add|push|set)\(/);
@@ -7621,6 +7628,7 @@ async function synthesizeWith(
       await runPassOnMain(i);
     }
   }
+  releaseLineCaches();
 
   // A Jest or Vitest manual mock answers only for test code (#2455): whatever
   // pass paired them, production code never links into a `__mocks__/` file.
