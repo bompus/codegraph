@@ -1724,9 +1724,12 @@ impl KernelResolver {
         let proven = self.go_ref_qualifier(r)?;
         let (receiver, member_name) = if let Some((receiver, member)) = r.reference_name.split_once('.') {
             (receiver.to_string(), member)
-        } else if let Some(imp) = proven { (imp.local_name, r.reference_name.as_str()) }
+        } else if let Some(imp) = &proven { (imp.local_name.clone(), r.reference_name.as_str()) }
         else { return Ok(None); };
-        if member_name.is_empty() || self.is_shadowed_import(&receiver, r)? { return Ok(None); }
+        // `go_ref_qualifier` already shadow-checked the written root — a
+        // second `go_local_declaration_at` walk costs more than it proves.
+        let shadow_checked = proven.is_some_and(|imp| imp.local_name == receiver);
+        if member_name.is_empty() || (!shadow_checked && self.is_shadowed_import(&receiver, r)?) { return Ok(None); }
         for imp in imports {
             if imp.local_name != receiver { continue; }
             let Some(pkg_dir) = self.go_package_dir(&imp.source, &r.file_path) else { continue };

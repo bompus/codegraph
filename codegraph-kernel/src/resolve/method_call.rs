@@ -1614,7 +1614,7 @@ if inferred.is_none() && r.language == "dart" {
         let bindings = self.bindings(&r.file_path)?;
         // Svelte/Astro markup and a second script sit outside the rows'
         // scopes but still see a script's top-level import.
-        let binding = self.receiver_binding(root, r)?
+        let binding = probe!(r, "brc:recv-binding", self.receiver_binding(root, r)?)
             .or_else(|| {
                 is_sfc_scoped_script(&r.language)
                     .then(|| sfc_top_level_binding(&bindings, root).filter(|b| b.kind == "import").cloned())
@@ -1633,7 +1633,7 @@ if inferred.is_none() && r.language == "dart" {
                 if (r.language == "java" || r.language == "kotlin" || r.language == "python") && self.resolve_bound_type(root, r, 0)?.is_some() {
                     return if receiver == root { self.match_bound_type_member(root, method, r) } else { self.enum_constant_call(receiver, method, r) };
                 }
-                let via_import = self.resolve_via_import_member(r)?.filter(|c| {
+                let via_import = probe!(r, "brc:via-import", self.resolve_via_import_member(r)?).filter(|c| {
                     // A Go `pkg.Name` can name any exported package member —
                     // `pkg.Type(…)` conversions included; edge-kind rewriting
                     // decides calls-vs-references downstream.
@@ -1655,7 +1655,7 @@ if inferred.is_none() && r.language == "dart" {
                             .captures(receiver)
                             .or_else(|| re!(r"^([A-Za-z_]\w*\.[A-Za-z_]\w*)$").captures(receiver))
                         {
-                            Some(m) => self.go_method_on_declared_type(&m[1], &r.file_path, method, r)?,
+                            Some(m) => probe!(r, "brc:go-tail", self.go_method_on_declared_type(&m[1], &r.file_path, method, r)?),
                             None => None,
                         }
                     }
@@ -1664,7 +1664,7 @@ if inferred.is_none() && r.language == "dart" {
             }
             let hit = probe!(r, "brc:match_method_call", self.match_method_call(r)?);
             if hit.is_none() && r.language == "go" && self.take_go_mc_untyped() {
-                return self.match_method_call_free(r);
+                return probe!(r, "brc:mc-free", self.match_method_call_free(r));
             }
             return Ok(hit);
         }
@@ -1755,7 +1755,7 @@ if inferred.is_none() && r.language == "dart" {
             return Ok(Some(c));
         }
         if r.language == "go" && self.take_go_mc_untyped() {
-            return self.match_method_call_free(r);
+            return probe!(r, "brc:mc-free", self.match_method_call_free(r));
         }
         if binding.kind == "param" {
             // An unannotated parameter bound the name but says nothing of
