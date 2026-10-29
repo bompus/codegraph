@@ -368,6 +368,17 @@ impl KernelResolver {
 
     /// isVisibleAcrossFiles (name-matcher.ts).
     pub(super) fn is_visible_across_files(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        self.is_visible_across_files_for(candidate, r, true)
+    }
+
+    /// `is_visible_across_files` for a pick a strategy made from the code's own
+    /// structure — a receiver's type, a function value — rather than from the
+    /// name. Upstream guards only the name strategies with this rule
+    /// (index.ts:1867), so a module's unexported binding is no bar to a typed
+    /// pick: `items$.getState().inc()` reaches the store action `inc`, and an
+    /// imported component reaches its default export. Every language's own
+    /// privacy still applies.
+    pub(super) fn is_visible_across_files_for(&mut self, candidate: &KNode, r: &ResolveRefIn, name_pick: bool) -> Res<bool> {
         if candidate.language == "go" {
             if self.go_external_qualified(r)? { return Ok(false); }
             if let Some(imp) = self.go_ref_qualifier(r)? {
@@ -458,6 +469,9 @@ impl KernelResolver {
         // is not busted's `it(…)` in every other spec file.
         if (lang == "lua" || lang == "luau") && self.is_lua_local(candidate) {
             return Ok(self.lua_alias_target(r)?.flatten().is_some_and(|n| n.id == candidate.id));
+        }
+        if !name_pick && is_esm_family(&candidate.language) {
+            return Ok(true);
         }
         self.is_cross_file_reachable(candidate, r)
     }

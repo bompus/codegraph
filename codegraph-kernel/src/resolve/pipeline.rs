@@ -1319,12 +1319,19 @@ if r.language == "dart" && r.reference_kind == "references"
         // what a name in another file means, whichever strategy chose it —
         // name-matcher.ts isVisibleAcrossFiles at index.ts:1867 (#1730), run
         // on the node after supertype/overload/alias retargets the way
-        // upstream vets the target matchReference reports. Only a name-match
-        // pick is vetted: upstream's import, file-path and framework results
-        // never reach that guard, and an import pick's alias forward can
-        // legitimately land on an unexported module member.
+        // upstream vets the target matchReference reports. Upstream's import,
+        // file-path and framework results never reach that guard, and an
+        // import pick's alias forward can legitimately land on an unexported
+        // module member. A pick a strategy made from the code's structure —
+        // a receiver's type or a function value — keeps every language's own
+        // privacy but not a module's unexported-binding rule, which upstream
+        // applies to the name strategies alone.
         if !matches!(winner.resolved_by, "import" | "framework" | "file-path")
-            && !self.is_visible_across_files(&winner.node, r)?
+            && !self.is_visible_across_files_for(
+                &winner.node,
+                r,
+                !matches!(winner.resolved_by, "instance-method" | "function-ref" | "field-call"),
+            )?
         {
             return Ok(ResolveOutcome::unresolved());
         }
