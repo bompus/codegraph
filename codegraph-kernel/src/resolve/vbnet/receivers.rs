@@ -320,35 +320,25 @@ impl KernelResolver {
             };
             return Ok(Some(ty));
         }
-        for owner in self.vb_around(&r.file_path, r.line)? {
-            for ancestor in self.vb_ancestry(&owner)? {
-                if let Some(node) = self
-                    .vb_members(&ancestor.node, name)?
-                    .into_iter()
-                    .find(|n| vb_value_kind(&n.kind) || n.kind == "method")
-                {
-                    return self
-                        .vb_member_type(&VbMember {
-                            node,
-                            args: ancestor.args,
-                        })
-                        .map(Some);
-                }
-            }
-        }
-        if let Some(node) = self
-            .vb_module_members(name, r)?
-            .into_iter()
-            .find(|n| vb_value_kind(&n.kind) || n.kind == "method")
-        {
-            return self
-                .vb_member_type(&VbMember {
-                    node,
-                    args: HashMap::new(),
-                })
-                .map(Some);
+        if let Some(member) = self.vb_member_around(name, r)? {
+            return self.vb_member_type(&member).map(Some);
         }
         Ok(None)
+    }
+    /// localBinding: whether a parameter or local of `name` is in scope at the
+    /// reference — a member of that name is hidden where one is.
+    pub(in crate::resolve) fn vb_local_bound(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
+        let start = self.vb_scope_start(r)?;
+        let lines = self.vb_lines(&r.file_path);
+        for i in (start.max(1) as usize - 1..(r.line.max(0) as usize).min(lines.len())).rev() {
+            if self
+                .vb_binding_on(&lines[i], name, &r.file_path, i as i64 + 1)?
+                .is_some()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
     pub(in crate::resolve) fn vb_owners(&mut self, t: &VbType) -> Res<Option<Vec<Arc<KNode>>>> {
         if t.array || vb_builtin(t) {
