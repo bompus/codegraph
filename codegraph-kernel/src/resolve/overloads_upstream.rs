@@ -740,8 +740,18 @@ impl KernelResolver {
     }
 
     pub(super) fn name_post_guard(&mut self, hit: &KCand, r: &ResolveRefIn) -> Res<bool> {
-        if (r.language == "rust" && r.reference_kind == "calls" && !self.rust_foreign_impl_callable(&hit.node, r)?)
-            || self.is_import_binding_call_target(&hit.node, r)? {
+        if r.language == "rust" && r.reference_kind == "calls" {
+            // `J::from(i)` under `use serde_json::Value as J` reaches only the
+            // project's impls for the outside type — never a project type's
+            // same-named function (#2614).
+            if r.reference_name.contains("::") && !self.rust_path_call_reachable(&hit.node, r)? {
+                return Ok(false);
+            }
+            if !self.rust_foreign_impl_callable(&hit.node, r)? {
+                return Ok(false);
+            }
+        }
+        if self.is_import_binding_call_target(&hit.node, r)? {
             return Ok(false);
         }
         if self.java_outside_import(r)? || !self.language_type_visible(&hit.node, r)?
