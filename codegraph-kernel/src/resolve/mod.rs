@@ -694,6 +694,12 @@ pub struct KernelResolver {
     /// The run token the table is shared under (see NodeTable); None keeps
     /// the table private.
     generation: Option<String>,
+    /// manualMockNames (#2455): the names every Jest/Vitest manual mock
+    /// (`__mocks__/`) declares; `None` when the project has none.
+    mock_names: OnceCell<Option<Rc<query::MockNames>>>,
+    /// Set for one `resolve_ref` from non-test code: node lookups then
+    /// answer as if no `__mocks__/` file were indexed (mocklessContextFor).
+    mockless: std::cell::Cell<bool>,
     /// A file's bindings rows. Lookups cluster by file, so 128 files keep
     /// nearly every hit: unbounded, n8n's workers held 86-140 MB each.
     bindings_cache: Lru<Rc<Vec<KBinding>>>,
@@ -1005,6 +1011,8 @@ impl KernelResolver {
             conn: Some(conn),
             live: !snapshot,
             table: std::cell::OnceCell::new(),
+            mock_names: std::cell::OnceCell::new(),
+            mockless: std::cell::Cell::new(false),
             lookups: config.query_lookups.unwrap_or(false).then(Default::default),
             db_path: config.db_path,
             generation: config.generation,

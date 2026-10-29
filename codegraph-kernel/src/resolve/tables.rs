@@ -1233,6 +1233,12 @@ pub(super) fn is_test_path(path: &str) -> bool {
         || re!(r"(?:^|/)(?:unittests|[\w.]+[-_]unittests?)/").is_match(&lower)
 }
 
+/// isManualMockPath (query-utils.ts #2455): a Jest or Vitest manual mock —
+/// a file under a `__mocks__/` directory.
+pub(super) fn is_manual_mock_path(path: &str) -> bool {
+    re!(r"(?:^|/)__mocks__/").is_match(&path.replace('\\', "/").to_lowercase())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{collect_rust_use_bindings, is_test_path};

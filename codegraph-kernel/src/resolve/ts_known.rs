@@ -1256,12 +1256,23 @@ impl KernelResolver {
                 }
                 let hit = self.resolve_via_import(&r.clone().naming(&written, "references"))?;
                 if hit.as_ref().is_some_and(|hit| hit.node.language == "arkts") { return Ok(Some(hit)); }
-                if let (Some(hit), Some(file)) = (&hit, self.resolve_import_path(&binding.source, &r.file_path, &r.language)?) {
-                    if !self.ts_import_target_visible(&hit.node, &file, r)? { return Ok(Some(None)); }
+                let file = self.resolve_import_path(&binding.source, &r.file_path, &r.language)?;
+                if let (Some(hit), Some(file)) = (&hit, &file) {
+                    if !self.ts_import_target_visible(&hit.node, file, r)? { return Ok(Some(None)); }
                 }
-                if hit.is_none() && self.resolve_import_path(&binding.source, &r.file_path, &r.language)?.is_some()
-                    && (binding.is_namespace || member.is_some() || binding.exported_name == binding.local_name) { return Ok(Some(None)); }
-                if hit.is_none() && !self.is_declared_outside_package(&binding.source, &r.file_path) { return Ok(None); }
+                if hit.is_none() {
+                    // importedTypeMember (import-resolver.ts): a specifier the
+                    // import resolver can't follow — not to a file, not to a
+                    // `declare module` block — that a manifest declares outside
+                    // the repository is terminal (`null`); every other miss
+                    // keeps the ordinary strategies (`undefined`), including a
+                    // resolved package directory whose exports can't be read.
+                    let outside = file.is_none()
+                        && self.ts_ambient_lookup(&binding.source, "*", false, r)?.is_none()
+                        && self.is_out_of_repo_import(&binding.source, &r.file_path, &r.language)?;
+                    if outside { return Ok(Some(None)); }
+                    return Ok(None);
+                }
                 return Ok(Some(hit));
             }
             if imported { return Ok(None); }

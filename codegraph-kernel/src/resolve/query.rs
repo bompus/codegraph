@@ -21,6 +21,21 @@ pub(super) fn read_source(path: impl AsRef<std::path::Path>) -> Option<String> {
     Some(String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
 }
 
+/// manualMockNames' payload: every name (and its lowercase) a `__mocks__/`
+/// file declares.
+pub(super) struct MockNames {
+    pub names: HashSet<String>,
+    pub lower: HashSet<String>,
+}
+
+/// The mockless view's node filter: `__mocks__/` nodes out, order kept.
+fn drop_mock_nodes(list: NodeList) -> NodeList {
+    if !list.iter().any(|n| is_manual_mock_path(&n.file_path)) {
+        return list;
+    }
+    Arc::new(list.iter().filter(|n| !is_manual_mock_path(&n.file_path)).cloned().collect())
+}
+
 impl KernelResolver {
     /// The live connection — errors once close() has run. Statements borrow
     /// it, so the Option indirection stays inside this accessor.
@@ -52,30 +67,71 @@ impl KernelResolver {
 
     /// queries.getNodesByName — ORDER BY file_path, start_line.
     pub(super) fn nodes_by_name(&self, name: &str) -> Res<NodeList> {
-        if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::Name(name))) {
-            return r;
+        let list = if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::Name(name))) {
+            r?
+        } else {
+            let t = self.table()?;
+            t.by_name.get(name).cloned().unwrap_or_else(|| t.empty.clone())
+        };
+        // Only a name some mock declares can lose a node (mocklessContextFor).
+        if !self.mockless.get() || !self.manual_mock_names()?.is_some_and(|m| m.names.contains(name)) {
+            return Ok(list);
         }
-        let t = self.table()?;
-        Ok(t.by_name.get(name).cloned().unwrap_or_else(|| t.empty.clone()))
+        Ok(drop_mock_nodes(list))
     }
 
     /// queries.getNodesByLowerName — `WHERE lower(name) = lower(?)`, no
     /// ORDER BY (rowid order, same as the TS reader).
     pub(super) fn nodes_by_lower_name(&self, name: &str) -> Res<NodeList> {
-        if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::Lower(name))) {
-            return r;
+        let list = if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::Lower(name))) {
+            r?
+        } else {
+            let t = self.table()?;
+            t.by_lower().get(&name.to_ascii_lowercase()).cloned().unwrap_or_else(|| t.empty.clone())
+        };
+        if !self.mockless.get()
+            || !self.manual_mock_names()?.is_some_and(|m| m.lower.contains(&name.to_lowercase()))
+        {
+            return Ok(list);
         }
-        let t = self.table()?;
-        Ok(t.by_lower().get(&name.to_ascii_lowercase()).cloned().unwrap_or_else(|| t.empty.clone()))
+        Ok(drop_mock_nodes(list))
     }
 
     /// queries.getNodesByQualifiedName — no ORDER BY (TS uses rowid order).
     pub(super) fn nodes_by_qualified_name(&self, qname: &str) -> Res<NodeList> {
-        if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::QualifiedName(qname))) {
-            return r;
+        let list = if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::QualifiedName(qname))) {
+            r?
+        } else {
+            let t = self.table()?;
+            t.by_qname.get(qname).cloned().unwrap_or_else(|| t.empty.clone())
+        };
+        if !self.mockless.get() || self.manual_mock_names()?.is_none() {
+            return Ok(list);
         }
-        let t = self.table()?;
-        Ok(t.by_qname.get(qname).cloned().unwrap_or_else(|| t.empty.clone()))
+        Ok(drop_mock_nodes(list))
+    }
+
+    /// manualMockNames (resolution/index.ts #2455): the names every Jest or
+    /// Vitest manual mock (`__mocks__/`) declares, `None` when the project
+    /// has none. Read once — the node table it feeds is a run constant.
+    pub(super) fn manual_mock_names(&self) -> Res<Option<Rc<MockNames>>> {
+        if let Some(v) = self.mock_names.get() {
+            return Ok(v.clone());
+        }
+        let files: Vec<String> = match &self.lookups {
+            Some(_) => self.sorted_files().unwrap_or_default().as_ref().clone(),
+            None => self.table()?.files.iter().cloned().collect(),
+        };
+        let mut names = HashSet::new();
+        let mut lower = HashSet::new();
+        for file in files.iter().filter(|f| is_manual_mock_path(f)) {
+            for n in self.nodes_in_file(file)?.iter() {
+                lower.insert(n.name.to_lowercase());
+                names.insert(n.name.clone());
+            }
+        }
+        let v = if names.is_empty() { None } else { Some(Rc::new(MockNames { names, lower })) };
+        Ok(self.mock_names.get_or_init(|| v).clone())
     }
 
     /// queries.getNodesInFile — ORDER BY start_line.

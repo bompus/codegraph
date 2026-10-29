@@ -886,6 +886,18 @@ if super::lang_scope::is_dart_member_read(r) {
 
     /// The per-ref pipeline: the Rust `::`-path arm, then one route.
     pub(super) fn resolve_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
+        // mocklessContextFor (#2455): a ref from non-test code resolves on a
+        // graph without the project's Jest/Vitest manual mocks — every name
+        // lookup answers as if no `__mocks__/` file were indexed. Test code,
+        // a mock included, keeps the whole graph.
+        let mockless = !is_test_path(&r.file_path) && self.manual_mock_names()?.is_some();
+        let prev = self.mockless.replace(mockless);
+        let outcome = self.resolve_ref_scoped(r);
+        self.mockless.set(prev);
+        outcome
+    }
+
+    fn resolve_ref_scoped(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
         let attribute = if r.language == "python" && r.reference_kind == "calls" {
             Some(self.resolve_python_attribute(r.clone())?)
         } else { None };
