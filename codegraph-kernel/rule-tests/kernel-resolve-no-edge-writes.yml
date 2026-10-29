@@ -1,0 +1,13 @@
+id: kernel-resolve-no-edge-writes
+valid:
+  - 'fn f() { db.prepare("SELECT * FROM edges"); }'
+  - 'fn f() { db.prepare("SELECT * FROM unresolved_refs"); }'
+invalid:
+  - 'fn f() { db.execute("INSERT INTO edges VALUES (?)"); }'
+  - 'fn f() { db.execute("REPLACE INTO unresolved_refs VALUES (?)"); }'
+  - 'fn f() { db.execute("INSERT OR IGNORE INTO edges VALUES (?)"); }'
+  - 'fn f() { db.execute("UPDATE unresolved_refs SET name = ?"); }'
+  - 'fn f() { db.execute("DELETE FROM edges"); }'
+  - 'fn f() { db.execute(r#"INSERT INTO edges VALUES (?)"#); }'
+  - 'fn f() { db.execute(r#"UPDATE unresolved_refs SET name = ?"#); }'
+  - 'fn f() { db.execute(r#"DELETE FROM edges"#); }'
