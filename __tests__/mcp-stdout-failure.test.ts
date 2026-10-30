@@ -21,7 +21,6 @@ import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import CodeGraph from '../src';
-import { WASM_RUNTIME_FLAGS } from '../src/extraction/wasm-runtime-flags';
 
 const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 const PROXY = path.resolve(__dirname, '../dist/mcp/proxy.js');
@@ -135,7 +134,7 @@ describe('MCP stdio output failure (#2991)', () => {
     const writerPid = path.join(dir, '.codegraph', 'writer.pid');
 
     // The runtime flags make this child the server itself, not a relauncher.
-    const server = start([...WASM_RUNTIME_FLAGS, BIN, 'serve', '--mcp', '--path', dir], { CODEGRAPH_NO_DAEMON: '1' });
+    const server = start([BIN, 'serve', '--mcp', '--path', dir], { CODEGRAPH_NO_DAEMON: '1' });
     server.write(INITIALIZE);
     await until(() => answered(server, 1), 'the initialize response');
     server.write(line({ method: 'notifications/initialized' }));
