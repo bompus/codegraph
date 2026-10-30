@@ -786,6 +786,10 @@ pub struct KernelResolver {
     dart_hierarchy_memo: HashMap<(String, i64), Rc<HashMap<String, u32>>>,
     /// Kotlin supertypes named in a type's head, by type name.
     kotlin_supers_memo: HashMap<String, Rc<Vec<String>>>,
+    /// rubyIvarClass (#3053): the class `initialize` gives an instance
+    /// variable, by `owner\0name`. `None` = untyped (left to the other
+    /// strategies); `Some(None)` = typed to a class the project lacks.
+    ruby_ivar_memo: HashMap<String, Option<Option<Arc<KNode>>>>,
     /// kotlinFileScope, by file.
     declared_member_memo: HashMap<(String, String), Option<String>>,
     declared_member_lines: HashMap<String, Rc<Vec<(String, usize)>>>,
@@ -1122,6 +1126,7 @@ impl KernelResolver {
             kotlin_receiver_types_memo: None,
             kotlin_scope_memo: HashMap::new(),
             kotlin_supers_memo: HashMap::new(),
+            ruby_ivar_memo: HashMap::new(),
             py_descendants_memo: HashMap::new(),
             py_bases_memo: HashMap::new(),
             cpp_visible_memo: None,
