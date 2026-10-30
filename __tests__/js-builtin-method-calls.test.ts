@@ -114,4 +114,46 @@ ${typed ? 'export function typed(cart: Cart) { cart.map(); }' : ''}
     const self = cg.getNodesByKind('method').find(n => n.qualifiedName === 'Cart::self')!;
     expect(cg.getCallees(self.id).map(c => c.node.qualifiedName)).toEqual(['Cart::add']);
   });
+
+  it('keeps the evidence a receiver spelling can carry, and rejects a class name the file shadows', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-1987-'));
+    fs.writeFileSync(path.join(dir, `members.${ext}`), `
+export class Bus {
+  emit() {}
+  static get() {}
+  direct() { this.emit(); }
+  parenthesized() { (this).emit(); }
+  later() { const self = this; self.emit(); }
+  static create() { return new this().emit(); }
+}
+export class Cache { get() {} }
+export class _Cache { static get() {} }
+export class cache { static get() {} }
+export function unrelated(Bus) {} export function statics() { Bus.get(); }
+export function underscore() { _Cache.get(); }
+export function lowercase() { cache.get(); }
+export function shadowed(Cache) { Cache.get(); }
+export function unknown(cache) { cache.get(); }
+`);
+    cg = await CodeGraph.init(dir, { index: true });
+    const callees = (name: string) => {
+      const fn = cg!.getNodesByKind('function').find(n => n.name === name)!;
+      expect(fn, name).toBeDefined();
+      return cg!.getCallees(fn.id).filter(({ edge }) => edge.kind === 'calls').map(c => c.node.qualifiedName).sort();
+    };
+    expect(callees('statics')).toEqual(['Bus::get']);
+    expect(callees('underscore')).toEqual(['_Cache::get']);
+    expect(callees('lowercase')).toEqual(['cache::get']);
+    expect(callees('shadowed')).toEqual([]);
+    expect(callees('unknown')).toEqual([]);
+    const method = (qn: string) => {
+      const n = cg!.getNodesByKind('method').find(n => n.qualifiedName === qn)!;
+      expect(n, qn).toBeDefined();
+      return cg!.getCallees(n.id).filter(({ edge }) => edge.kind === 'calls').map(c => c.node.qualifiedName);
+    };
+    expect(method('Bus::direct')).toEqual(['Bus::emit']);
+    expect(method('Bus::parenthesized')).toEqual(['Bus::emit']);
+    expect(method('Bus::later')).toEqual(['Bus::emit']);
+    expect(method('Bus::create')).toEqual(['Bus::emit']);
+  });
 });

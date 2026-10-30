@@ -1076,7 +1076,6 @@ if inferred.is_none() && r.language == "dart" {
             McShape::Parsed { receiver, method, inferable, dotted } => (receiver, method, inferable, dotted),
             McShape::Done(res) => return Ok(res),
         };
-
         if matches!(r.language.as_str(), "java" | "kotlin") {
             if let Some(hit) = self.enum_constant_call(&object_or_class, &method_name, r)? { return Ok(Some(hit)); }
         }
@@ -1299,6 +1298,23 @@ if inferred.is_none() && r.language == "dart" {
         }
 
 
+        // A built-in method called on a value the file binds — a parameter or
+        // local, which shadows any class of that name — is the built-in's
+        // (#1987): `list.map()`, `cache.get()`. Constructed, imported, typed
+        // and object-literal receivers resolved above; a class receiver is
+        // validated by the strategy below before the name-only scan.
+        if r.reference_kind == "calls" && is_js_family(&r.language)
+            && JS_BUILTIN_METHODS.contains(method_name.as_str()) {
+            let root = object_or_class.split('.').next().unwrap_or(&object_or_class);
+            let value_bound = match self.receiver_binding(root, r)? {
+                Some(b) if matches!(b.kind.as_str(), "param" | "local") => {
+                    self.binding_shadows_call(&b, root, r)?
+                }
+                _ => false,
+            };
+            if value_bound { return Ok(None); }
+        }
+
         // A VB.NET receiver the file declares as a variable (`Dim logger As
         // New FileLogger()`) is a value; that its spelling matches a type
         // (`Logger`, names being case-insensitive) says nothing of its type.
@@ -1309,6 +1325,20 @@ if inferred.is_none() && r.language == "dart" {
         if !vb_value_receiver {
             if let Some(hit) = self.class_method_scan(&object_or_class, &method_name, r, 0.85, "qualified-name")? {
                 return Ok(Some(hit));
+            }
+        }
+
+        // A built-in method name is not evidence of a project member (#1987).
+        // The direct class-name strategy above validates a class, whatever its
+        // spelling; the name-similarity strategies below — a capitalized
+        // receiver, a `$`-suffixed receiver, a unique method name — are
+        // guesses, so a built-in name stops here, except on `this`/`super`,
+        // whose member belongs to the enclosing class.
+        if r.reference_kind == "calls" && is_js_family(&r.language)
+            && JS_BUILTIN_METHODS.contains(method_name.as_str()) {
+            let root = object_or_class.split('.').next().unwrap_or(&object_or_class);
+            if root != "this" && root != "super" {
+                return Ok(None);
             }
         }
 
@@ -1890,6 +1920,24 @@ if inferred.is_none() && r.language == "dart" {
         Ok(re!(r"^[!?]?\s*:").is_match(&line[m.end()..]))
     }
 
+    /// Whether a `param`/`local` row whose line scope contains the call was
+    /// declared in the call's own function. Binding rows carry lines, not
+    /// columns, so a one-line function and a sibling on the same line share
+    /// every line; a name inside the caller's own span (its signature, or its
+    /// body before the call) is the caller's, while a name before that span
+    /// belongs to the sibling and does not shadow a class of the same name.
+    fn binding_shadows_call(&mut self, b: &KBinding, root: &str, r: &ResolveRefIn) -> Res<bool> {
+        if b.line != r.line { return Ok(true); }
+        let Some(caller) = self.node_by_id(&r.from_node_id)? else { return Ok(true) };
+        if caller.start_line != r.line { return Ok(true); }
+        let Some(line) = self.read_file(&r.file_path).and_then(|lines| lines.get((r.line - 1) as usize).cloned()) else {
+            return Ok(true);
+        };
+        let start = caller.start_column.max(0) as usize;
+        let call = r.column.max(0) as usize;
+        Ok(line.get(start..call).is_some_and(|span| span_names_identifier(span, root)))
+    }
+
     /// A `param` binding says nothing when its own position carries no
     /// annotation — `(root)`, `{ root }: { root: any }` — where `name: T`,
     /// even `name: any`, does (the claim model pins annotated receivers).
@@ -1943,6 +1991,26 @@ if inferred.is_none() && r.language == "dart" {
 
 /// parensEnd — UTF-16 unit index one past the ')' that closes the '('
 /// at `from - 1`, or -1 when it never closes (JS string indexing).
+/// Whether `span` contains `name` as a whole identifier. `$` and `_` are
+/// identifier characters in JS.
+fn span_names_identifier(span: &str, name: &str) -> bool {
+    if name.is_empty() { return false; }
+    let bytes = span.as_bytes();
+    let ident = |i: Option<usize>| {
+        i.and_then(|i| bytes.get(i))
+            .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'$'))
+    };
+    let mut from = 0;
+    while let Some(pos) = span[from..].find(name) {
+        let at = from + pos;
+        if !ident(at.checked_sub(1)) && !ident(Some(at + name.len())) {
+            return true;
+        }
+        from = at + name.len();
+    }
+    false
+}
+
 fn parens_end(s: &str, from: usize) -> i64 {
     let mut depth = 1i64;
     let mut units = 0usize;

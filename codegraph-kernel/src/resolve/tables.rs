@@ -998,6 +998,36 @@ pub(super) static JS_BUILT_IN_METHODS: LazyLock<HashSet<&'static str>> = LazyLoc
     .collect()
 });
 
+/// JS_BUILTIN_METHODS (js-builtins.ts): method names that require receiver
+/// evidence before a call of one may link to project code (#1987). Distinct
+/// from JS_BUILT_IN_METHODS, the prefilter's skip list: this one is the
+/// resolver's gate, and widening that list changes which same-named member
+/// calls the name matchers can still keep.
+pub(super) static JS_BUILTIN_METHODS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    [
+        "at", "concat", "copyWithin", "entries", "every", "fill", "filter", "find",
+        "findIndex", "findLast", "findLastIndex", "flat", "flatMap", "forEach",
+        "includes", "indexOf", "join", "keys", "lastIndexOf", "map", "pop", "push",
+        "reduce", "reduceRight", "reverse", "shift", "slice", "some", "sort", "splice",
+        "toReversed", "toSorted", "toSpliced", "unshift", "values", "with", "subarray",
+        "get", "set", "has", "add", "delete", "clear",
+        "charAt", "charCodeAt", "codePointAt", "endsWith", "localeCompare", "match",
+        "matchAll", "normalize", "padEnd", "padStart", "repeat", "replace", "replaceAll",
+        "search", "split", "startsWith", "substring", "substr", "toLowerCase",
+        "toUpperCase", "toLocaleLowerCase", "toLocaleUpperCase", "trim", "trimStart",
+        "trimEnd", "trimLeft", "trimRight", "toString", "toLocaleString", "valueOf",
+        "then", "catch", "finally", "call", "apply", "bind",
+        "addEventListener", "removeEventListener", "dispatchEvent", "on", "once",
+        "off", "emit", "addListener", "removeListener", "removeAllListeners",
+        "prependListener", "prependOnceListener", "listeners", "rawListeners",
+        "listenerCount", "eventNames", "setMaxListeners", "getMaxListeners",
+        "next", "return", "throw", "drop", "take", "toArray",
+        "text", "json", "arrayBuffer", "blob", "formData",
+    ]
+    .into_iter()
+    .collect()
+});
+
 /// The browser's host objects a script reaches by name (JS_BROWSER_HOST_GLOBALS,
 /// js-builtins.ts): the global object under its names and its members that
 /// code calls straight on. A call on one is the browser's, not a project

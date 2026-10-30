@@ -130,6 +130,49 @@ export function inc() { count.set(1); userCache.set(2); }
     }
   });
 
+  it('keeps an inferred markup receiver for a built-in method name (#1987)', async () => {
+    // The component's script types `counter`; the markup call must reach the
+    // type before the built-in gate considers the receiver's spelling.
+    const cg = await index({
+      'src/Store.svelte': `<script>
+  class Store {
+    get() { return 1; }
+  }
+  const store = new Store();
+</script>
+
+<button>{store.get()}</button>
+`,
+    });
+    try {
+      expect(callsFrom(cg, 'src/Store.svelte')).toEqual(['src/Store.svelte:Store::get@0.9']);
+    } finally {
+      cg.close();
+    }
+  });
+
+  it('keeps a class receiver named with an underscore or lowercase in markup (#1987)', async () => {
+    // The class-name scan validates the receiver, whatever its spelling; the
+    // built-in gate must not turn `_Cache.get()` or `cache.get()` into guesses.
+    const cg = await index({
+      'src/Cache.svelte': `<script>
+  class _Cache { static get() { return 1; } }
+  class cache { static get() { return 2; } }
+</script>
+
+<p>{_Cache.get()}{cache.get()}</p>
+`,
+    });
+    try {
+      expect(callsFrom(cg, 'src/Cache.svelte')).toEqual([
+        'src/Cache.svelte:_Cache::get@0.85',
+        'src/Cache.svelte:cache::get@0.85',
+      ]);
+    } finally {
+      cg.close();
+    }
+  });
+
   it('takes a script-level import as the receiver in Svelte markup and a second script', async () => {
     const cg = await index({
       'src/spread.js': `export function spread() { return {}; }
