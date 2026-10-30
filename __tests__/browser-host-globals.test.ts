@@ -184,4 +184,24 @@ describe('calls on browser host objects', () => {
     ]);
     expect(callsFrom(cg, 'src/app.js')).toEqual(['boot -> window.App::init']);
   });
+
+  it('reads a name after non-ASCII text without panicking, and a parameter inside a template', async () => {
+    const cg = await index({
+      'src/services.ts': [
+        'export class WindowService { open(url: string): void {} }',
+        'export class Model { save(): void {} }',
+      ].join('\n'),
+      'src/wide.ts': [
+        "export function wide(π: number): void { if (π > 0) { window.open('/help'); } }",
+      ].join('\n'),
+      'src/template.ts': [
+        'import { Model } from "./services";',
+        'export function run(model: unknown): unknown {',
+        '  return `${((document: Model) => document.save())(model)}`;',
+        '}',
+      ].join('\n'),
+    });
+    expect(callsFrom(cg, 'src/wide.ts')).toEqual([]);
+    expect(callsFrom(cg, 'src/template.ts')).toEqual(['run -> Model::save']);
+  });
 });

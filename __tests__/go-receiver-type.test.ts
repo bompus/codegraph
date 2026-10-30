@@ -256,6 +256,28 @@ func (s *Store) Put(k string) {}
   });
 });
 
+describe('Go func-typed fields', () => {
+  it('takes the func type only, not the next field or a struct tag', async () => {
+    const { cg } = await indexProject({
+      'main.go': `package main
+
+type A struct{}
+func (A) Run() {}
+
+type B struct{}
+
+type holder struct {
+	get func() *A; other *B \`json:"other"\`
+}
+
+func use(h holder) { h.get().Run() }
+`,
+    });
+    expect(await methodCallees(cg, 'use')).toEqual(['main.go::A::Run']);
+    cg.destroy();
+  });
+});
+
 describe('Go receiver typing through conversions and aliases', () => {
   let dir: string;
   let cg: CodeGraph;

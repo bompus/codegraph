@@ -975,11 +975,20 @@ if inferred.is_none() && r.language == "dart" {
         let Some(lines) = self.read_file(&r.file_path) else { return Ok(false) };
         let Some(line) = lines.get((binding.line - 1).max(0) as usize) else { return Ok(false) };
         let pattern = Self::cached_regex(&format!(
-            r"\b{}\s*:?[^=]*=\s*([A-Za-z_]\w*)\.[A-Za-z_]\w*\s*\(",
+            r"\b{}\s*:?[^=]*=\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*\(",
             regex::escape(name)
         ))?;
         let Some(caps) = pattern.captures(line) else { return Ok(false) };
+        // Only the streaming read the rule exists for — `Recv`/`RecvMsg` hand
+        // back the type argument; `Header` and its like do not.
+        if !matches!(&caps[2], "Recv" | "RecvMsg") {
+            return Ok(false);
+        }
         let root = caps[1].to_string();
+        // The receiver must still be the parameter at the initializer.
+        if !self.receiver_binding(&root, r)?.is_some_and(|b| b.kind == "param") {
+            return Ok(false);
+        }
         let Some(caller) = self.node_by_id(&r.from_node_id)? else { return Ok(false) };
         let signature = caller.signature.clone().unwrap_or_default();
         let parameter = Self::cached_regex(&format!(r"\b{}\s+([A-Za-z_][\w.\[\]]*)", regex::escape(&root)))?;

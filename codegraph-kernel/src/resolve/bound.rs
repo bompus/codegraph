@@ -407,21 +407,6 @@ if site.language == "dart" && site.reference_kind == "calls" {
                 }
             }
         }
-        // Bases in the order the class header names them: C3 takes the first
-        // head no other sequence's tail holds, and the edge table's order is
-        // not the header's (`Adapter(Left, Right)` is Left first).
-        if bases.len() > 1 {
-            let header = self.header_of(class)?;
-            let mut keyed: Vec<(usize, Arc<KNode>)> = bases
-                .into_iter()
-                .map(|b| {
-                    let at = super::names::name_offsets(&header, &b.name).next().unwrap_or(usize::MAX);
-                    (at, b)
-                })
-                .collect();
-            keyed.sort_by_key(|(at, _)| *at);
-            bases = keyed.into_iter().map(|(_, b)| b).collect();
-        }
         let mut seqs: Vec<Vec<Arc<KNode>>> = Vec::with_capacity(bases.len() + 1);
         for b in &bases {
             let Some(m) = self.python_mro(b, depth + 1)? else { return Ok(None) };

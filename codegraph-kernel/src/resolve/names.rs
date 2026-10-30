@@ -1449,6 +1449,48 @@ impl KernelResolver {
         Ok(keyed.into_iter().map(|(_, t)| t).collect())
     }
 
+    /// Python's C3 linearization over the header's base list, with
+    /// `*bases` expanded. Falls back to appending the remaining heads when a
+    /// hierarchy is inconsistent, so a cycle cannot borrow a member.
+    fn python_c3(&mut self, class: &Arc<KNode>, r: &ResolveRefIn, depth: u32) -> Res<Vec<Arc<KNode>>> {
+        if depth > 8 {
+            return Ok(vec![class.clone()]);
+        }
+        let bases = self.python_bases(class, r)?;
+        let mut seqs: Vec<Vec<Arc<KNode>>> = Vec::with_capacity(bases.len() + 1);
+        for base in &bases {
+            seqs.push(self.python_c3(base, r, depth + 1)?);
+        }
+        seqs.push(bases);
+        let mut out = vec![class.clone()];
+        loop {
+            seqs.retain(|q| !q.is_empty());
+            if seqs.is_empty() {
+                return Ok(out);
+            }
+            let head = seqs
+                .iter()
+                .map(|q| q[0].clone())
+                .find(|h| !seqs.iter().any(|q| q[1..].iter().any(|n| n.id == h.id)));
+            let Some(head) = head else {
+                for q in &seqs {
+                    if !out.iter().any(|c| c.id == q[0].id) {
+                        out.push(q[0].clone());
+                    }
+                }
+                return Ok(out);
+            };
+            if !out.iter().any(|c| c.id == head.id) {
+                out.push(head.clone());
+            }
+            for q in seqs.iter_mut() {
+                if !q.is_empty() && q[0].id == head.id {
+                    q.remove(0);
+                }
+            }
+        }
+    }
+
     /// inheritedThrough: members reached through the declaration's own
     /// resolved extends/implements edges, breadth-first, in header order;
     /// an interface/abstract declaration answers only when nothing concrete
@@ -1461,33 +1503,30 @@ impl KernelResolver {
         receiver: ReceiverKind,
         r: &ResolveRefIn,
     ) -> Res<Option<Arc<KNode>>> {
-        // Python takes its C3 order, which is depth-first along the header's
-        // bases: `Adapter(Left, Right)` with `Left(Root)` reaches Root's
-        // member before Right's, though Right is the shallower base.
+        // Python reads the member along its C3 order, and each class's *own*
+        // member decides: `Adapter(Left, Right)` with `Left(Root)` and
+        // `Right(Root)` reaches Right's, though Root is written first in Left's
+        // subtree. `python_bases` also expands a header's `*bases`.
         if r.language == "python" {
-            // Python's order is depth-first along the header's bases, and the
-            // header's own parser also expands `*bases`. `Adapter(Left, Right)`
-            // with `Left(Root)` reaches Root's member before Right's, though
-            // Right is the shallower base.
-            let mut walked: HashSet<String> = HashSet::from([ty.id.clone()]);
-            let mut stack: Vec<Arc<KNode>> = self.python_bases(ty, r)?.into_iter().rev().collect();
-            while let Some(class) = stack.pop() {
-                if !walked.insert(class.id.clone()) || class.name == name {
+            for class in self.python_c3(ty, r, 0)?.iter().skip(1) {
+                if class.name == name {
                     continue;
                 }
-                let found = self.python_members(&class, name, r, &mut HashSet::new())?;
-                let found: Vec<_> = found
-                    .into_iter()
-                    .filter(|c| {
-                        !(receiver == ReceiverKind::Super
-                            && (c.is_abstract || class.kind == "interface" || class.kind == "protocol"))
-                    })
-                    .collect();
-                if let Some(first) = found.first() {
-                    return Ok(Some(first.clone()));
+                if self.python_class_assigns(class, name)? {
+                    return Ok(Some(class.clone()));
                 }
-                for base in self.python_bases(&class, r)?.into_iter().rev() {
-                    stack.push(base);
+                let mut own: Vec<_> = self
+                    .nodes_by_qualified_name(&format!("{}::{}", class.qualified_name, name))?
+                    .iter()
+                    .filter(|n| n.file_path == class.file_path)
+                    .cloned()
+                    .collect();
+                own.retain(|c| {
+                    !(receiver == ReceiverKind::Super
+                        && (c.is_abstract || class.kind == "interface" || class.kind == "protocol"))
+                });
+                if let Some(first) = own.first() {
+                    return Ok(Some(first.clone()));
                 }
             }
             return Ok(None);

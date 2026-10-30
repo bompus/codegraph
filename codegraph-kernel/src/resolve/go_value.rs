@@ -311,10 +311,11 @@ impl KernelResolver {
                         let toks: Vec<&str> = line.split_whitespace().collect();
                         if let Some(i) = toks.iter().position(|w| *w == field) {
                             let joined = toks[i + 1..].join(" ");
-                            ty = joined
-                                .trim_end_matches(['}', ';'])
-                                .trim()
-                                .to_string();
+                            // `get func() *A; other *B` — the next field is
+                            // no part of this type, nor is a struct tag.
+                            let joined = joined.split(';').next().unwrap_or(&joined);
+                            let joined = joined.split('`').next().unwrap_or(joined);
+                            ty = joined.trim_end_matches(['}', ';']).trim().to_string();
                         }
                     }
                     return Ok(Some((ty, s.file_path.clone())));

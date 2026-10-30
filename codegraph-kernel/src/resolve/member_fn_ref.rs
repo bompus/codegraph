@@ -256,7 +256,7 @@ impl KernelResolver {
             // `class Adapter(*bases, Right)` with `bases = (Left,)`: the tuple's
             // classes are bases too, in the order it writes them.
             if let Some(variable) = name.trim().strip_prefix('*') {
-                for element in python_unpacked_bases(&lines, variable) {
+                for element in python_unpacked_bases(&lines, variable, (cls.start_line - 1).max(0) as usize) {
                     if let Some(base) = self.python_ref_class(&element, &site)? {
                         out.push(base);
                     }
@@ -1078,12 +1078,21 @@ mod tests {
 
 /// The class names a module-level tuple variable writes: `bases = (Left, Right)`
 /// for a `class Adapter(*bases)` header. Empty for any other shape.
-fn python_unpacked_bases(lines: &[String], variable: &str) -> Vec<String> {
-    let Ok(pattern) = regex::Regex::new(&format!(r"(?m)^\s*{}\s*=\s*\(([^)]*)\)", regex::escape(variable.trim()))) else {
+fn python_unpacked_bases(lines: &[String], variable: &str, before: usize) -> Vec<String> {
+    let Ok(pattern) = regex::Regex::new(&format!(r"(?m)^{}\s*=\s*\(([^)]*)\)", regex::escape(variable.trim()))) else {
         return Vec::new();
     };
     let text = lines.join("\n");
-    let Some(caps) = pattern.captures(&text) else { return Vec::new() };
+    // The module-level binding written before the class: an earlier function's
+    // local `bases = (Wrong,)` is no base list.
+    let last = pattern
+        .captures_iter(&text)
+        .filter(|caps| {
+            let at = caps.get(0).map(|m| m.start()).unwrap_or(0);
+            text[..at].matches('\n').count() < before
+        })
+        .last();
+    let Some(caps) = last else { return Vec::new() };
     caps[1]
         .split(',')
         .map(|item| item.trim().to_string())

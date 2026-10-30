@@ -14,6 +14,12 @@ impl KernelResolver {
         if !is_js_family(&r.language) || !JS_BROWSER_HOST_GLOBALS.contains(name) {
             return Ok(false);
         }
+        // A lexical binding of the name at the call (`document` as a
+        // parameter, a `const history`) is the file's own, whatever the
+        // template or comment blanking below can see.
+        if self.receiver_binding(name, r)?.is_some_and(|b| b.kind != "import") {
+            return Ok(false);
+        }
         let key = format!("{}\0{}", r.file_path, name);
         if let Some(&hit) = self.js_host_receiver_only.get(&key) {
             return Ok(hit);
@@ -42,7 +48,10 @@ impl KernelResolver {
             let receiver = (rest.starts_with('.') && !rest.starts_with(".."))
                 || rest.starts_with('[')
                 || rest.starts_with("?.");
-            let window = &code[at.saturating_sub(16)..at];
+            // A byte 16 back need not be a character boundary (`π`).
+            let mut window_start = at.saturating_sub(16);
+            while !code.is_char_boundary(window_start) { window_start -= 1; }
+            let window = &code[window_start..at];
             let after_typeof = window.rfind("typeof").is_some_and(|i| {
                 window[..i].chars().next_back().is_none_or(|c| !is_word_char(c))
                     && window[i + 6..].chars().all(char::is_whitespace)

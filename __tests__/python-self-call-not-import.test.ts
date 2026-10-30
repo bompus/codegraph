@@ -175,6 +175,56 @@ describe('Python self-calls do not resolve through a same-named import', () => {
     });
     expect(calls).toEqual(['Adapter::notify -> Root::get_ip (pkg/base.py)']);
   });
+  it('orders bases by their written expression, not by the class name', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/mixins.py': 'class Mixin:\n    def render(self):\n        return "mixin"\n',
+      'pkg/parent.py': 'class Model:\n    def render(self):\n        return "parent"\n',
+      'pkg/child.py': [
+        'from pkg.mixins import Mixin',
+        'import pkg.parent as parent',
+        '',
+        '',
+        'class Model(Mixin, parent.Model):',
+        '    def notify(self):',
+        '        return self.render()',
+        '',
+      ].join('\n'),
+    });
+    expect(calls).toEqual(['Model::notify -> Mixin::render (pkg/mixins.py)']);
+  });
+
+  it('takes the leftmost C3 class of a diamond', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/base.py': [
+        'class Root:',
+        '    def render(self):',
+        '        return "root"',
+        '',
+        '',
+        'class Right(Root):',
+        '    def render(self):',
+        '        return "right"',
+        '',
+        '',
+        'class Left(Root):',
+        '    pass',
+        '',
+      ].join('\n'),
+      'pkg/adapter.py': [
+        'from pkg.base import Left, Right',
+        '',
+        '',
+        'class Adapter(Left, Right):',
+        '    def notify(self):',
+        '        return self.render()',
+        '',
+      ].join('\n'),
+    });
+    expect(calls).toEqual(['Adapter::notify -> Right::render (pkg/base.py)']);
+  });
+
   // A class with more than one base leaves the choice to node order; one
   // that unpacks its bases (`*bases`) has more than its header shows.
   it('a method behind unpacked bases', async () => {
