@@ -1326,11 +1326,11 @@ export class CodeGraph {
               // importer (38s and 20GB on n8n for one comment line).
               const exportsChanged = new Set(result.exportDelta ?? []);
               const modulesToScan = editedModules.filter((m) => exportsChanged.has(m.path));
-              const nameMatched = modulesToScan.length === 0 ? 0 : reopenNameMatchedImports(
+              const nameMatched = modulesToScan.length === 0 ? 0 : this.resolver.holdKernel(() => reopenNameMatchedImports(
                 this.queries, importReader, modulesToScan, edgesBeforeResolution,
                 (specifier, fromFile, language) => this.resolver.resolveModuleFile(specifier, fromFile, language),
                 (ref) => this.resolver.resolveNow(ref)
-              );
+              ));
               if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] sync-name-matched-imports: ${Date.now() - tNamed}ms (${nameMatched} refs re-opened)`);
             } finally {
               this.resolver.closeKernel();

@@ -998,13 +998,28 @@ export class ReferenceResolver {
           .filter(readsDefault);
       }
       const was = new Set<string>();
-      for (const edge of readers) {
-        const ref = resurrectRefFromDroppedEdge(edge);
-        if (ref && this.resolveNow(ref)?.targetNodeId !== edge.target) was.add(edge.target);
-      }
+      this.holdKernel(() => {
+        for (const edge of readers) {
+          const ref = resurrectRefFromDroppedEdge(edge);
+          if (ref && this.resolveNow(ref)?.targetNodeId !== edge.target) was.add(edge.target);
+        }
+      });
       if (was.size > 0) moved.push({ path: filePath, language, was: [...was] });
     }
     return moved;
+  }
+
+  /**
+   * Run `work` with the live kernel open, so a loop of {@link resolveNow}
+   * calls shares one native resolver. Each call otherwise opens and closes its
+   * own, and the process keeps about 2.5 MB per call: 17 GB over the 7,600
+   * import edges one barrel edit rescans on n8n.
+   */
+  holdKernel<T>(work: () => T): T {
+    const opened = !this.kernelResolver;
+    this.liveKernel(1);
+    try { return work(); }
+    finally { if (opened) this.closeKernel(); }
   }
 
   private withPythonKernel<T>(read: (kernel: KernelResolverLike) => T): T {
