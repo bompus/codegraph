@@ -1,6 +1,6 @@
 /**
  * A database SQLite cannot open is reported as what went wrong, with the path
- * and a short hint, not as "CodeGraph requires node:sqlite (Node.js 22.5+)".
+ * and a short hint, not as "CodeGraph requires node:sqlite (Node.js 22.13+)".
  *
  * Before, every failure inside the SQLite connection's constructor came out as
  * that Node-version hint, so a database another program held open, one in a
@@ -149,7 +149,7 @@ describe('naming a failed open', () => {
 
   it('keeps the node:sqlite explanation for a runtime that cannot load it', () => {
     const err = new NodeSqliteUnavailableError(new Error('No such built-in module: node:sqlite'));
-    expect(err.message).toContain('CodeGraph requires node:sqlite (Node.js 22.5+)');
+    expect(err.message).toContain('CodeGraph requires node:sqlite (Node.js 22.13+)');
     expect(err.message).toContain('No such built-in module: node:sqlite');
   });
 });
@@ -230,7 +230,7 @@ describe('the CLI', () => {
     for (const args of [['status', root], ['sync', root]]) {
       const { status, output } = cli(args, ['--no-experimental-sqlite']);
       expect(status, output).not.toBe(0);
-      expect(output).toContain('CodeGraph requires node:sqlite (Node.js 22.5+)');
+      expect(output).toContain('CodeGraph requires node:sqlite (Node.js 22.13+)');
       expect(output).not.toContain('Unhandled rejection');
     }
   }, 120_000);

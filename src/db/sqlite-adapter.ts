@@ -7,7 +7,7 @@
  *
  * CodeGraph ships with a bundled Node runtime, so `node:sqlite` (real SQLite,
  * with WAL + FTS5) is always available — there is no native build step and no
- * wasm fallback. When run from source instead, it requires Node >= 22.5.
+ * wasm fallback. When run from source instead, it requires Node >= 22.13.
  */
 
 import { loadNodeSqlite } from './node-sqlite';

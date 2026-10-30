@@ -17,8 +17,8 @@ export class NodeSqliteUnavailableError extends Error {
     const reason = cause instanceof Error ? cause.message : String(cause);
     super(
       `Node.js ${process.version} could not load its built-in SQLite module (${reason}).\n` +
-        'CodeGraph requires node:sqlite (Node.js 22.5+). Install the self-contained CodeGraph ' +
-        'release (it bundles a compatible Node), or run on Node 22.5+.',
+        'CodeGraph requires node:sqlite (Node.js 22.13+). Install the self-contained CodeGraph ' +
+        'release (it bundles a compatible Node), or run on Node 22.13+.',
       { cause }
     );
     this.name = 'NodeSqliteUnavailableError';
