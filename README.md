@@ -812,14 +812,14 @@ Traces import dependencies transitively to find which test files are affected by
 ```bash
 codegraph affected src/utils.ts src/api.ts         # Pass files as arguments
 git diff --name-only | codegraph affected --stdin   # Pipe from git diff
-codegraph affected src/auth.ts --filter "e2e/*"     # Custom test file pattern
+codegraph affected src/auth.ts --filter "e2e/*"     # Whole-name glob; matches at any folder depth
 ```
 
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--stdin` | Read file list from stdin | `false` |
 | `-d, --depth <n>` | Max dependency traversal depth | `5` |
-| `-f, --filter <glob>` | Custom glob to identify test files | auto-detect |
+| `-f, --filter <glob>` | Whole-name glob for test files: a pattern with `/` matches from any folder boundary, a leading `/` or `./` anchors it at the project root, and a trailing `/` takes everything under that folder | auto-detect |
 | `-j, --json` | Output as JSON | `false` |
 | `-q, --quiet` | Output file paths only | `false` |
 

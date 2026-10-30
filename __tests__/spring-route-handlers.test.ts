@@ -85,6 +85,33 @@ public class SearchController {
 }
 `;
 
+const ANNOTATED = 'src/main/java/com/example/AnnotatedController.java';
+const ANNOTATED_SRC = `package com.example;
+
+import java.util.List;
+import org.springframework.lang.Nullable;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/annotated")
+class AnnotatedController {
+    @GetMapping("/names")
+    public String @Nullable [] names() {
+        return null;
+    }
+
+    @GetMapping("/qualified")
+    public java.util.@Nullable List<String> qualified() {
+        return null;
+    }
+
+    @RequestMapping(value = "/feed", method = RequestMethod.GET)
+    public String @Nullable [] feed() {
+        return null;
+    }
+}
+`;
+
 const OWNERS = 'src/main/kotlin/com/example/OwnerController.kt';
 const OWNERS_SRC = `package com.example
 
@@ -173,6 +200,15 @@ describe.each(['native', 'wasm'].filter((backend) => backend === 'wasm' || kerne
     expect(handlers(g, SEARCH)).toEqual({
       'GET /find': `method:find@${lineOf(SEARCH_SRC, '@Operation')}`,
       'GET /find/{id}': `method:find@${lineOf(SEARCH_SRC, '@GetMapping("/find/{id}")')}`,
+    });
+  });
+
+  it('reads type-use annotations inside qualified and array return types', async () => {
+    const g = await index({ 'pom.xml': POM, [ANNOTATED]: ANNOTATED_SRC });
+    expect(handlers(g, ANNOTATED)).toEqual({
+      'GET /annotated/names': `method:names@${lineOf(ANNOTATED_SRC, '@GetMapping("/names")')}`,
+      'GET /annotated/qualified': `method:qualified@${lineOf(ANNOTATED_SRC, '@GetMapping("/qualified")')}`,
+      'GET /annotated/feed': `method:feed@${lineOf(ANNOTATED_SRC, '@RequestMapping(value = "/feed"')}`,
     });
   });
 

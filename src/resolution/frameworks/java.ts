@@ -708,14 +708,24 @@ function annotatedMethodName(s: string, at: number, lang: 'java' | 'kotlin'): st
     const type = readIdentifier(s, i);
     if (!type || NOT_A_RETURN_TYPE.has(type)) return null;
     i += type.length;
-    // Its qualifiers, type arguments and array dimensions.
+    // Its qualifiers, type arguments, array dimensions and type-use
+    // annotations (`String @Nullable []`, `java.util.@Nullable List`).
     for (;;) {
       const j = skipSpace(s, i);
-      if (s[j] === '<') {
+      if (s[j] === '@') {
+        const annotation = readAnnotation(s, j, lang);
+        if (!annotation) return null;
+        i = annotation.end;
+      } else if (s[j] === '<') {
         i = skipGroup(s, j);
         if (i < 0) return null;
       } else if (s[j] === '.') {
-        const k = skipSpace(s, j + 1);
+        let k = skipSpace(s, j + 1);
+        if (s[k] === '@') {
+          const annotation = readAnnotation(s, k, lang);
+          if (!annotation) return null;
+          k = skipSpace(s, annotation.end);
+        }
         const part = readIdentifier(s, k);
         if (!part) return null;
         i = k + part.length;
