@@ -125,6 +125,22 @@ impl KernelResolver {
         frames
     }
     pub(super) fn lexical_kotlin_members(&mut self, candidates: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
+        // `super.close()` in an object expression's override names the object's own
+        // supertypes, never a member of the class the object is written in.
+        if let Some(object) = self.node_by_id(&r.from_node_id)?.filter(|n| super::names::is_anonymous_member(n)) {
+            if self.is_super_call(r) {
+                let anon = object.qualified_name.split("::").take_while(|part| !part.contains("$anon@")).count();
+                let anon_name = object.qualified_name.split("::").nth(anon).unwrap_or("").to_string();
+                let mut hierarchy = HashSet::new();
+                let mut queue: VecDeque<String> = self.kotlin_supertypes_of(&anon_name)?.iter().cloned().collect();
+                while hierarchy.len() < 60 {
+                    let Some(name) = queue.pop_front() else { break };
+                    if hierarchy.insert(name.clone()) { queue.extend(self.kotlin_supertypes_of(&name)?.iter().cloned()); }
+                }
+                return Ok(candidates.into_iter().filter(|n| n.kind == "method" && n.id != object.id && n.qualified_name.rsplit_once("::")
+                    .is_some_and(|(path, _)| hierarchy.contains(path.rsplit("::").next().unwrap_or("")))).collect());
+            }
+        }
         if candidates.len() < 2 { return Ok(candidates); }
         let mut queue: VecDeque<String> = self.nodes_in_file(&r.file_path)?.iter().filter(|n| n.start_line <= r.line && n.end_line >= r.line).filter_map(|n| {
             if super::call_shape::type_kind(&n.kind) { Some(n.name.clone()) }
@@ -139,7 +155,11 @@ impl KernelResolver {
             queue.extend(self.kotlin_supertypes_of(&name)?.iter().cloned());
             queue.extend(platform_supers(&name).iter().map(|s| s.to_string()));
         }
-        let lexical: Vec<_> = candidates.iter().filter(|n| n.kind == "method" && n.qualified_name.rsplit_once("::").is_some_and(|(path, _)| {
+        // An object expression's override is not what a call of its own name in it
+        // means — `original!!.contentLength()` in `override fun contentLength()`,
+        // `this@Outer.onScroll(…)`, an extension receiver's `onDataChanged(…)` —
+        // as when its overrides were local functions: the scopes around it decide.
+        let lexical: Vec<_> = candidates.iter().filter(|n| n.kind == "method" && !(n.id == r.from_node_id && super::names::is_anonymous_member(n)) && n.qualified_name.rsplit_once("::").is_some_and(|(path, _)| {
             let mut owners = path.rsplit("::");
             let owner = owners.next().unwrap_or("");
             hierarchy.contains(if owner == "Companion" { owners.next().unwrap_or("") } else { owner })

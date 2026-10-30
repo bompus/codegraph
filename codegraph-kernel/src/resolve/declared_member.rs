@@ -100,7 +100,14 @@ impl KernelResolver {
         }
         let key=(cls.id.clone(),name.to_string());
         if let Some(hit)=self.declared_member_walks.get(&key) {return Ok(hit.clone());}
-        let result=self.walk_declared_member_receiver(cls,name)?;
+        let mut result=self.walk_declared_member_receiver(cls,name)?;
+        // A Kotlin object expression's code sees the class it is written in; its `this` is the object.
+        let mut inner=cls.clone();
+        while result.is_none() && r.language=="kotlin" && super::names::is_anonymous_class(&inner) && receiver==name {
+            let Some(outer)=nodes.iter().filter(|n| n.language==r.language && class_kind(&n.kind) && n.start_line<inner.start_line && n.end_line>=r.line).max_by_key(|n| n.start_line).cloned() else { break };
+            result=self.walk_declared_member_receiver(&outer,name)?;
+            inner=outer;
+        }
         self.declared_member_walks.insert(key,result.clone());Ok(result)
     }
     fn walk_declared_member_receiver(&mut self,cls:&KNode,name:&str)->Res<Option<String>> {

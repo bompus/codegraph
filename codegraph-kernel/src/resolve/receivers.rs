@@ -25,6 +25,12 @@ impl KernelResolver {
             if n.language != language {
                 continue;
             }
+            // A Kotlin object expression's code sees the scope it is written in,
+            // as when its overrides were local functions: its members open no
+            // scope of their own, the declaration holding the object does.
+            if language == "kotlin" && super::names::is_anonymous_member(n) {
+                continue;
+            }
             if n.start_line <= line && n.end_line >= line && n.start_line >= start {
                 start = n.start_line;
             }

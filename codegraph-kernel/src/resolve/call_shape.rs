@@ -234,6 +234,11 @@ impl KernelResolver {
         matches!(self.resolve_bound_type(ty, &site, 0), Ok(None))
     }
 
+    /// Whether the call is written `super.name(…)`.
+    pub(super) fn is_super_call(&mut self, r: &ResolveRefIn) -> bool {
+        self.call_site(r).is_some_and(|site| site.shape == Shape::SuperCall)
+    }
+
     fn call_site(&mut self, r: &ResolveRefIn) -> Option<CallSite> {
         let lines = self.read_file(&r.file_path)?;
         if r.language=="rust" && r.reference_kind=="calls" {

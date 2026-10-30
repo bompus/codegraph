@@ -5,8 +5,8 @@ use super::*;
 pub(crate) struct LanguageTypeScope {
     pub(super) package: String,
     namespaces: Vec<String>,
-    imports: HashSet<String>,
-    demand: HashSet<String>,
+    pub(super) imports: HashSet<String>,
+    pub(super) demand: HashSet<String>,
     package_object: Option<String>,
     has_package_object: bool,
 }
@@ -28,7 +28,7 @@ fn visible_type(kind: &str) -> bool {
 pub(super) type ScalaBlockScope = (Rc<SourceFile>, Option<(i64, i64)>);
 
 impl KernelResolver {
-    fn language_file_scope(&mut self, file: &str, language: &str) -> Res<Rc<LanguageTypeScope>> {
+    pub(super) fn language_file_scope(&mut self, file: &str, language: &str) -> Res<Rc<LanguageTypeScope>> {
         if let Some(hit) = self.language_type_scope_memo.get(file) {
             return Ok(hit.clone());
         }
@@ -597,6 +597,129 @@ impl KernelResolver {
             return Ok(true);
         }
         self.nested_type_visible(n, r)
+    }
+
+    /// matchDottedSupertype (name-matcher.ts): a supertype written through its
+    /// enclosing type — Java's `class Named extends Outer.Inner`, `implements
+    /// Api.Listener` or `new Api.Listener() {…}`, Kotlin's `class K :
+    /// Outer.Inner()` or `object : Api.Listener`, C#'s `class N :
+    /// Outer.IListener` — or in full (`com.x.Outer.Inner`). The index names a
+    /// nested type `p::Outer::Inner`, so the written path is the tail of its
+    /// qualified name. A path not written in full must start at a type the
+    /// file can name: in its own file, package or namespace, or one it imports
+    /// (C#: one its usings reach). Of several, the one closest to the file in
+    /// the tree, or none when two are as close. `None` when no project type
+    /// has the path (a library supertype), for the other strategies to look at;
+    /// `Some(None)` is a verdict of no answer.
+    pub(super) fn match_dotted_supertype(&mut self, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
+        // A Kotlin object expression's `instantiates` names its supertype as written too.
+        if !matches!(r.language.as_str(), "java" | "kotlin" | "csharp")
+            || !(is_inheritance_ref(&r.reference_kind) || (r.language == "kotlin" && r.reference_kind == "instantiates"))
+        {
+            return Ok(None);
+        }
+        let written: String = re!(r"<[^<>]*(?:<[^<>]*>[^<>]*)*>")
+            .replace_all(&r.reference_name, "")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        if !re!(r"^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$").is_match(&written) {
+            return Ok(None);
+        }
+        let parts: Vec<&str> = written.split('.').collect();
+        let tail = format!(".{written}");
+        let candidates: Vec<Arc<KNode>> = self
+            .nodes_by_name(parts[parts.len() - 1])?
+            .iter()
+            .filter(|n| {
+                if !matches!(n.kind.as_str(), "class" | "interface" | "struct" | "trait" | "enum")
+                    || !same_language_family(&n.language, &r.language)
+                    || n.id == r.from_node_id
+                {
+                    return false;
+                }
+                let dotted = n.qualified_name.replace("::", ".");
+                dotted == written || dotted.ends_with(&tail)
+            })
+            .cloned()
+            .collect();
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        let mut visible: Vec<Arc<KNode>> = Vec::new();
+        for n in candidates {
+            let ok = if n.qualified_name.replace("::", ".") == written || n.file_path == r.file_path {
+                true
+            } else {
+                // The type the written path starts at: `p::Outer` for `p::Outer::Inner`.
+                let segments: Vec<&str> = n.qualified_name.split("::").collect();
+                let root_qn = segments[..segments.len().saturating_sub(parts.len() - 1)].join("::");
+                let pkg = root_qn.split_once("::").map_or("", |(pkg, _)| pkg).to_string();
+                let root_fqn = root_qn.replace("::", ".");
+                match r.language.as_str() {
+                    "java" => {
+                        let scope = self.language_file_scope(&r.file_path, "java")?;
+                        scope.package == pkg || scope.imports.contains(&root_fqn) || scope.demand.contains(&pkg)
+                    }
+                    "kotlin" => {
+                        let scope = self.kotlin_file_scope(&r.file_path);
+                        scope.pkg == pkg || scope.imports.contains(&root_fqn) || scope.stars.contains(&pkg)
+                    }
+                    _ => {
+                        let root = self
+                            .nodes_by_qualified_name(&root_qn)?
+                            .iter()
+                            .find(|p| matches!(p.kind.as_str(), "class" | "interface" | "struct" | "trait" | "enum"))
+                            .cloned();
+                        match root {
+                            Some(root) => self.csharp_type_visible_from(&root, parts[0], r),
+                            None => false,
+                        }
+                    }
+                }
+            };
+            if ok {
+                visible.push(n);
+            }
+        }
+        if visible.is_empty() {
+            return Ok(Some(None));
+        }
+        let mut chosen = visible[0].clone();
+        if visible.len() > 1 {
+            let from_dirs: Vec<&str> = {
+                let mut d: Vec<&str> = r.file_path.split('/').collect();
+                d.pop();
+                d
+            };
+            let closeness = |n: &KNode| -> usize {
+                let mut dirs: Vec<&str> = n.file_path.split('/').collect();
+                dirs.pop();
+                dirs.iter().zip(from_dirs.iter()).take_while(|(a, b)| a == b).count()
+            };
+            let mut ranked: Vec<(usize, Arc<KNode>)> = visible.iter().map(|n| (closeness(n), n.clone())).collect();
+            ranked.sort_by_key(|c| std::cmp::Reverse(c.0));
+            if ranked[0].0 == ranked[1].0 {
+                return Ok(Some(None));
+            }
+            chosen = ranked[0].1.clone();
+        }
+        Ok(Some(Some(KCand { node: chosen, confidence: 0.9, resolved_by: "qualified-name" })))
+    }
+
+    /// isCsharpTypeVisible (name-matcher.ts) for a type named `name` at `r`: a
+    /// using alias names exactly its target; else `ns::Type` is visible from a
+    /// file whose own namespaces cover `ns` or whose usings name it.
+    fn csharp_type_visible_from(&mut self, n: &KNode, name: &str, r: &ResolveRefIn) -> bool {
+        let Some((ns, rest)) = n.qualified_name.split_once("::") else { return true };
+        if let Some(aliased) = self.csharp_alias_at(name, r) {
+            return aliased == format!("{ns}.{}", rest.replace("::", "."));
+        }
+        let own = self.csharp_namespaces_at(r).unwrap_or_default();
+        if own.iter().any(|o| o == ns || o.starts_with(&format!("{ns}."))) {
+            return true;
+        }
+        self.csharp_namespace_usings_at(r).contains(ns)
     }
 
     pub(super) fn java_outside_import(&mut self, r: &ResolveRefIn) -> Res<bool> {
