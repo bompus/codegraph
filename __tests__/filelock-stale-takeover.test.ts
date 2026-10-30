@@ -202,6 +202,18 @@ describe('FileLock stale takeover (#2979)', () => {
     expect(fs.readFileSync(lockPath, 'utf8')).toBe('4');
   });
 
+  it.runIf(process.platform !== 'win32')('does not write through a symlink planted at the private file path', async () => {
+    const { threadId } = await import('worker_threads');
+    const victim = path.join(dir, 'victim.txt');
+    fs.writeFileSync(victim, 'keep me');
+    fs.symlinkSync(victim, `${lockPath}.${process.pid}.${threadId}.tmp`);
+    const lock = new FileLock(lockPath);
+    lock.acquire();
+    expect(fs.readFileSync(victim, 'utf8')).toBe('keep me');
+    expect(fs.readFileSync(lockPath, 'utf8')).toBe(String(process.pid));
+    lock.release();
+  });
+
   it('leaves nothing but the lock file while held, and nothing after release', () => {
     const lock = new FileLock(lockPath);
     lock.acquire();

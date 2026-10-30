@@ -380,7 +380,9 @@ export class FileLock {
     const pid = String(process.pid);
     const tmp = `${this.lockPath}.${process.pid}.${threadId}.tmp`;
     try {
-      fs.writeFileSync(tmp, pid);
+      // Clear a leftover (or planted) entry first; 'wx' then refuses to write through a link.
+      try { fs.unlinkSync(tmp); } catch { /* nothing there */ }
+      fs.writeFileSync(tmp, pid, { flag: 'wx' });
       fs.linkSync(tmp, this.lockPath);
       return true;
     } catch (err) {

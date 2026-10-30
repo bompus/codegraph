@@ -30,7 +30,7 @@ npm run dev                          # recompile TypeScript on every save
 
 `npm run build` covers the CLI, the SQL schema, the parser grammars and the browser viewer. Two builds are separate:
 
-- `npm run build:kernel` builds the optional native extraction kernel, and needs a Rust toolchain. Tests that need the kernel are skipped without it.
+- `npm run build:kernel` builds the native extraction kernel, which this fork requires: the CLI refuses to start without it and the test setup builds it when missing. Install a Rust toolchain (1.89 or newer) and run it after `npm ci`.
 - `npm run build:lib` builds the viewer's component library.
 
 ## Test your change
