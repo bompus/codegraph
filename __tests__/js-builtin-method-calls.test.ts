@@ -127,7 +127,7 @@ export class Bus {
   static create() { return new this().emit(); }
 }
 export class Cache { get() {} }
-export function statics() { Bus.get(); }
+export function unrelated(Bus) {} export function statics() { Bus.get(); }
 export function shadowed(Cache) { Cache.get(); }
 export function unknown(cache) { cache.get(); }
 `);

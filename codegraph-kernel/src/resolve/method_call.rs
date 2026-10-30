@@ -1309,10 +1309,13 @@ if inferred.is_none() && r.language == "dart" {
         if r.reference_kind == "calls" && is_js_family(&r.language)
             && JS_BUILTIN_METHODS.contains(method_name.as_str()) {
             let root = object_or_class.split('.').next().unwrap_or(&object_or_class);
-            let class_name = root.chars().next().is_some_and(|c| c.is_ascii_uppercase())
-                && !self
-                    .receiver_binding(root, r)?
-                    .is_some_and(|b| matches!(b.kind.as_str(), "param" | "local"));
+            let shadowed = match self.receiver_binding(root, r)? {
+                Some(b) if matches!(b.kind.as_str(), "param" | "local") => {
+                    self.binding_shadows_call(&b, root, r)?
+                }
+                _ => false,
+            };
+            let class_name = root.chars().next().is_some_and(|c| c.is_ascii_uppercase()) && !shadowed;
             if root != "this" && root != "super" && !class_name {
                 return Ok(None);
             }
@@ -1909,6 +1912,24 @@ if inferred.is_none() && r.language == "dart" {
         Ok(re!(r"^[!?]?\s*:").is_match(&line[m.end()..]))
     }
 
+    /// Whether a `param`/`local` row whose line scope contains the call was
+    /// declared in the call's own function. Binding rows carry lines, not
+    /// columns, so a one-line function and a sibling on the same line share
+    /// every line; a name inside the caller's own span (its signature, or its
+    /// body before the call) is the caller's, while a name before that span
+    /// belongs to the sibling and does not shadow a class of the same name.
+    fn binding_shadows_call(&mut self, b: &KBinding, root: &str, r: &ResolveRefIn) -> Res<bool> {
+        if b.line != r.line { return Ok(true); }
+        let Some(caller) = self.node_by_id(&r.from_node_id)? else { return Ok(true) };
+        if caller.start_line != r.line { return Ok(true); }
+        let Some(line) = self.read_file(&r.file_path).and_then(|lines| lines.get((r.line - 1) as usize).cloned()) else {
+            return Ok(true);
+        };
+        let start = caller.start_column.max(0) as usize;
+        let call = r.column.max(0) as usize;
+        Ok(line.get(start..call).is_some_and(|span| span_names_identifier(span, root)))
+    }
+
     /// A `param` binding says nothing when its own position carries no
     /// annotation — `(root)`, `{ root }: { root: any }` — where `name: T`,
     /// even `name: any`, does (the claim model pins annotated receivers).
@@ -1962,6 +1983,26 @@ if inferred.is_none() && r.language == "dart" {
 
 /// parensEnd — UTF-16 unit index one past the ')' that closes the '('
 /// at `from - 1`, or -1 when it never closes (JS string indexing).
+/// Whether `span` contains `name` as a whole identifier. `$` and `_` are
+/// identifier characters in JS.
+fn span_names_identifier(span: &str, name: &str) -> bool {
+    if name.is_empty() { return false; }
+    let bytes = span.as_bytes();
+    let ident = |i: Option<usize>| {
+        i.and_then(|i| bytes.get(i))
+            .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'$'))
+    };
+    let mut from = 0;
+    while let Some(pos) = span[from..].find(name) {
+        let at = from + pos;
+        if !ident(at.checked_sub(1)) && !ident(Some(at + name.len())) {
+            return true;
+        }
+        from = at + name.len();
+    }
+    false
+}
+
 fn parens_end(s: &str, from: usize) -> i64 {
     let mut depth = 1i64;
     let mut units = 0usize;
