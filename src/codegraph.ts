@@ -68,7 +68,7 @@ import { CodeGraphPackageVersion } from './mcp/version';
 import { extractSegmentSearchWords, segmentLookupVariants, splitIdentifierSegments } from './search/identifier-segments';
 import { seedLiteralsInQuery, seedRouteNamesInQuery } from './extraction/literal-capture';
 import { createYielder } from './resolution/cooperative-yield';
-import { createImportReader, reopenNameMatchedImports, reopenReferencesThroughAddedFiles, reopenReferencesThroughBarrels, reopenReferencesThroughChangedDefaults, reopenReferencesThroughDeclaredPackages } from './resolution/module-importers';
+import { createImportReader, reopenNameMatchedImports, reopenReferencesThroughAddedFiles, reopenReferencesThroughBarrels, reopenReferencesThroughChangedDefaults, reopenReferencesThroughDeclaredPackages, reopenReferencesThroughRetargetedModules } from './resolution/module-importers';
 import { ESM_IMPORT_LANGUAGES } from './resolution/import-resolver';
 import { minRefsForPool } from './resolution/resolver-pool';
 
@@ -1461,6 +1461,23 @@ export class CodeGraph {
                 (ref) => this.resolver.resolveNow(ref)
               ));
               if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] sync-name-matched-imports: ${Date.now() - tNamed}ms (${nameMatched} refs re-opened)`);
+
+              // A module whose `export … from` points elsewhere now, or passes
+              // a name on no longer: `export { foo } from './a'` made `'./b'`
+              // keeps `import { foo } from './index'` on `a.ts` (#2978). The
+              // barrel declares nothing of `foo`, so no delta names it, and the
+              // walks above read files below a barrel, not the barrel's own
+              // importers, and the name-matched pass only bindings a name match
+              // took. What they bind through it goes back for the sweep, after
+              // that pass has read the bindings it is about.
+              const tRetargeted = Date.now();
+              const retargeted = (result.reExportsChangedFilePaths ?? []).flatMap((filePath) => {
+                const file = this.queries.getFileByPath(filePath);
+                return file ? [{ path: filePath, language: file.language }] : [];
+              });
+              const throughRetargeted = retargeted.length === 0 ? 0
+                : reopenReferencesThroughRetargetedModules(this.queries, importReader, retargeted);
+              if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] sync-retargeted-modules: ${Date.now() - tRetargeted}ms (${throughRetargeted} refs re-opened)`);
             } finally {
               this.resolver.closeKernel();
               walValve?.start();

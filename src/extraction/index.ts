@@ -125,6 +125,9 @@ export interface IndexResult {
   durationMs: number;
 }
 
+/** The languages whose modules pass bindings on with `export … from` (#2978). */
+const RE_EXPORTING_LANGUAGES = new Set<string>(['typescript', 'tsx', 'javascript', 'jsx']);
+
 /**
  * Result of a sync operation
  */
@@ -169,6 +172,15 @@ export interface SyncResult {
   definitionDelta?: string[];
   /** Files whose exported-name set changed (adds, drops, renames, re-exports, default moves). */
   exportDelta?: string[];
+  /**
+   * Modified ES modules whose `export … from` statements changed: a re-export
+   * that points at another module now (`export { foo } from './a'` →
+   * `'./b'`), one taken away or added, or a clause that passes other names on.
+   * Their importers' bindings through them must be re-resolved: nothing those
+   * files declare changed, and the importers never did (#2978). An edit to a
+   * plain `import` leaves this empty.
+   */
+  reExportsChangedFilePaths?: string[];
   /**
    * The frameworks extraction detected, when this sync had to detect them
    * again because what detection read had changed (#2516). Absent when the
@@ -4020,6 +4032,9 @@ export class ExtractionOrchestrator {
     };
     const exportsBefore = new Map<string, Set<string>>();
     for (const file of filesToIndex) exportsBefore.set(file, exportSignatures(file));
+    // The `export … from` statements of each file, before the store replaces
+    // its import nodes (#2978).
+    const reExportsBefore = filesToIndex.length > 0 ? this.queries.getReExportStatementsByFiles(filesToIndex) : new Set<string>();
 
     // Load only grammars needed for changed files
     if (filesToIndex.length > 0) {
@@ -4075,6 +4090,26 @@ export class ExtractionOrchestrator {
       if (before.size !== after.size || [...before].some((name) => !after.has(name))) exportDelta.push(file);
     }
 
+    // Modified ES modules whose `export … from` statements changed (#2978): a
+    // re-export retargeted, removed or passing other names on changes what
+    // their importers bind, which no definition delta records. A plain import
+    // edit passes nothing on. An added module's importers are read by the
+    // added-files pass.
+    const reExportsChanged: string[] = [];
+    if (filesToIndex.length > 0) {
+      const reExportsAfter = this.queries.getReExportStatementsByFiles(filesToIndex);
+      const fileOf = (pair: string) => pair.slice(0, pair.indexOf('\0'));
+      const changed = new Set<string>();
+      for (const pair of reExportsBefore) if (!reExportsAfter.has(pair)) changed.add(fileOf(pair));
+      for (const pair of reExportsAfter) if (!reExportsBefore.has(pair)) changed.add(fileOf(pair));
+      const added = new Set(addedFilePaths);
+      for (const filePath of changed) {
+        if (added.has(filePath)) continue;
+        const record = this.queries.getFileByPath(filePath);
+        if (record && RE_EXPORTING_LANGUAGES.has(record.language)) reExportsChanged.push(filePath);
+      }
+    }
+
     return {
       filesChecked,
       filesAdded,
@@ -4088,6 +4123,7 @@ export class ExtractionOrchestrator {
       ...(failedFilePaths.length > 0 ? { failedFilePaths } : {}),
       definitionDelta: definitionDelta.length > 0 ? definitionDelta : undefined,
       ...(exportDelta.length > 0 ? { exportDelta } : {}),
+      ...(reExportsChanged.length > 0 ? { reExportsChangedFilePaths: reExportsChanged } : {}),
       ...(detectedFrameworks ? { detectedFrameworks } : {}),
     };
   }
