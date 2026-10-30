@@ -100,6 +100,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- A background sync after editing a widely imported file no longer leaves the MCP daemon holding about 19 GB (n8n, one new export in a barrel imported from 335 files). Re-checking the importers built a native resolver per binding and the process kept about 2.5 MB of each; they now share one. That check went from 38.7 s to 0.5 s, and idle memory after the edit from 19.4 GB to 1.4 GB.
 - On Windows, Git sync hooks from older installs are recognized across drive-letter casing and short directory names.
 
 - JSX child components keep their render links when plain text or a line break precedes the tag.

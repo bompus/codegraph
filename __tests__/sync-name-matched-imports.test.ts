@@ -24,6 +24,7 @@ import * as path from 'path';
 import CodeGraph from '../src/index';
 import { DatabaseConnection, getDatabasePath } from '../src/db';
 import { QueryBuilder } from '../src/db/queries';
+import type { ReferenceResolver } from '../src/resolution';
 
 type Files = Record<string, string>;
 
@@ -173,6 +174,34 @@ describe('sync re-links an import a name match took instead of its module', () =
     const after: Files = { 'src/x.ts': `import '../src/dep';\nclass Widget ${run}\n` };
     const { root, graph, full } = await syncEdit(before, after);
     expect(stateOf(root, graph)).toEqual(full);
+  }, 120_000);
+
+  it('resolves every importer binding on one native resolver', async () => {
+    const before: Files = {
+      'src/lib/index.ts': 'export const version = 1;\n',
+      'src/lib/impl.ts': `export default class Impl ${run}\n`,
+      'src/other/widget.ts': `export class Widget ${run}\n`,
+      'src/app/a.ts': reader('../lib'),
+      'src/app/b.ts': reader('../lib'),
+      'src/app/c.ts': reader('../lib'),
+    };
+    const after: Files = { 'src/lib/index.ts': "export const version = 1;\nexport { default as Widget } from './impl';\n" };
+    const root = tempRoot();
+    write(root, before);
+    const graph = await index(root);
+    const resolver = (graph as unknown as { resolver: ReferenceResolver }).resolver;
+    // The kernel opens once per resolver build: if resolveNow opened its own
+    // for each binding, the open count would move between calls.
+    let opens = 0;
+    const open = resolver.initKernelResolver.bind(resolver);
+    vi.spyOn(resolver, 'initKernelResolver').mockImplementation((...args) => { opens++; open(...args); });
+    const seen: number[] = [];
+    const now = resolver.resolveNow.bind(resolver);
+    vi.spyOn(resolver, 'resolveNow').mockImplementation((ref) => { seen.push(opens); return now(ref); });
+    write(root, after);
+    await graph.sync();
+    expect(seen.length).toBeGreaterThan(2);
+    expect(new Set(seen).size).toBe(1);
   }, 120_000);
 
   it('and puts nothing back when the module still lacks the name', async () => {
