@@ -369,12 +369,12 @@ describe('Shared MCP daemon (issue #411)', () => {
       });
       raw.destroy();
       server.child.stdin.end();
-      const exited = await waitProcessExit(pid, 8000);
-      if (!exited) {
-        // Tell a slow exit from a hang; the daemon log shows the shutdown step it waited on.
-        const late = await waitProcessExit(pid, 20_000);
-        startupFailure(new Error(`daemon ${pid} did not exit within 8 s of disconnect (exited in the next 20 s: ${late})`));
-      }
+      // A hung reaper (#1356) never exits. On a loaded Windows runner the
+      // process lingers up to ~20 s after the daemon has logged its `exit`
+      // event, so the budget is a hang detector, not a latency bound. The
+      // daemon log shows the shutdown step a hung daemon waited on.
+      const exited = await waitProcessExit(pid, 40_000);
+      if (!exited) startupFailure(new Error(`daemon ${pid} did not exit within 40 s of disconnect`));
       expect(exited).toBe(true);
       expect(readDaemonLog(realRoot)).toContain('Shutting down (idle timeout; clients=0)');
       expect(fs.existsSync(path.join(realRoot, '.codegraph', 'writer.pid'))).toBe(false);
