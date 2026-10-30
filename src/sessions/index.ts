@@ -132,6 +132,8 @@ export interface SessionSearchOptions {
   role?: string;
   /** ISO timestamp; hits before it are dropped. */
   sinceIso?: string;
+  /** ISO timestamp; hits at or after it are dropped. */
+  untilIso?: string;
   /** Session id prefix. */
   session?: string;
   /** OR the words instead of ANDing them. */
@@ -488,6 +490,8 @@ export class SessionsIndex {
     const filters: Array<[string, string | undefined]> = [
       ['docs.role = ?', opts.role],
       ['docs.ts >= ?', opts.sinceIso],
+      // As instants: stored stamps keep their source's spelling (`12:00:00Z`, `12:00:00.250Z`, `+00:00`), which text order does not sort by time.
+      ['julianday(docs.ts) < julianday(?)', opts.untilIso],
       ['files.session GLOB ?', opts.session ? `${opts.session}*` : undefined],
     ];
     for (const [clause, value] of filters) {
@@ -550,6 +554,27 @@ export class SessionsIndex {
   close(): void {
     this.db.close();
   }
+}
+
+/** `2026-10-20`, or a timestamp that names its zone: `2026-10-20T05:00:00-06:00`, `...Z`. */
+const UNTIL_FORM = /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2}))?$/;
+
+/**
+ * The ISO instant a user-typed `until` bound means: a date (`2026-10-20`, read
+ * as midnight UTC) or a timestamp with its zone. `undefined` when none was
+ * given, `null` when the text is neither, names a day that does not exist,
+ * leaves the zone to the machine's, or gives more than millisecond precision.
+ * Stored stamps are compared to the bound at millisecond precision too.
+ */
+export function parseUntil(raw: unknown): string | undefined | null {
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  const form = typeof raw === 'string' ? UNTIL_FORM.exec(raw) : null;
+  if (!form) return null;
+  const [, year, month, day] = form.map(Number);
+  const real = new Date(Date.UTC(year!, month! - 1, day!));
+  if (real.getUTCMonth() !== month! - 1 || real.getUTCDate() !== day) return null;
+  const ms = Date.parse(raw as string);
+  return Number.isNaN(ms) ? null : new Date(ms).toISOString();
 }
 
 /** Where a project's session index lives. */

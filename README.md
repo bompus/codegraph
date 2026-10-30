@@ -793,7 +793,7 @@ codegraph unlock [path]           # Remove a stale lock file that's blocking ind
 codegraph query <search>          # Search symbols (--kind, --limit, --json)
 codegraph explore <query>         # Relevant symbols' source + call paths in one shot (same output as the codegraph_explore MCP tool)
 codegraph context <task...>       # Context for a task: relevant symbols, relationships and code (--format markdown|json, --max-nodes, --no-code)
-codegraph sessions <words...>     # Search Claude Code, Codex, Cursor/T3, OpenCode, AGY, Devin, and Grok transcripts and commit messages for this project (--role, --since <days>, --session, --any, --full, --context <n>, --project <path...> (experimental), --json; same output as codegraph_sessions)
+codegraph sessions <words...>     # Search Claude Code, Codex, Cursor/T3, OpenCode, AGY, Devin, and Grok transcripts and commit messages for this project (--role, --since <days>, --until <date>, --session, --any, --full, --context <n>, --project <path...> (experimental), --json; same output as codegraph_sessions)
 codegraph node <symbol|file>      # One symbol's source + callers, or read a file with line numbers (same output as codegraph_node)
 codegraph files [path]            # Show file structure (--format, --filter, --max-depth, --json)
 codegraph callers <symbol>        # Find what calls a function/method (--limit, --json)

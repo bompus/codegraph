@@ -36,6 +36,7 @@ import {
   formatSessionHits,
   FULL_PASSAGE_BUDGET,
   MAX_CONTEXT,
+  parseUntil,
 } from '../src/sessions';
 import { clearProjectConfigCache } from '../src/project-config';
 import { isInjectedDoc, slashCommandText, splitPassages, indexableDocs } from '../src/sessions/noise';
@@ -335,6 +336,10 @@ describe('SessionsIndex', () => {
     expect(hits.every((h) => h.snippet.includes('['))).toBe(true);
     expect(index.search('merging', { role: 'assistant' }).map((h) => h.role)).toEqual(['assistant']);
     expect(index.search('merging', { sinceIso: '2027-01-01T00:00:00.000Z' })).toEqual([]);
+    // The fixture's docs are stamped 2026-09-04: an upper bound before that drops them, one after keeps them.
+    expect(index.search('merging', { untilIso: '2026-09-04T00:00:00.000Z' })).toEqual([]);
+    expect(index.search('merging', { untilIso: '2026-09-05T00:00:00.000Z' })).toHaveLength(2);
+    expect(index.search('merging', { sinceIso: '2023-01-01T00:00:00.000Z', untilIso: '2026-09-05T00:00:00.000Z' })).toHaveLength(2);
     // No passage holds both words: the any-word query answers, flagged as a fallback.
     const partial = index.search('unrelatedword kept');
     expect(partial).toHaveLength(1);
@@ -1496,5 +1501,48 @@ describe('large Codex rollouts are scanned, not parsed whole', () => {
     const parsed = parseCodexTranscript(write('none.jsonl', rollout([])));
     expect(parsed.docs).toEqual([]);
     expect(parsed.session).toBe('codex:none');
+  });
+});
+
+describe('SessionsIndex until bound', () => {
+  it('compares stored timestamps as instants, whatever their fractional-second or offset form', () => {
+    const dir = fixtureDir();
+    const stamps = ['2026-10-20T12:00:00Z', '2026-10-20T12:00:00.250Z', '2026-10-20T12:00:00.750Z', '2026-10-20T06:00:00-06:00', '2026-10-20T07:00:00-06:00'];
+    writeJsonl(
+      path.join(dir, 'aaaa-1111.jsonl'),
+      stamps.map((timestamp, i) => user(`cutoffprobe passage number ${i} for the cutoff test`, { timestamp })),
+      1_700_000_000,
+    );
+    const index = SessionsIndex.open(':memory:');
+    index.refresh(dir);
+    expect(index.search('cutoffprobe', { limit: 10 }).map((h) => h.ts).sort()).toEqual([...stamps].sort());
+    const before = (until: string) => index.search('cutoffprobe', { limit: 10, untilIso: until }).map((h) => h.ts).sort();
+    // 12:00:00Z, 12:00:00.250Z and 06:00:00-06:00 (which is 12:00:00Z) all precede 12:00:00.500Z; text order puts the plain-Z form after '.500Z'.
+    expect(before('2026-10-20T12:00:00.500Z')).toEqual(['2026-10-20T06:00:00-06:00', '2026-10-20T12:00:00.250Z', '2026-10-20T12:00:00Z']);
+    // An instant equal to the bound is not before it, in any spelling.
+    expect(before('2026-10-20T12:00:00.000Z')).toEqual([]);
+    expect(before('2026-10-20T12:00:01.000Z')).toHaveLength(4);
+    index.close();
+  });
+});
+
+describe('parseUntil', () => {
+  it('reads a date as midnight UTC, keeps a timestamp, and flags text that is not a date', () => {
+    expect(parseUntil('2026-10-20')).toBe('2026-10-20T00:00:00.000Z');
+    expect(parseUntil('2026-10-20T12:30:00Z')).toBe('2026-10-20T12:30:00.000Z');
+    expect(parseUntil(undefined)).toBeUndefined();
+    expect(parseUntil('')).toBeUndefined();
+    expect(parseUntil('last tuesday')).toBeNull();
+    // A date that does not exist is refused, not moved to the next month.
+    expect(parseUntil('2026-02-30')).toBeNull();
+    expect(parseUntil('2026-02-29')).toBeNull();
+    expect(parseUntil('2028-02-29')).toBe('2028-02-29T00:00:00.000Z');
+    // A timestamp must name its zone; guessing the machine's would move the cutoff with TZ.
+    expect(parseUntil('2026-10-20T00:00:00')).toBeNull();
+    // The bound is exact to the millisecond: more digits would be cut off silently.
+    expect(parseUntil('2026-10-20T12:00:00.500Z')).toBe('2026-10-20T12:00:00.500Z');
+    expect(parseUntil('2026-10-20T12:00:00.5009Z')).toBeNull();
+    expect(parseUntil('2026-10-20T05:00:00-06:00')).toBe('2026-10-20T11:00:00.000Z');
+    expect(parseUntil(5)).toBeNull();
   });
 });

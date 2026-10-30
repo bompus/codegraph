@@ -68,6 +68,14 @@ describe('codegraph sessions — CLI command', () => {
     expect(out).not.toContain('user · ');
   });
 
+  it('--until keeps only docs before a date and rejects text that is not one', () => {
+    const before = JSON.parse(sessions(tempDir, transcripts, ['trim', '--until', '2026-09-04', '--json']));
+    expect(before.hits).toEqual([]);
+    const after = JSON.parse(sessions(tempDir, transcripts, ['trim', '--until', '2026-09-05', '--since', '3650', '--json']));
+    expect(after.hits).toHaveLength(2);
+    expect(() => sessions(tempDir, transcripts, ['trim', '--until', 'last tuesday'])).toThrow();
+  });
+
   it('--json carries the index stats and the raw hits; --role and --any filter and widen', () => {
     const parsed = JSON.parse(sessions(tempDir, transcripts, ['trim', '--json']));
     expect(parsed.index).toEqual({ files: 1, refreshed: 1, docs: 2 });

@@ -1505,14 +1505,21 @@ program
   .option('-l, --limit <number>', 'Maximum hits', '10')
   .option('-r, --role <role>', 'Only user, assistant, summary or commit docs')
   .option('--since <days>', 'Only docs from the last N days')
+  .option('--until <date>', 'Only docs before this date (2026-10-20, UTC) or timestamp with its zone (2026-10-20T05:00:00-06:00)')
   .option('--session <id-prefix>', 'Only one session (id prefix)')
   .option('--any', 'OR the words instead of requiring all of them')
   .option('--full', 'Show each hit\'s whole passage (16,000 bytes in all) instead of a snippet')
   .option('--context <n>', 'Also show n passages (0-5) before and after each hit; implies --full', '0')
   .option('--project <path...>', 'Experimental: search these projects instead (at most 5); hits name their project')
   .option('-j, --json', 'Output as JSON')
-  .action(async (words: string[], options: { path?: string; limit?: string; role?: string; since?: string; session?: string; any?: boolean; full?: boolean; context?: string; project?: string[]; json?: boolean }) => {
+  .action(async (words: string[], options: { path?: string; limit?: string; role?: string; since?: string; until?: string; session?: string; any?: boolean; full?: boolean; context?: string; project?: string[]; json?: boolean }) => {
     const projectPath = resolveProjectPath(options.path);
+    const { parseUntil } = await import('../sessions');
+    const untilIso = parseUntil(options.until);
+    if (untilIso === null) {
+      error(`--until must be a real date such as 2026-10-20, or a timestamp with its zone such as 2026-10-20T05:00:00Z, got "${options.until}"`);
+      process.exit(1);
+    }
     try {
       if (options.project && options.project.length > 0) {
         const { querySessionsAcross, formatCrossProjectHits, MAX_PROJECTS } = await import('../sessions/fanout');
@@ -1527,6 +1534,7 @@ program
           limit: parseInt(options.limit || '10', 10),
           role: options.role,
           sinceIso: sinceDays > 0 ? new Date(Date.now() - sinceDays * 86_400_000).toISOString() : undefined,
+          untilIso,
           session: options.session,
           any: options.any,
           full: options.full,
@@ -1548,6 +1556,7 @@ program
           limit: parseInt(options.limit || '10', 10),
           role: options.role,
           sinceIso: sinceDays > 0 ? new Date(Date.now() - sinceDays * 86_400_000).toISOString() : undefined,
+          untilIso,
           session: options.session,
           any: options.any,
           full: options.full,
