@@ -55,14 +55,12 @@ const CHUNK_SIZE = 250;
 
 /**
  * Minimum TOTAL pending refs before the pool is created at all. Pool boot
- * (module load + readonly DB open + framework detect + cache warm, times N
- * workers) costs real CPU that CONTENDS with sequential resolution on the
- * same cores, and every worker holds its own caches: forcing the pool on
- * raised peak memory by 53-108% in a 2026-10-12 sweep on a 16-vCPU host.
- * The same sweep (corpora of 13.9k-111k refs) found it faster in wall time
- * from 22.7k refs up (6-62% at 37k-111k) and not clearly different at
- * 13.9k; 111k-150k refs was not measured. The crossover depends on the
- * host's cores and on how much memory the run may use. Override: CODEGRAPH_PARALLEL_RESOLVE_MIN=<refs> (0 forces the pool on).
+ * (module load + worker start + caches) costs ~90ms and real CPU, so it pays
+ * only when the refs themselves are expensive. gin's 14k Go refs resolve
+ * sequentially in 464ms and the pool takes its 1.17s index to 0.88s; an 8k
+ * cheap C fixture resolves in 71ms and the pool lost 49ms on it. 12k keeps
+ * the Go win and stays above the measured cheap-resolution counterexample.
+ * Override: CODEGRAPH_PARALLEL_RESOLVE_MIN=<refs> (0 forces the pool on).
  */
 export function minRefsForPool(): number {
   const raw = process.env.CODEGRAPH_PARALLEL_RESOLVE_MIN;
@@ -70,6 +68,14 @@ export function minRefsForPool(): number {
     const parsed = Number.parseInt(raw, 10);
     if (Number.isFinite(parsed) && parsed >= 0) return parsed;
   }
+  return 12_000;
+}
+
+/** Minimum refs before the loop drops and rebuilds the non-unique edge and
+ *  unresolved-ref indexes over the whole existing graph. That window is a
+ *  full-table scan on a large index, so it stays at the measured 150k floor;
+ *  the pool threshold above is separate. */
+export function minRefsForBulkLoad(): number {
   return 150_000;
 }
 
@@ -100,6 +106,16 @@ export function shouldEngageAdaptively(projectedMs: number, remainingRefs: numbe
  */
 export function adaptiveEngageEnabled(): boolean {
   return process.env.CODEGRAPH_PARALLEL_RESOLVE_MIN === undefined;
+}
+
+/** The compiled worker entry. In production it is the sibling tsc emits; under
+ *  Vitest, which loads src/ while the global setup builds dist/, use that copy
+ *  so pool-mode tests exercise the pool instead of silently declining it. */
+function resolverWorkerScript(): string | null {
+  const sibling = path.join(__dirname, 'resolver-worker.js');
+  if (fs.existsSync(sibling)) return sibling;
+  const built = path.resolve(__dirname, '../../dist/resolution/resolver-worker.js');
+  return fs.existsSync(built) ? built : null;
 }
 
 export class ResolverPool {
@@ -160,8 +176,15 @@ export class ResolverPool {
     // each idle worker still carried ~180MB of isolate+kernel overhead, and
     // only a deep queue (1.85M refs) made the 12th worker earn it (−13%
     // resolve wall there). Size to the work, not just the machine.
+    // Small runs get a worker per ~2k refs: gin's 14k refs resolve
+    // sequentially in 464ms against a ~90ms pool boot, and 7-8 workers bring
+    // a 1.17s index to 0.88s. The cap rises smoothly with the work (refs/12)
+    // up to the measured ~25k refs per worker, so 100k refs are not a cliff.
+    const perWorkerRefs = opts.pendingRefs === undefined
+      ? 25_000
+      : Math.min(25_000, Math.max(2_000, Math.ceil(opts.pendingRefs / 12)));
     const workCap =
-      opts.pendingRefs === undefined ? cpuCap : Math.max(2, Math.ceil(opts.pendingRefs / 25_000));
+      opts.pendingRefs === undefined ? cpuCap : Math.max(2, Math.ceil(opts.pendingRefs / perWorkerRefs));
     const size = Math.min(cpuCap, memCap, workCap);
     return size >= 2 ? size : null;
   }
@@ -181,8 +204,7 @@ export class ResolverPool {
    */
   static preflight(dbPath: string, pendingRefs?: number): number | null {
     if (process.env.CODEGRAPH_NO_PARALLEL_RESOLVE === '1') return null;
-    const workerScript = path.join(__dirname, 'resolver-worker.js');
-    if (!fs.existsSync(workerScript)) return null;
+    if (resolverWorkerScript() === null) return null;
     let dbSizeBytes = 0;
     try {
       dbSizeBytes = fs.statSync(dbPath).size;
@@ -215,7 +237,8 @@ export class ResolverPool {
   ): ResolverPool | null {
     const size = ResolverPool.preflight(dbPath, pendingRefs);
     if (size === null) return null;
-    const workerScript = path.join(__dirname, 'resolver-worker.js');
+    const workerScript = resolverWorkerScript();
+    if (workerScript === null) return null;
     try {
       return new ResolverPool(workerScript, dbPath, projectRoot, size, kernelDbPath, supertypesComplete);
     } catch {

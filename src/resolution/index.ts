@@ -33,7 +33,7 @@ import { gateSuperSelfCall } from './super-self';
 import { gatePascalCall } from './pascal-scope';
 import { resurrectRefFromDroppedEdge } from './resurrect-ref';
 import { GO_TYPE_KINDS, isGoBareName, isGoUnknownQualified, goTypePositionTarget, goDotImportedSupertype } from './go-type-visibility';
-import { ResolverPool, adaptiveEngageEnabled, minRefsForPool, shouldEngageAdaptively } from './resolver-pool';
+import { ResolverPool, adaptiveEngageEnabled, minRefsForBulkLoad, minRefsForPool, shouldEngageAdaptively } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
 import { detectFrameworksWithSkips, getResolvingFrameworks } from './frameworks';
 import { collectSynthesisInputs, synthesizeCallbackEdges } from './callback-synthesizer';
@@ -2524,10 +2524,10 @@ export class ReferenceResolver {
     // and the source-keyed supertype-walk reads both live on it). Recreated in
     // the inner finally BEFORE synthesis, whose passes read kind-keyed.
     // Measured on a 224k-edge resolution set: insert 2.8s → 1.1s + 0.3s
-    // recreate. Same ref-count gate as the pool so small syncs never pay the
-    // recreate cost.
+    // recreate. Gated at minRefsForBulkLoad(), NOT the pool floor: this window
+    // scans and rebuilds whole-table indexes, so it must stay on large runs.
     let bulkEdgesActive = false;
-    if (parallel?.bulkEdgeLoad && total >= minRefsForPool()) {
+    if (parallel?.bulkEdgeLoad && total >= minRefsForBulkLoad()) {
       try {
         parallel.bulkEdgeLoad.begin();
         bulkEdgesActive = true;
@@ -2537,7 +2537,7 @@ export class ReferenceResolver {
     // the five sync-path unresolved_refs indexes, and the end-of-loop rebuild
     // is near-free (only failed refs survive the loop).
     let bulkRefsActive = false;
-    if (parallel?.refIndexLoad && total >= minRefsForPool()) {
+    if (parallel?.refIndexLoad && total >= minRefsForBulkLoad()) {
       try {
         parallel.refIndexLoad.begin();
         bulkRefsActive = true;

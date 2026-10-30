@@ -576,7 +576,9 @@ const KOTLIN_FUN_MODIFIERS = new Set([
 /** Words that begin a declaration other than a method where a Java return type would stand. */
 const NOT_A_RETURN_TYPE = new Set(['class', 'interface', 'enum', 'record']);
 
-const IDENTIFIER = /[A-Za-z_$][\w$]*/y;
+// Java and Kotlin identifiers follow Unicode letters/marks, not just ASCII
+// (`public Üser list()`): the scanner must read the written identifier.
+const IDENTIFIER = /[\p{L}_$][\p{L}\p{N}\p{M}_$]*/uy;
 
 function readIdentifier(s: string, i: number): string | null {
   IDENTIFIER.lastIndex = i;
@@ -612,6 +614,13 @@ function skipGroup(s: string, i: number): number {
     const c = s[j]!;
     if (c === '"' || (c === "'" && open !== '<')) {
       const end = skipQuoted(s, j);
+      if (end < 0) return -1;
+      j = end - 1;
+    } else if (open === '<' && (c === '(' || c === '[' || c === '{')) {
+      // A type-use annotation's arguments inside generic arguments
+      // (`List<@Flag(1 < 2) String>`): a `<` in there is an operator, not a
+      // type bracket, so skip the whole nested group.
+      const end = skipGroup(s, j);
       if (end < 0) return -1;
       j = end - 1;
     } else if (c === open) {

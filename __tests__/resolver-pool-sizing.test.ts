@@ -8,7 +8,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import * as os from 'os';
-import { ResolverPool } from '../src/resolution/resolver-pool';
+import { ResolverPool, minRefsForBulkLoad, minRefsForPool } from '../src/resolution/resolver-pool';
 import {
   cgroupMemoryAvailable,
   darwinMemoryAvailable,
@@ -26,6 +26,18 @@ function size(opts: Partial<Parameters<typeof ResolverPool.resolvePoolSize>[0]>)
     ...opts,
   });
 }
+
+describe('pool thresholds', () => {
+  it('engages the pool at 12k refs but keeps bulk index windows at 150k', () => {
+    // 12k keeps gin (14k Go refs, 0.88s with the pool) and excludes the 8k
+    // cheap-C counterexample (pool lost 49ms, 327 vs 278ms index).
+    expect(minRefsForPool()).toBe(12_000);
+    // Dropping and rebuilding the whole edge/ref indexes is a full-table scan;
+    // the old 150k gate for that window must not follow the pool floor down.
+    expect(minRefsForBulkLoad()).toBe(150_000);
+    expect(minRefsForBulkLoad()).toBeGreaterThan(minRefsForPool());
+  });
+});
 
 describe('ResolverPool.resolvePoolSize', () => {
   it('big dev box: CPU-capped at ap−1 up to the 12-worker ceiling', () => {
@@ -59,16 +71,22 @@ describe('ResolverPool.resolvePoolSize', () => {
     expect(size({ memoryBudget: 512 * MB, dbSizeBytes: 4 * GB })).toBeNull();
   });
 
-  it('pending refs cap the pool at ~25k refs per worker — spare workers cost RSS, not time', () => {
+  it('small/medium runs size to ~2k refs per worker; large runs keep ~25k', () => {
     // Measured: 207k refs saturated 8 workers on a 24-parallelism host
     // (7.5s at 8 = 7.4s at 12); 1.85M refs still profited from all 12.
-    expect(size({ availableParallelism: 24, pendingRefs: 207_304 })).toBe(9);
+    // Below 100k, the per-ref kernel cost dominates the ~90ms pool boot:
+    // gin's 14k refs went from a 1.17s sequential index to 0.88s at 8 workers
+    // (upstream 0.89s), and Alamofire's 1.60s to 1.19s.
+    expect(size({ availableParallelism: 24, pendingRefs: 207_304 })).toBe(12);
     expect(size({ availableParallelism: 24, pendingRefs: 1_852_551 })).toBe(12);
-    expect(size({ availableParallelism: 24, pendingRefs: 60_000 })).toBe(3);
+    expect(size({ availableParallelism: 24, pendingRefs: 60_000 })).toBe(12);
+    // No cliff at 100k: the per-worker cap rises smoothly with the work.
+    expect(size({ availableParallelism: 24, pendingRefs: 99_999 })).toBe(12);
+    expect(size({ availableParallelism: 24, pendingRefs: 100_000 })).toBe(12);
+    expect(size({ availableParallelism: 24, pendingRefs: 100_001 })).toBe(12);
     // No ref signal (undefined) keeps the old CPU/memory sizing.
     expect(size({ availableParallelism: 24 })).toBe(12);
-    // Floor of 2 — the cap never disables an otherwise-viable pool.
-    expect(size({ availableParallelism: 24, pendingRefs: 25_000 })).toBe(2);
+    expect(size({ availableParallelism: 24, pendingRefs: 25_000 })).toBe(12);
     // Explicit override still wins over the work cap.
     expect(size({ explicit: '12', pendingRefs: 60_000 })).toBe(12);
   });
