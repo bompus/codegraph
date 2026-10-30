@@ -47,7 +47,7 @@ import {
   type QueryLineAnchor,
   type QuerySetAsideMatch,
 } from '../search/query-paths';
-import { querySessions, formatSessionHits, NoSessionsError, sessionsMentioning, MAX_CONTEXT } from '../sessions';
+import { querySessions, formatSessionHits, NoSessionsError, sessionsMentioning, parseUntil, MAX_CONTEXT } from '../sessions';
 import { querySessionsAcross, formatCrossProjectHits, MAX_PROJECTS, type ProjectTarget } from '../sessions/fanout';
 import {
   existsSync,
@@ -2152,6 +2152,10 @@ export const tools: ToolDefinition[] = [
         sinceDays: {
           type: 'number',
           description: 'Only docs from the last N days.',
+        },
+        until: {
+          type: 'string',
+          description: 'Only docs before this date or timestamp, for example "2026-10-20". With sinceDays it bounds a window.',
         },
         session: {
           type: 'string',
@@ -4689,6 +4693,8 @@ export class ToolHandler {
     const listed = requested.slice(0, MAX_PROJECTS);
     const projectRoot = listed.length > 0 ? '' : this.getCodeGraph(args.projectPath as string | undefined).getProjectRoot();
     const sinceDays = Number(args.sinceDays);
+    const untilIso = parseUntil(args.until);
+    if (untilIso === null) return this.errorResult('until must be a date or timestamp such as 2026-10-20');
     const role = typeof args.role === 'string' ? args.role : undefined;
     const session = typeof args.session === 'string' ? args.session : undefined;
     try {
@@ -4696,6 +4702,7 @@ export class ToolHandler {
         limit: clamp(Number(args.limit) || 10, 1, 100),
         role,
         sinceIso: sinceDays > 0 ? new Date(Date.now() - sinceDays * 86_400_000).toISOString() : undefined,
+        untilIso,
         session,
         any: args.any === true,
         full: args.full === true,

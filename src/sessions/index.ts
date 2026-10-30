@@ -132,6 +132,8 @@ export interface SessionSearchOptions {
   role?: string;
   /** ISO timestamp; hits before it are dropped. */
   sinceIso?: string;
+  /** ISO timestamp; hits at or after it are dropped. */
+  untilIso?: string;
   /** Session id prefix. */
   session?: string;
   /** OR the words instead of ANDing them. */
@@ -488,6 +490,7 @@ export class SessionsIndex {
     const filters: Array<[string, string | undefined]> = [
       ['docs.role = ?', opts.role],
       ['docs.ts >= ?', opts.sinceIso],
+      ['docs.ts < ?', opts.untilIso],
       ['files.session GLOB ?', opts.session ? `${opts.session}*` : undefined],
     ];
     for (const [clause, value] of filters) {
@@ -550,6 +553,17 @@ export class SessionsIndex {
   close(): void {
     this.db.close();
   }
+}
+
+/**
+ * The ISO instant a user-typed `until` bound means: a date (`2026-10-20`, read
+ * as midnight UTC) or a timestamp. `undefined` when none was given, `null` when
+ * the text is not a date.
+ */
+export function parseUntil(raw: unknown): string | undefined | null {
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  const ms = typeof raw === 'string' ? Date.parse(raw) : NaN;
+  return Number.isNaN(ms) ? null : new Date(ms).toISOString();
 }
 
 /** Where a project's session index lives. */

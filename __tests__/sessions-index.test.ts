@@ -36,6 +36,7 @@ import {
   formatSessionHits,
   FULL_PASSAGE_BUDGET,
   MAX_CONTEXT,
+  parseUntil,
 } from '../src/sessions';
 import { clearProjectConfigCache } from '../src/project-config';
 import { isInjectedDoc, slashCommandText, splitPassages, indexableDocs } from '../src/sessions/noise';
@@ -335,6 +336,10 @@ describe('SessionsIndex', () => {
     expect(hits.every((h) => h.snippet.includes('['))).toBe(true);
     expect(index.search('merging', { role: 'assistant' }).map((h) => h.role)).toEqual(['assistant']);
     expect(index.search('merging', { sinceIso: '2027-01-01T00:00:00.000Z' })).toEqual([]);
+    // The fixture's docs are stamped 2026-09-04: an upper bound before that drops them, one after keeps them.
+    expect(index.search('merging', { untilIso: '2026-09-04T00:00:00.000Z' })).toEqual([]);
+    expect(index.search('merging', { untilIso: '2026-09-05T00:00:00.000Z' })).toHaveLength(2);
+    expect(index.search('merging', { sinceIso: '2023-01-01T00:00:00.000Z', untilIso: '2026-09-05T00:00:00.000Z' })).toHaveLength(2);
     // No passage holds both words: the any-word query answers, flagged as a fallback.
     const partial = index.search('unrelatedword kept');
     expect(partial).toHaveLength(1);
@@ -1496,5 +1501,16 @@ describe('large Codex rollouts are scanned, not parsed whole', () => {
     const parsed = parseCodexTranscript(write('none.jsonl', rollout([])));
     expect(parsed.docs).toEqual([]);
     expect(parsed.session).toBe('codex:none');
+  });
+});
+
+describe('parseUntil', () => {
+  it('reads a date as midnight UTC, keeps a timestamp, and flags text that is not a date', () => {
+    expect(parseUntil('2026-10-20')).toBe('2026-10-20T00:00:00.000Z');
+    expect(parseUntil('2026-10-20T12:30:00Z')).toBe('2026-10-20T12:30:00.000Z');
+    expect(parseUntil(undefined)).toBeUndefined();
+    expect(parseUntil('')).toBeUndefined();
+    expect(parseUntil('last tuesday')).toBeNull();
+    expect(parseUntil(5)).toBeNull();
   });
 });
