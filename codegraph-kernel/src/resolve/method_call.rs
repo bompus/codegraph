@@ -693,6 +693,17 @@ impl KernelResolver {
             McShape::Done(res) => return Ok(res),
         };
 
+        // A call on one of the browser's own objects — `window.open()`,
+        // `localStorage.getItem()`, `location.reload()`, `history.back()` —
+        // that the file neither binds nor imports is the browser's: no project
+        // method is it, whatever the method's name or a class's resemblance to
+        // the receiver (#2907). Ahead of the receiver-type reader, whose
+        // backward scan has no scope and would take a `history: X` member line
+        // for this name.
+        if r.reference_kind == "calls" && dotted && is_js_family(&r.language)
+            && self.is_browser_host_global(&object_or_class, r)? {
+            return Ok(None);
+        }
         if r.language == "cpp" && self.cpp_external_receiver(&object_or_class, r)? { return Ok(None); }
         if matches!(r.language.as_str(), "java" | "kotlin") {
             if let Some(hit) = self.enum_constant_call(&object_or_class, &method_name, r)? { return Ok(Some(hit)); }
@@ -802,6 +813,12 @@ impl KernelResolver {
                     None => self.infer_local_receiver_type(&object_or_class, &site, true),
                 }?)
             };
+            // A JVM `var name = Method()` takes the method's return type
+            // (`var userRegistry = make()` is a Registry), which no text
+            // pattern in local_receiver_type_patterns reads.
+            if inferred.is_none() && matches!(r.language.as_str(), "java" | "csharp" | "kotlin") {
+                inferred = self.jvm_var_initializer_type(&object_or_class, r)?;
+            }
             if r.language == "objc" && inferred.is_none() {
                 inferred = self.objc_member_receiver_type(&object_or_class, r)?;
             }
@@ -933,7 +950,63 @@ if inferred.is_none() && r.language == "dart" {
             }
             return self.match_bound_type_member(&object_or_class, &method_name, r);
         }
+        // `chunk, _ := s.Recv()` where `s` is a parameter of a generic type
+        // from a package the project does not index: the method's result is
+        // that type argument, which the written type names (`[Resp]`). The
+        // free strategies then answer the call from the method's name, as
+        // upstream leaves it (#2543). A value an outside package hands out
+        // (`http.NewRequest`, `ctx.Err()`) stays refused.
+        if r.language == "go" && !object_or_class.contains('.')
+            && self
+                .go_local_declaration_at(object_or_class.clone(), r.file_path.clone(), r.line, r.column)?
+                .is_some_and(|d| d.declared_type.is_none())
+            && self.go_generic_parameter_initializer(&object_or_class, r)?
+        {
+            self.go_mc_untyped_local = true;
+        }
         Ok(None)
+    }
+
+    /// Whether `name`'s short-var initializer calls a method on a parameter
+    /// whose written type is a generic of an outside package
+    /// (`chunk, _ := s.Recv()` on `s grpc.ServerStreamingClient[Resp]`).
+    fn go_generic_parameter_initializer(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
+        let Some(binding) = self.receiver_binding(name, r)? else { return Ok(false) };
+        let Some(lines) = self.read_file(&r.file_path) else { return Ok(false) };
+        let Some(line) = lines.get((binding.line - 1).max(0) as usize) else { return Ok(false) };
+        let pattern = Self::cached_regex(&format!(
+            r"\b{}\s*:?[^=]*=\s*([A-Za-z_]\w*)\.[A-Za-z_]\w*\s*\(",
+            regex::escape(name)
+        ))?;
+        let Some(caps) = pattern.captures(line) else { return Ok(false) };
+        let root = caps[1].to_string();
+        let Some(caller) = self.node_by_id(&r.from_node_id)? else { return Ok(false) };
+        let signature = caller.signature.clone().unwrap_or_default();
+        let parameter = Self::cached_regex(&format!(r"\b{}\s+([A-Za-z_][\w.\[\]]*)", regex::escape(&root)))?;
+        Ok(parameter.captures(&signature).is_some_and(|m| m[1].contains('[') && m[1].contains('.')))
+    }
+
+    /// The type a JVM `var name = Method()` local holds: the return type the
+    /// one project method named `Method` declares. None for any other shape.
+    fn jvm_var_initializer_type(&mut self, name: &str, r: &ResolveRefIn) -> Res<Option<String>> {
+        let Some(binding) = self.receiver_binding(name, r)? else { return Ok(None) };
+        let Some(lines) = self.read_file(&r.file_path) else { return Ok(None) };
+        let Some(line) = lines.get((binding.line - 1).max(0) as usize) else { return Ok(None) };
+        let pattern = Self::cached_regex(&format!(
+            r"\bvar\s+{}\s*=\s*([A-Za-z_]\w*)\s*\(",
+            regex::escape(name)
+        ))?;
+        let Some(caps) = pattern.captures(line) else { return Ok(None) };
+        let callee = caps[1].to_string();
+        let hits: Vec<_> = self
+            .nodes_by_name(&callee)?
+            .iter()
+            .filter(|n| matches!(n.kind.as_str(), "method" | "function") && n.return_type.is_some())
+            .cloned()
+            .collect();
+        let same_file: Vec<_> = hits.iter().filter(|n| n.file_path == r.file_path).cloned().collect();
+        let pick = if same_file.len() == 1 { same_file.into_iter().next() } else if hits.len() == 1 { hits.into_iter().next() } else { None };
+        Ok(pick.and_then(|n| n.return_type.clone()))
     }
 
     /// isReactLifecycleMethod (#2589): a lifecycle method (`render`,
@@ -1756,6 +1829,16 @@ if inferred.is_none() && r.language == "dart" {
         }
         if r.language == "go" && self.take_go_mc_untyped() {
             return probe!(r, "brc:mc-free", self.match_method_call_free(r));
+        }
+        // A Java/Scala/C# local whose `var` or inferred declaration says
+        // nothing of the value is like an unannotated JS binding: the free
+        // strategies answer it, and their standard-method gate keeps a
+        // library name from binding by name alone (#2915).
+        if matches!(r.language.as_str(), "java" | "scala" | "csharp" | "kotlin")
+            && binding.kind == "local"
+            && self.infer_local_receiver_type(root, r, true)?.is_none()
+        {
+            return probe!(r, "brc:untyped-jvm", self.match_method_call_free(r));
         }
         if binding.kind == "param" {
             // An unannotated parameter bound the name but says nothing of

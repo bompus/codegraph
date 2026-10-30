@@ -52,6 +52,25 @@ const GO_STD_METHODS: &[&str] = &[
     "NumField", "Interface", "Kind",
 ];
 
+/// A Scala collection/Option method: a bare call of one on a receiver of
+/// unknown type is the standard library's, unless the receiver's own words
+/// name the project type (#2915's rule for Python's `setdefault`).
+const SCALA_STD_METHODS: &[&str] = &[
+    "getOrElse", "getOrNull", "getOrPut", "getOrDefault", "isDefined", "isEmpty",
+    "nonEmpty", "map", "flatMap", "filter", "filterNot", "foreach", "fold",
+    "foldLeft", "foldRight", "collect", "toList", "toSet", "toMap", "head",
+    "headOption", "tail", "size", "length", "exists", "forall",
+];
+
+/// A Java standard-library method: `size`, `put`, `get`, `toString` on a
+/// receiver of unknown type is the JDK's, unless its words name the project
+/// type.
+const JAVA_STD_METHODS: &[&str] = &[
+    "size", "put", "putAll", "get", "getOrDefault", "contains", "containsKey",
+    "containsValue", "add", "addAll", "remove", "toString", "equals", "hashCode",
+    "length", "isEmpty", "iterator", "stream", "forEach",
+];
+
 const KOTLIN_STD_METHODS: &[&str] = &[
     "apply", "also", "let", "run", "takeIf", "takeUnless",
     "toString", "equals", "hashCode", "map", "mapNotNull", "mapIndexed",
@@ -164,6 +183,7 @@ pub(super) fn is_std_method(language: &str, name: &str) -> bool {
     match language {
         "rust" => RUST_STD_METHODS, "go" => GO_STD_METHODS,
         "kotlin" => KOTLIN_STD_METHODS, "csharp" => CSHARP_STD_METHODS, "dart" => DART_STD_METHODS,
+        "scala" => SCALA_STD_METHODS, "java" => JAVA_STD_METHODS,
         _ => &[],
     }.contains(&name)
 }
@@ -651,6 +671,14 @@ impl KernelResolver {
             return Ok(n.file_path == r.file_path && n.start_line >= start && n.end_line <= end);
         }
         if !member || n.file_path == r.file_path { return Ok(true); }
+        // A standard-library method on a receiver of unknown type is the
+        // library's; only a receiver whose words name the type keeps it.
+        if is_std_method("scala", &n.name)
+            && !site.receiver.is_empty()
+            && !shares_receiver_word(&site.receiver, n)
+        {
+            return Ok(false);
+        }
         let Some(owner) = owner(n) else { return Ok(true) };
         if self.scala_imported_member(owner, &r.reference_name, &r.file_path)? { return Ok(true); }
         let mut queue: VecDeque<String> = nodes.iter().filter(|t| type_kind(&t.kind) && t.start_line <= r.line && t.end_line >= r.line).map(|t| t.name.clone()).collect();

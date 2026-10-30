@@ -407,6 +407,21 @@ if site.language == "dart" && site.reference_kind == "calls" {
                 }
             }
         }
+        // Bases in the order the class header names them: C3 takes the first
+        // head no other sequence's tail holds, and the edge table's order is
+        // not the header's (`Adapter(Left, Right)` is Left first).
+        if bases.len() > 1 {
+            let header = self.header_of(class)?;
+            let mut keyed: Vec<(usize, Arc<KNode>)> = bases
+                .into_iter()
+                .map(|b| {
+                    let at = super::names::name_offsets(&header, &b.name).next().unwrap_or(usize::MAX);
+                    (at, b)
+                })
+                .collect();
+            keyed.sort_by_key(|(at, _)| *at);
+            bases = keyed.into_iter().map(|(_, b)| b).collect();
+        }
         let mut seqs: Vec<Vec<Arc<KNode>>> = Vec::with_capacity(bases.len() + 1);
         for b in &bases {
             let Some(m) = self.python_mro(b, depth + 1)? else { return Ok(None) };
@@ -794,7 +809,7 @@ if site.language == "dart" && site.reference_kind == "calls" {
     /// qualified names, and `qualified` looks `type_name` up as one: a
     /// class's parent is the one its declaration resolved to, never every
     /// same-named class in other namespaces.
-    fn supertype_names(&mut self, type_name: &str, r: &ResolveRefIn, from_site: bool, qualified: bool) -> Res<Vec<String>> {
+    pub(super) fn supertype_names(&mut self, type_name: &str, r: &ResolveRefIn, from_site: bool, qualified: bool) -> Res<Vec<String>> {
         let mut names: Vec<String> = Vec::new();
         for tn in self.supertype_type_nodes(type_name, r, from_site, qualified)? {
             // Ruby and PHP look in mixins before the parent class.

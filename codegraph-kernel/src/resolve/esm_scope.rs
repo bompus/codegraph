@@ -4,6 +4,54 @@ use super::*;
 use super::awaited::{blank_string_contents, strip_ts_comments};
 
 impl KernelResolver {
+    /// Whether `name` at this call is one of the browser's own objects rather
+    /// than a project value: a JS-family name in JS_BROWSER_HOST_GLOBALS that
+    /// the file writes only as a receiver (`document.x`, `history.back()`,
+    /// `self?.close()`) or after `typeof`. A file that binds the name — a
+    /// parameter, plain or destructured, a declaration, `var self = this`, an
+    /// import — keeps it its own (#2907).
+    pub(super) fn is_browser_host_global(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
+        if !is_js_family(&r.language) || !JS_BROWSER_HOST_GLOBALS.contains(name) {
+            return Ok(false);
+        }
+        let key = format!("{}\0{}", r.file_path, name);
+        if let Some(&hit) = self.js_host_receiver_only.get(&key) {
+            return Ok(hit);
+        }
+        let only = self.uses_name_only_as_receiver(name, &r.file_path)?;
+        self.js_host_receiver_only.insert(key, only);
+        Ok(only)
+    }
+
+    /// Whether the JS/TS file writes `name` only as a receiver or after
+    /// `typeof`. Any other mention may bind or hand over a value of the file's
+    /// own. Read with comments and strings blanked; `x.document` is no mention.
+    fn uses_name_only_as_receiver(&mut self, name: &str, file_path: &str) -> Res<bool> {
+        let Some(src) = self.read_file(file_path) else { return Ok(true) };
+        let code = blank_string_contents(&strip_ts_comments(src.text()));
+        let mut only = true;
+        let mut from = 0usize;
+        while let Some(rel) = code[from..].find(name) {
+            let at = from + rel;
+            let end = at + name.len();
+            from = at + 1;
+            let previous = code[..at].chars().next_back();
+            if previous.is_some_and(|c| is_word_char(c) || c == '.' || c == '#') { continue; }
+            if code[end..].chars().next().is_some_and(is_word_char) { continue; }
+            let rest = code[end..].trim_start();
+            let receiver = (rest.starts_with('.') && !rest.starts_with(".."))
+                || rest.starts_with('[')
+                || rest.starts_with("?.");
+            let window = &code[at.saturating_sub(16)..at];
+            let after_typeof = window.rfind("typeof").is_some_and(|i| {
+                window[..i].chars().next_back().is_none_or(|c| !is_word_char(c))
+                    && window[i + 6..].chars().all(char::is_whitespace)
+            });
+            if !receiver && !after_typeof { only = false; break; }
+        }
+        Ok(only)
+    }
+
     pub(super) fn is_unexported_module_binding(&mut self, n: &KNode) -> Res<bool> {
         if !is_esm_family(&n.language) || n.is_exported || n.qualified_name.contains("::")
             || !matches!(n.kind.as_str(), "function" | "variable" | "constant" | "class" | "interface" | "type_alias" | "enum" | "component")
@@ -46,4 +94,9 @@ impl KernelResolver {
         let line = lines.get((n.start_line - 1).max(0) as usize).map(String::as_str).unwrap_or("");
         Ok(re!(r"^\s*(?:declare\s+)?(?:async\s+)?(?:function\*?|const|let|var|(?:abstract\s+)?class|interface|type|enum)\s").is_match(line))
     }
+}
+
+/// A JS identifier character.
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '$'
 }

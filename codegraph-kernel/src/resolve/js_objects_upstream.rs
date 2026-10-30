@@ -56,6 +56,15 @@ fn position_within(r: &ResolveRefIn,n: &KNode) -> bool {
         && (r.line,r.column) < (n.end_line,n.end_column)
 }
 
+/// What a collapsed-object call (`window.App.init()`, `this.render()`, a
+/// bare name recorded from a chain) is: not one of ours, the browser's own
+/// object (no edge), or a resolved project member (#2907).
+pub(super) enum CollapsedCall {
+    NotOurs,
+    Declined,
+    Hit(KCand),
+}
+
 impl KernelResolver {
     fn js_object_parent(&mut self,n: &KNode) -> Res<Option<Arc<KNode>>> {
         let Some(cut) = n.qualified_name.rfind("::").filter(|cut| *cut > 0) else { return Ok(None) };
@@ -273,28 +282,40 @@ impl KernelResolver {
         })
     }
 
-    pub(super) fn match_collapsed_object_call(&mut self,r: &ResolveRefIn) -> Res<Option<KCand>> {
+    pub(super) fn match_collapsed_object_call(&mut self,r: &ResolveRefIn) -> Res<CollapsedCall> {
         if r.reference_kind != "calls" || !is_js_family(&r.language)
-            || !re!(r"^[A-Za-z_$][\w$]*$").is_match(&r.reference_name) { return Ok(None); }
+            || !re!(r"^[A-Za-z_$][\w$]*$").is_match(&r.reference_name) { return Ok(CollapsedCall::NotOurs); }
         if let Some(src) = self.read_file(&r.file_path) {
             if let Some(line) = src.get((r.line - 1).max(0) as usize) {
                 if js_slice(line,r.column.max(0) as usize).strip_prefix(r.reference_name.as_str())
-                    .is_some_and(|rest| re!(r"^\s*\(").is_match(rest)) { return Ok(None); }
+                    .is_some_and(|rest| re!(r"^\s*\(").is_match(rest)) { return Ok(CollapsedCall::NotOurs); }
             }
         }
-        let Some((_,receiver)) = self.bare_call_receiver(r)? else { return Ok(None) };
+        let Some((_,receiver)) = self.bare_call_receiver(r)? else { return Ok(CollapsedCall::NotOurs) };
         if receiver.trim() == "this" {
             if let Some(caller) = self.node_by_id(&r.from_node_id)? {
                 if let Some(owner) = self.this_object(caller)? {
-                    return self.resolve_object_literal_member(&owner,&r.reference_name,r,0.85,"instance-method");
+                    return Ok(match self.resolve_object_literal_member(&owner,&r.reference_name,r,0.85,"instance-method")? {
+                        Some(hit) => CollapsedCall::Hit(hit),
+                        None => CollapsedCall::NotOurs,
+                    });
                 }
             }
-            return Ok(None);
+            return Ok(CollapsedCall::NotOurs);
         }
-        let Some(caps) = re!(r"(?:^|[^\w$.])(window|globalThis)\s*\??\.\s*([A-Za-z_$][\w$]*(?:\s*\??\.\s*[A-Za-z_$][\w$]*)*)$").captures(&receiver) else { return Ok(None) };
+        // A JS `self` the file doesn't bind is the global object's own `self` —
+        // a worker's scope, or the page's `window` — never `this` (#2907).
+        if receiver.trim() == "self" && self.is_browser_host_global("self", r)? {
+            return Ok(CollapsedCall::Declined);
+        }
+        let Some(caps) = re!(r"(?:^|[^\w$.])(window|globalThis)\s*\??\.\s*([A-Za-z_$][\w$]*(?:\s*\??\.\s*[A-Za-z_$][\w$]*)*)$").captures(&receiver) else { return Ok(CollapsedCall::NotOurs) };
         let path: String = caps[2].chars().filter(|ch| !ch.is_whitespace() && *ch != '?').collect();
         Ok(match self.resolve_object_path_member(&path,&r.reference_name,r,Some(&caps[1]))? {
-            ObjectPathMatch::Found(hit) => Some(hit), _ => None,
+            ObjectPathMatch::Found(hit) => CollapsedCall::Hit(hit),
+            // A chain that starts at a browser host object is the browser's,
+            // however deep it goes: `window.localStorage.getItem()`.
+            _ if JS_BROWSER_HOST_GLOBALS.contains(path.split('.').next().unwrap_or(&path)) => CollapsedCall::Declined,
+            _ => CollapsedCall::NotOurs,
         })
     }
 
@@ -393,7 +414,7 @@ impl KernelResolver {
 
     /// isJsSuperCallSite: the call is written `super.name(…)` where it
     /// starts (the member on the next line or two included).
-    fn is_js_super_call_site(&mut self, r: &ResolveRefIn) -> Res<bool> {
+    pub(super) fn is_js_super_call_site(&mut self, r: &ResolveRefIn) -> Res<bool> {
         if r.reference_kind != "calls" || !JS_SUPER_LANGS.contains(&r.language.as_str())
             || !re!(r"^[A-Za-z_$][\w$]*$").is_match(&r.reference_name) { return Ok(false); }
         let Some(lines) = self.read_file(&r.file_path) else { return Ok(false) };

@@ -307,28 +307,27 @@ describe('Go standard method names on a receiver nothing types', () => {
     expect(calls(fn)).toEqual([target]);
   });
 
-  // Fork: the binding rows type both receivers (a range variable over a
-  // `[]types.ID`, the result of `types.NewURLsMap()`), so these link by their
-  // declared type at 0.9 where upstream's text guess lands at 0.65. The
-  // targets are upstream's.
   it.each([
     // `for _, id := range ids`
+    // The fork types a range element from its slice's element type
+    // (8201401a), so `id` of `[]types.ID` is an ID and the call is typed
+    // rather than guessed: 0.9, where upstream still guesses at 0.65.
     ['idsText', 'types/id.go::ID::String instance-method@0.9'],
-    // `urlsMap := types.NewURLsMap()`
-    ['urls', 'types/id.go::URLsMap::String instance-method@0.9'],
-  ])('links %s through the type its receiver is bound to', (fn, target) => {
+  ])('still guesses for %s through a receiver named after the owner type', (fn, target) => {
     expect(calls(fn)).toEqual([target]);
+  });
+
+  // `urlsMap := types.NewURLsMap()`: the type the package's function returns.
+  it('links urls through the type the call it is assigned from returns', () => {
+    expect(calls('urls')).toEqual(['types/id.go::URLsMap::String instance-method@0.9']);
   });
 
   it.each([
     // `var ( query promql.Query )`, read past the table's `query string`;
-    // Fork: `Exec` links through the declared type at 0.9, where upstream
-    // guesses it at 0.8.
+    // `Exec`, no standard name, is typed by that declaration too.
     ['runQueries', ['promql/engine.go::Query::Exec instance-method@0.9', 'promql/engine.go::Query::String instance-method@0.9']],
-    // `version, _ := ParseVersion(…)` says no type, and the table's
-    // `version string` is another declaration: nothing is ruled out. Fork:
-    // the fork's bindings read the `Version` result, so both link at 0.9
-    // (upstream: 0.8).
+    // `version, _ := ParseVersion(…)` is what ParseVersion returns; the
+    // table's `version string` is another declaration.
     ['versionText', ['server/version.go::Version::Major instance-method@0.9', 'server/version.go::Version::String instance-method@0.9']],
   ])('reads %s by the declaration in scope, not a test table field of the name', (fn, targets) => {
     expect(calls(fn)).toEqual(targets);

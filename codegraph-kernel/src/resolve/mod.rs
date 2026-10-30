@@ -734,6 +734,8 @@ pub struct KernelResolver {
     exported_symbol_memo: HashMap<String, Option<Arc<KNode>>>,
     sealed_memo: HashMap<String, bool>,
     esm_exports_memo: HashMap<String, (bool, HashSet<String>)>,
+    /// `file\0name` -> the JS file uses the name only as a receiver (#2907).
+    js_host_receiver_only: HashMap<String, bool>,
     c_static_memo: HashMap<String, bool>,
     /// cppMemberMacroArguments, by class declaration id.
     cpp_macro_arguments_memo: HashMap<String, Rc<Vec<String>>>,
@@ -1072,6 +1074,7 @@ impl KernelResolver {
             exported_symbol_memo: HashMap::new(),
             sealed_memo: HashMap::new(),
             esm_exports_memo: HashMap::new(),
+            js_host_receiver_only: HashMap::new(),
             c_static_memo: HashMap::new(),
             cpp_macro_arguments_memo: HashMap::new(),
             cpp_scope_names: None,
