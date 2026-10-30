@@ -122,6 +122,7 @@ export class Bus {
   emit() {}
   static get() {}
   direct() { this.emit(); }
+  parenthesized() { (this).emit(); }
   later() { const self = this; self.emit(); }
   static create() { return new this().emit(); }
 }
@@ -145,6 +146,7 @@ export function unknown(cache) { cache.get(); }
       return cg!.getCallees(n.id).filter(({ edge }) => edge.kind === 'calls').map(c => c.node.qualifiedName);
     };
     expect(method('Bus::direct')).toEqual(['Bus::emit']);
+    expect(method('Bus::parenthesized')).toEqual(['Bus::emit']);
     expect(method('Bus::later')).toEqual(['Bus::emit']);
     expect(method('Bus::create')).toEqual(['Bus::emit']);
   });

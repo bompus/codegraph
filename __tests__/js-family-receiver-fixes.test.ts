@@ -130,6 +130,27 @@ export function inc() { count.set(1); userCache.set(2); }
     }
   });
 
+  it('keeps an inferred markup receiver for a built-in method name (#1987)', async () => {
+    // The component's script types `counter`; the markup call must reach the
+    // type before the built-in gate considers the receiver's spelling.
+    const cg = await index({
+      'src/Store.svelte': `<script>
+  class Store {
+    get() { return 1; }
+  }
+  const store = new Store();
+</script>
+
+<button>{store.get()}</button>
+`,
+    });
+    try {
+      expect(callsFrom(cg, 'src/Store.svelte')).toEqual(['src/Store.svelte:Store::get@0.9']);
+    } finally {
+      cg.close();
+    }
+  });
+
   it('takes a script-level import as the receiver in Svelte markup and a second script', async () => {
     const cg = await index({
       'src/spread.js': `export function spread() { return {}; }
