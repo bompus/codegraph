@@ -456,6 +456,32 @@ describe('resolution-phase WAL backpressure plumbing (§7a.1)', () => {
     }
   });
 
+  it('keeps the bulk index windows closed below the 150k bulk floor', async () => {
+    // A small batched run must not drop and rebuild whole-graph indexes: the
+    // pool floor (forced to 0 here) is a different threshold. Reconnecting
+    // either bulk gate to minRefsForPool() would trip these spies.
+    writeFixtureProject();
+    const cg = CodeGraph.initSync(tmpDir);
+    await cg.indexAll();
+    await seedPendingRefs(cg);
+
+    const db = (cg as unknown as { db: DatabaseConnection }).db;
+    const edgeBegin = vi.spyOn(db, 'beginBulkEdgeLoad');
+    const refBegin = vi.spyOn(db, 'beginBulkRefLoad');
+    process.env.CODEGRAPH_PARALLEL_RESOLVE_MIN = '0';
+    process.env.CODEGRAPH_NO_PARALLEL_RESOLVE = '1';
+    try {
+      const result = await cg.resolveReferencesBatched(undefined, undefined, fakeValve(() => null));
+      expect(result.stats.total).toBeGreaterThan(0);
+      expect(edgeBegin).not.toHaveBeenCalled();
+      expect(refBegin).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.CODEGRAPH_PARALLEL_RESOLVE_MIN;
+      delete process.env.CODEGRAPH_NO_PARALLEL_RESOLVE;
+      await cg.close();
+    }
+  });
+
   it('parks the batch loop on a backpressure promise until it resolves', async () => {
     writeFixtureProject();
     const cg = CodeGraph.initSync(tmpDir);
@@ -475,8 +501,9 @@ describe('resolution-phase WAL backpressure plumbing (§7a.1)', () => {
       .then(() => true);
 
     // Give the loop ample turns: it must reach the hook and then be parked.
-    for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
-    expect(hookHit).toBe(true);
+    // With the pool engaged the first boundary waits on worker boot and the
+    // snapshot copy, so wait for the hook itself rather than a turn count.
+    await vi.waitFor(() => expect(hookHit).toBe(true), { timeout: 15_000 });
     const settledEarly = await Promise.race([done, Promise.resolve(false)]);
     expect(settledEarly).toBe(false); // still parked on the gate
 

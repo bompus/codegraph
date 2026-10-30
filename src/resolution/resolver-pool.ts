@@ -108,6 +108,16 @@ export function adaptiveEngageEnabled(): boolean {
   return process.env.CODEGRAPH_PARALLEL_RESOLVE_MIN === undefined;
 }
 
+/** The compiled worker entry. In production it is the sibling tsc emits; under
+ *  Vitest, which loads src/ while the global setup builds dist/, use that copy
+ *  so pool-mode tests exercise the pool instead of silently declining it. */
+function resolverWorkerScript(): string | null {
+  const sibling = path.join(__dirname, 'resolver-worker.js');
+  if (fs.existsSync(sibling)) return sibling;
+  const built = path.resolve(__dirname, '../../dist/resolution/resolver-worker.js');
+  return fs.existsSync(built) ? built : null;
+}
+
 export class ResolverPool {
   private static poolSeq = 0;
   private workers: PoolWorker[] = [];
@@ -194,8 +204,7 @@ export class ResolverPool {
    */
   static preflight(dbPath: string, pendingRefs?: number): number | null {
     if (process.env.CODEGRAPH_NO_PARALLEL_RESOLVE === '1') return null;
-    const workerScript = path.join(__dirname, 'resolver-worker.js');
-    if (!fs.existsSync(workerScript)) return null;
+    if (resolverWorkerScript() === null) return null;
     let dbSizeBytes = 0;
     try {
       dbSizeBytes = fs.statSync(dbPath).size;
@@ -228,7 +237,8 @@ export class ResolverPool {
   ): ResolverPool | null {
     const size = ResolverPool.preflight(dbPath, pendingRefs);
     if (size === null) return null;
-    const workerScript = path.join(__dirname, 'resolver-worker.js');
+    const workerScript = resolverWorkerScript();
+    if (workerScript === null) return null;
     try {
       return new ResolverPool(workerScript, dbPath, projectRoot, size, kernelDbPath, supertypesComplete);
     } catch {
