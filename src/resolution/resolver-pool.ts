@@ -70,7 +70,7 @@ export function minRefsForPool(): number {
     const parsed = Number.parseInt(raw, 10);
     if (Number.isFinite(parsed) && parsed >= 0) return parsed;
   }
-  return 150_000;
+  return 8_000;
 }
 
 /**
@@ -160,8 +160,14 @@ export class ResolverPool {
     // each idle worker still carried ~180MB of isolate+kernel overhead, and
     // only a deep queue (1.85M refs) made the 12th worker earn it (−13%
     // resolve wall there). Size to the work, not just the machine.
+    // Small and medium runs (under 100k refs) get a worker per ~2k refs:
+    // gin's 14k refs resolve sequentially in 464ms against a ~90ms pool
+    // boot, and 8 workers brought a 1.17s index to 0.88s, while the old
+    // 25k-ref rule would have chosen 2. Large runs keep the measured ~25k
+    // cap: past that, extra workers cost RSS without moving wall time.
+    const perWorkerRefs = opts.pendingRefs !== undefined && opts.pendingRefs < 100_000 ? 2_000 : 25_000;
     const workCap =
-      opts.pendingRefs === undefined ? cpuCap : Math.max(2, Math.ceil(opts.pendingRefs / 25_000));
+      opts.pendingRefs === undefined ? cpuCap : Math.max(2, Math.ceil(opts.pendingRefs / perWorkerRefs));
     const size = Math.min(cpuCap, memCap, workCap);
     return size >= 2 ? size : null;
   }
