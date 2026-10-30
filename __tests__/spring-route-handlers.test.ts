@@ -125,6 +125,11 @@ class AnnotatedController {
     public String café() {
         return null;
     }
+
+    @GetMapping("/comparison")
+    public List<@Flag(1 < 2) String> comparison() {
+        return null;
+    }
 }
 `;
 
@@ -228,6 +233,7 @@ describe.each(['native', 'wasm'].filter((backend) => backend === 'wasm' || kerne
       'GET /annotated/feed': `method:feed@${lineOf(ANNOTATED_SRC, '@RequestMapping(value = "/feed"')}`,
       'GET /annotated/unicode': `method:unicode@${lineOf(ANNOTATED_SRC, '@GetMapping("/unicode")')}`,
       'GET /annotated/unicode-name': `method:café@${lineOf(ANNOTATED_SRC, '@RequestMapping(value = "/unicode-name"')}`,
+      'GET /annotated/comparison': `method:comparison@${lineOf(ANNOTATED_SRC, '@GetMapping("/comparison")')}`,
     });
   });
 

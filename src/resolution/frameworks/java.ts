@@ -616,6 +616,13 @@ function skipGroup(s: string, i: number): number {
       const end = skipQuoted(s, j);
       if (end < 0) return -1;
       j = end - 1;
+    } else if (open === '<' && (c === '(' || c === '[' || c === '{')) {
+      // A type-use annotation's arguments inside generic arguments
+      // (`List<@Flag(1 < 2) String>`): a `<` in there is an operator, not a
+      // type bracket, so skip the whole nested group.
+      const end = skipGroup(s, j);
+      if (end < 0) return -1;
+      j = end - 1;
     } else if (c === open) {
       depth++;
     } else if (c === close && --depth === 0) {
