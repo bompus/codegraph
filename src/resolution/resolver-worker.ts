@@ -20,7 +20,7 @@ try {
   (require('node:module') as { enableCompileCache?: () => void }).enableCompileCache?.();
 } catch { /* cache is best-effort */ }
 
-import { parentPort } from 'worker_threads';
+import { parentPort, workerData } from 'worker_threads';
 import { SynthSkips, SYNTH_SKIPS_VERSION } from './synth-skips';
 import { createDatabase, SqliteDatabase } from '../db/sqlite-adapter';
 import { QueryBuilder } from '../db/queries';
@@ -34,6 +34,14 @@ if (!parentPort) {
   throw new Error('resolver-worker must be run as a worker thread');
 }
 const port = parentPort;
+const probe = workerData as { spawnedAt?: number } | null;
+// Tell the pool the modules are in before it has a snapshot to open. This is
+// also the worker's first message, so a pool destroyed before open can be
+// terminated promptly instead of waiting out WORKER_START_SETTLE_MS.
+port.postMessage({
+  type: 'loaded',
+  loadedMs: probe?.spawnedAt ? Date.now() - probe.spawnedAt : undefined,
+});
 
 let db: SqliteDatabase | null = null;
 let queries: QueryBuilder | null = null;

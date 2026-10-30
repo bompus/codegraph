@@ -130,6 +130,7 @@ export class ResolverPool {
   // checkpoint isn't pinned by continuous pool reads.
   private paused = false;
   private failed: Error | null = null;
+  private opened = false;
 
   /**
    * Pool size from CPU headroom, memory headroom, and the explicit override.
@@ -228,6 +229,26 @@ export class ResolverPool {
     return size;
   }
 
+  /** Spawn the workers without opening them. Modules load while the caller
+   *  (re)builds the kernel snapshot copy, so the ~60ms module load hides
+   *  under that work instead of adding to pool boot. Call {@link open} once
+   *  the snapshot path is known; {@link destroy} is safe in between. */
+  static spawn(size: number): ResolverPool | null {
+    const workerScript = resolverWorkerScript();
+    if (workerScript === null) return null;
+    try {
+      const pool = new ResolverPool(workerScript, size);
+      // A worker can fail its boot before openPool observes readiness. Without
+      // a handler here that rejection is unhandled, and Node terminates the
+      // indexing process before the main-thread fallback can run. The later
+      // ready() await still sees the rejection and opens the fallback path.
+      void pool.ready().catch(() => undefined);
+      return pool;
+    } catch {
+      return null;
+    }
+  }
+
   static tryCreate(
     dbPath: string,
     projectRoot: string,
@@ -237,29 +258,33 @@ export class ResolverPool {
   ): ResolverPool | null {
     const size = ResolverPool.preflight(dbPath, pendingRefs);
     if (size === null) return null;
-    const workerScript = resolverWorkerScript();
-    if (workerScript === null) return null;
-    try {
-      return new ResolverPool(workerScript, dbPath, projectRoot, size, kernelDbPath, supertypesComplete);
-    } catch {
-      return null;
-    }
+    const pool = ResolverPool.spawn(size);
+    if (pool === null) return null;
+    pool.open(dbPath, projectRoot, kernelDbPath, supertypesComplete);
+    return pool;
   }
 
-  private constructor(
-    workerScript: string,
+  /** Send the open message to the workers spawned by {@link spawn}. */
+  open(
     dbPath: string,
     projectRoot: string,
-    size: number,
     kernelDbPath: string | null,
     supertypesComplete: boolean,
-  ) {
+  ): void {
+    if (this.opened) return;
+    this.opened = true;
     // One token per pool: the workers' kernel resolvers key their shared
     // node table on it, so a later pool over a rewritten snapshot at the
     // same path can never pick up this run's table.
     const kernelGeneration = kernelDbPath ? `${process.pid}-${Date.now().toString(36)}-${++ResolverPool.poolSeq}` : undefined;
+    for (const pw of this.workers) {
+      pw.worker.postMessage({ type: 'open', dbPath, projectRoot, kernelDbPath, kernelGeneration, supertypesComplete });
+    }
+  }
+
+  private constructor(workerScript: string, size: number) {
     for (let i = 0; i < size; i++) {
-      const worker = new Worker(workerScript);
+      const worker = new Worker(workerScript, { workerData: { spawnedAt: Date.now() } });
       const started = workerStarted(worker);
       let readyResolve!: () => void;
       let readyReject!: (e: Error) => void;
@@ -271,6 +296,10 @@ export class ResolverPool {
       worker.on('message', (msg: { type: string; id?: number; message?: string; edges?: Edge[]; ms?: number; skips?: Array<[string, string, string]> } & Partial<ChunkResult>) => {
         if (msg.type === 'ready') {
           readyResolve();
+        } else if (msg.type === 'loaded') {
+          if (process.env.CODEGRAPH_SYNTH_TIMINGS && (msg as { loadedMs?: number }).loadedMs !== undefined) {
+            console.error(`[pool-timing] worker modules loaded after ${(msg as { loadedMs?: number }).loadedMs}ms`);
+          }
         } else if (msg.type === 'result' && msg.id !== undefined) {
           pw.busy--;
           const waiter = this.waiters.get(msg.id);
@@ -322,7 +351,6 @@ export class ResolverPool {
           readyReject(this.failed!);
         }
       });
-      worker.postMessage({ type: 'open', dbPath, projectRoot, kernelDbPath, kernelGeneration, supertypesComplete });
       this.workers.push(pw);
     }
   }

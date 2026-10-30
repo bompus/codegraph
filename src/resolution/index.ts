@@ -1320,28 +1320,6 @@ export class ReferenceResolver {
    * so worker kernel conns do zero shm I/O on the live db. Returns null on
    * any failure: the run then resolves on the main-thread kernel, no pool.
    */
-  /**
-   * A second snapshot for the same run, taken after the prerequisite phase so
-   * it holds every implements/extends edge the call phase reads. A new path:
-   * the workers still have the first copy open. Returns null on any failure
-   * (the caller then destroys the pool and resolves on the main thread).
-   */
-  private async refreshKernelReaderSnapshot(fold: () => Promise<boolean>): Promise<string | null> {
-    const dbPath = this.queries.getDatabasePath();
-    if (!dbPath || !(await fold())) return null;
-    const snap = `${dbPath}.kr-snapshot-${++this.kernelSnapshotSeq}`;
-    try {
-      fs.rmSync(`${snap}-wal`, { force: true });
-      fs.rmSync(`${snap}-shm`, { force: true });
-      await fs.promises.copyFile(dbPath, snap);
-    } catch {
-      return null;
-    }
-    this.kernelReaderSnapshot = snap;
-    return snap;
-  }
-  private kernelSnapshotSeq = 0;
-
   private async ensureKernelReaderSnapshot(fold?: () => Promise<boolean>): Promise<string | null> {
     if (process.env.CODEGRAPH_NO_KERNEL_SNAPSHOT === '1') return null;
     if (this.kernelReaderSnapshot !== undefined) return this.kernelReaderSnapshot;
@@ -2210,7 +2188,7 @@ export class ReferenceResolver {
     this.warmCaches();
 
     // The main thread resolves through its own kernel conn whenever no pool
-    // runs; with a pool, the workers' kernels do (see createPool).
+    // runs; with a pool, the workers' kernels do (see preparePool/openPool).
     //
     // While a kernel (rusqlite) conn shares the live -shm, no other-build
     // shm writer may run: the bundled SQLite's wal-index locks can't see
@@ -2269,70 +2247,72 @@ export class ReferenceResolver {
     let pool: ResolverPool | null = null;
     let poolReady = false;
     // Supertype walks read implements/extends edges, which only the
-    // prerequisite phase writes. A worker snapshot taken before that phase
-    // ends lacks some of them, so the snapshot is refreshed at the phase
-    // boundary (refreshSnapshotIfDue) before any calls batch fans out.
+    // prerequisite phase writes. The workers are spawned before that phase
+    // but open their snapshot after it (openPool), so it carries them.
     let inPrereqPhase = true;
     // Prerequisite batches read whose supertype edges are not inserted yet.
     // The prefetch reads the first calls page (ending the phase) while the
     // last prerequisite batch is still in flight, so the phase flag alone
     // says nothing about what the db holds.
     let prereqUnpersisted = 0;
-    let prereqBatchesPersisted = 0;
     const supertypesPersisted = (): boolean => !inPrereqPhase && prereqUnpersisted === 0;
-    let snapshotComplete = false;
     const destroyPool = async (): Promise<void> => {
       const p = pool;
       pool = null;
       poolReady = false;
       if (p) await p.destroy().catch(() => undefined);
     };
-    const createPool = async (): Promise<ResolverPool | null> => {
+    // Spawn the workers as soon as the pool is gated in. Their ~60ms module
+    // load then overlaps the prerequisite batches, which resolve on the
+    // main-thread kernel; the snapshot and open happen once those edges are
+    // persisted (openPool), so the old pre-prerequisite snapshot and its
+    // refresh collapse into one copy after the phase.
+    const preparePool = async (): Promise<ResolverPool | null> => {
       if (!parallel) return null;
-      const t0 = Date.now();
-      // Worker kernel conns resolve against a checkpointed COPY of the db —
-      // their rusqlite build's wal-index locks are invisible to node:sqlite's,
-      // so on the live file a worker's walIndexRecover could rebuild the -shm
-      // header under a writer commit (the linux-corpus undo signature: whole
-      // cleanup transactions overwritten, checksum-clean WAL). The copy is a
-      // private inode — its own -shm — over extraction-static tables.
-      // Preflight the decline gates first so a host that can't carry a pool
-      // doesn't fold+copy a multi-GB snapshot it would never use.
-      if (ResolverPool.preflight(parallel.dbPath, total) === null) return null;
-      // Once workers attach, NO rusqlite conn may share the live -shm — not
-      // even the main-thread kernel conn (only same-thread conns are
-      // serialized). Close it BEFORE the snapshot fold and BEFORE workers
-      // spawn: the fold is off-thread shm work (its wal-index reset can
-      // leave the idle conn's mapping stale → its later close SIGBUSes), and
-      // dropping the JS ref alone leaves teardown to GC time.
-      dropKernel();
-      // Workers open the live db read-only; in rollback-journal mode (fast
-      // init below the fixed gate) their reads would contend with the writer's
-      // commits, so the pool needs WAL first. Declining keeps the run sequential.
-      if (parallel.ensureWalForPool && !parallel.ensureWalForPool()) return null;
-      const kernelDbPath = await this.ensureKernelReaderSnapshot(parallel.foldWalForSnapshot);
+      const poolSize = ResolverPool.preflight(parallel.dbPath, total);
+      if (poolSize === null) return null;
+      const p = ResolverPool.spawn(poolSize);
       if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
-        console.error(`[pool-timing] kernel-reader snapshot: ${kernelDbPath ?? 'unavailable — no pool'}`);
+        console.error(`[pool-timing] workers spawned (${poolSize})`);
       }
-      // Workers resolve only through a snapshot kernel.
-      if (kernelDbPath === null) return null;
-      snapshotComplete = supertypesPersisted();
-      const p = ResolverPool.tryCreate(parallel.dbPath, this.projectRoot, kernelDbPath, snapshotComplete, total);
-      p?.ready().then(
-        () => {
-          if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[pool-timing] pool ready after ${Date.now() - t0}ms`);
-        },
-        () => undefined, // awaitPool handles the failure
-      );
       return p;
     };
-    // Wait for the workers to boot; a boot failure destroys the pool.
-    const awaitPool = async (): Promise<boolean> => {
+    // The prerequisite→calls boundary: close the main kernel, take the one
+    // snapshot the workers read, and open them. Held until every prerequisite
+    // edge is persisted so the snapshot carries the supertypes the walks use.
+    const openPool = async (): Promise<boolean> => {
       if (!pool) return false;
       if (poolReady) return true;
+      if (!supertypesPersisted()) return false;
+      const t0 = Date.now();
+      // Once workers attach, NO rusqlite conn may share the live -shm — not
+      // even the main-thread kernel conn (only same-thread conns are
+      // serialized). Close it BEFORE the snapshot fold: the fold is
+      // off-thread shm work (its wal-index reset can leave the idle conn's
+      // mapping stale → its later close SIGBUSes), and dropping the JS ref
+      // alone leaves teardown to GC time.
+      dropKernel();
+      // Workers open the snapshot read-only; in rollback-journal mode (fast
+      // init below the fixed gate) their reads would contend with the writer's
+      // commits, so the pool needs WAL first. Declining keeps the run sequential.
+      if (parallel!.ensureWalForPool && !parallel!.ensureWalForPool()) {
+        await destroyPool();
+        return false;
+      }
+      const tSnap = Date.now();
+      const kernelDbPath = await this.ensureKernelReaderSnapshot(parallel!.foldWalForSnapshot);
+      if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
+        console.error(`[pool-timing] kernel-reader snapshot: ${kernelDbPath ?? 'unavailable — no pool'} (snapshot ${Date.now() - tSnap}ms)`);
+      }
+      if (kernelDbPath === null) {
+        await destroyPool();
+        return false;
+      }
+      pool.open(parallel!.dbPath, this.projectRoot, kernelDbPath, true);
       try {
         await pool.ready();
         poolReady = true;
+        if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[pool-timing] pool ready after ${Date.now() - t0}ms`);
       } catch (err) {
         logDebug('Resolver pool failed to start; resolving on the main thread', {
           error: err instanceof Error ? err.message : String(err),
@@ -2342,7 +2322,7 @@ export class ReferenceResolver {
       return poolReady;
     };
     if (parallel && total >= minRefsForPool()) {
-      pool = await createPool();
+      pool = await preparePool();
     }
     // Below the fixed gate the pool can still boot mid-run: the loop times its
     // main-thread kernel resolves and, after a batch, boots the pool once the
@@ -2385,45 +2365,11 @@ export class ReferenceResolver {
       | { mode: 'pool'; settled: Promise<PoolSettled> }
       | { mode: 'kernel'; outcomes: ResolveOutcome[] };
 
-    // The last prerequisite batch's supertype edges are in: every edge the
-    // walks read is persisted. Hand the workers a snapshot that has them (a
-    // fresh copy only if a prerequisite batch wrote any) before the first
-    // calls batch fans out. A failed refresh destroys the pool.
-    const refreshSnapshotIfDue = async (): Promise<void> => {
-      if (!pool || snapshotComplete || !supertypesPersisted() || !this.kernelReaderSnapshot || !parallel?.foldWalForSnapshot) return;
-      snapshotComplete = true;
-      tLp = Date.now();
-      try {
-        const stale = this.kernelReaderSnapshot;
-        const fresh = prereqBatchesPersisted > 0
-          ? await this.refreshKernelReaderSnapshot(parallel.foldWalForSnapshot)
-          : stale;
-        if (!fresh) throw new Error('snapshot copy failed');
-        await pool.recycleWorkers(fresh);
-        refsSinceRecycle = 0;
-        if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
-          console.error(`[pool-timing] kernel snapshot refreshed after the prerequisite phase: ${fresh} (${Date.now() - tLp}ms)`);
-        }
-        if (fresh !== stale) {
-          for (const suf of ['', '-wal', '-shm']) {
-            try { fs.rmSync(stale + suf, { force: true }); } catch { /* best-effort scratch cleanup */ }
-          }
-        }
-      } catch (err) {
-        if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
-          console.error(`[pool-timing] kernel snapshot refresh failed, resolving on the main thread: ${err instanceof Error ? err.message : String(err)}`);
-        }
-        logDebug('Kernel snapshot refresh failed; resolving on the main thread', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-        await destroyPool();
-      }
-      lp('recycle', tLp);
-    };
-
     // Resolve a page on the main-thread kernel. Only while no pool is up.
     const resolveOnMainKernel = async (batch: BatchPage): Promise<ResolveOutcome[]> => {
+      const tOpen = Date.now();
       const k = await openMainKernel();
+      if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[pool-timing] main kernel open: ${Date.now() - tOpen}ms`);
       const tKernel = Date.now();
       let outcomes: ResolveOutcome[];
       if (!batch.kernelRefs) {
@@ -2447,7 +2393,9 @@ export class ReferenceResolver {
     // the supertype edges already persisted, so begin-time sees the same
     // state as settle-time.
     const beginBatch = async (batch: BatchPage): Promise<InFlight> => {
-      if (await awaitPool()) await refreshSnapshotIfDue();
+      // Prerequisite batches resolve on the main kernel while the workers
+      // load; the first calls batch opens the pool over the one snapshot.
+      if (!batch.prereq) await openPool();
       if (pool && poolReady) {
         return {
           mode: 'pool',
@@ -2621,7 +2569,7 @@ export class ReferenceResolver {
           if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
             console.error(`[pool-timing] adaptive engage: projected ${Math.round(projectedMs)}ms main-thread resolve over ${remaining} remaining refs`);
           }
-          pool = await createPool();
+          pool = await preparePool();
         }
       }
       if (process.env.CODEGRAPH_RESOLVE_DEBUG) {
@@ -2733,7 +2681,6 @@ export class ReferenceResolver {
       }
       if (batch.prereq) {
         prereqUnpersisted--;
-        prereqBatchesPersisted++;
       }
       lp('insertEdges', tLp);
 
@@ -2883,6 +2830,15 @@ export class ReferenceResolver {
         const bp = parallel?.backpressure?.();
         if (bp) await bp;
       }
+    }
+
+    // A sweep whose refs are all prerequisites (imports/extends/implements)
+    // never enters a calls batch, so openPool never ran. Synthesis would then
+    // post passes to workers that never opened; above MAIN_RETRY_MAX_NODES it
+    // skips those passes and silently drops their edges. Open the pool now, or
+    // discard it so synthesis takes the sequential path.
+    if (pool && !poolReady) {
+      if (!(await openPool())) await destroyPool();
     }
 
     // Dynamic-edge synthesis: now that all base `calls` edges are persisted,
