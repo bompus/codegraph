@@ -127,7 +127,11 @@ export class Bus {
   static create() { return new this().emit(); }
 }
 export class Cache { get() {} }
+export class _Cache { static get() {} }
+export class cache { static get() {} }
 export function unrelated(Bus) {} export function statics() { Bus.get(); }
+export function underscore() { _Cache.get(); }
+export function lowercase() { cache.get(); }
 export function shadowed(Cache) { Cache.get(); }
 export function unknown(cache) { cache.get(); }
 `);
@@ -138,6 +142,8 @@ export function unknown(cache) { cache.get(); }
       return cg!.getCallees(fn.id).filter(({ edge }) => edge.kind === 'calls').map(c => c.node.qualifiedName).sort();
     };
     expect(callees('statics')).toEqual(['Bus::get']);
+    expect(callees('underscore')).toEqual(['_Cache::get']);
+    expect(callees('lowercase')).toEqual(['cache::get']);
     expect(callees('shadowed')).toEqual([]);
     expect(callees('unknown')).toEqual([]);
     const method = (qn: string) => {

@@ -151,6 +151,28 @@ export function inc() { count.set(1); userCache.set(2); }
     }
   });
 
+  it('keeps a class receiver named with an underscore or lowercase in markup (#1987)', async () => {
+    // The class-name scan validates the receiver, whatever its spelling; the
+    // built-in gate must not turn `_Cache.get()` or `cache.get()` into guesses.
+    const cg = await index({
+      'src/Cache.svelte': `<script>
+  class _Cache { static get() { return 1; } }
+  class cache { static get() { return 2; } }
+</script>
+
+<p>{_Cache.get()}{cache.get()}</p>
+`,
+    });
+    try {
+      expect(callsFrom(cg, 'src/Cache.svelte')).toEqual([
+        'src/Cache.svelte:_Cache::get@0.85',
+        'src/Cache.svelte:cache::get@0.85',
+      ]);
+    } finally {
+      cg.close();
+    }
+  });
+
   it('takes a script-level import as the receiver in Svelte markup and a second script', async () => {
     const cg = await index({
       'src/spread.js': `export function spread() { return {}; }

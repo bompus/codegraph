@@ -1298,27 +1298,21 @@ if inferred.is_none() && r.language == "dart" {
         }
 
 
-        // A built-in method name is not evidence of a project member (#1987):
-        // `list.map()` and `cache.get()` on a receiver nothing validates are
-        // the built-in's. The strategies below scan a class or the project by
-        // the receiver's and the method's names. A receiver rooted at
-        // `this`/`super` has its own evidence, and a class-name root counts
-        // only when the file does not bind that name to a value, which would
-        // shadow the class. Typed, constructed, imported and object-literal
-        // receivers resolved above.
+        // A built-in method called on a value the file binds — a parameter or
+        // local, which shadows any class of that name — is the built-in's
+        // (#1987): `list.map()`, `cache.get()`. Constructed, imported, typed
+        // and object-literal receivers resolved above; a class receiver is
+        // validated by the strategy below before the name-only scan.
         if r.reference_kind == "calls" && is_js_family(&r.language)
             && JS_BUILTIN_METHODS.contains(method_name.as_str()) {
             let root = object_or_class.split('.').next().unwrap_or(&object_or_class);
-            let shadowed = match self.receiver_binding(root, r)? {
+            let value_bound = match self.receiver_binding(root, r)? {
                 Some(b) if matches!(b.kind.as_str(), "param" | "local") => {
                     self.binding_shadows_call(&b, root, r)?
                 }
                 _ => false,
             };
-            let class_name = root.chars().next().is_some_and(|c| c.is_ascii_uppercase()) && !shadowed;
-            if root != "this" && root != "super" && !class_name {
-                return Ok(None);
-            }
+            if value_bound { return Ok(None); }
         }
 
         // A VB.NET receiver the file declares as a variable (`Dim logger As
@@ -1331,6 +1325,20 @@ if inferred.is_none() && r.language == "dart" {
         if !vb_value_receiver {
             if let Some(hit) = self.class_method_scan(&object_or_class, &method_name, r, 0.85, "qualified-name")? {
                 return Ok(Some(hit));
+            }
+        }
+
+        // A built-in method name is not evidence of a project member (#1987).
+        // The direct class-name strategy above validates a class, whatever its
+        // spelling; the name-similarity strategies below — a capitalized
+        // receiver, a `$`-suffixed receiver, a unique method name — are
+        // guesses, so a built-in name stops here, except on `this`/`super`,
+        // whose member belongs to the enclosing class.
+        if r.reference_kind == "calls" && is_js_family(&r.language)
+            && JS_BUILTIN_METHODS.contains(method_name.as_str()) {
+            let root = object_or_class.split('.').next().unwrap_or(&object_or_class);
+            if root != "this" && root != "super" {
+                return Ok(None);
             }
         }
 
