@@ -3874,7 +3874,17 @@ export class ExtractionOrchestrator {
     // imports need another look.
     const exportSignatures = (file: string): Set<string> => {
       const signatures = new Set<string>();
-      for (const b of this.queries.getBindingsByFile(file)) {
+      const bindings = this.queries.getBindingsByFile(file);
+      // Whether the kernel treats the file as a sealed module (imports, no
+      // export of any form): name matching skips a sealed module's names, so
+      // gaining or losing that state changes what importers can bind.
+      const nodes = bindings.length > 0 ? this.queries.getNodesByFile(file) : [];
+      const sealed = bindings.length > 0
+        && !bindings.some((b) => b.exportedAs)
+        && nodes.some((n) => n.kind === 'import')
+        && !nodes.some((n) => n.isExported);
+      if (sealed) signatures.add('\0sealed');
+      for (const b of bindings) {
         // Name, kind and re-export source/target, but not node ids or
         // positions: retargeting `export { default as W } from './a'` to
         // './b' moves what importers bind, a body edit does not.

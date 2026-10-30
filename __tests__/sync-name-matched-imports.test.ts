@@ -164,6 +164,17 @@ describe('sync re-links an import a name match took instead of its module', () =
     expect(stateOf(root, graph)).toEqual(full);
   }, 120_000);
 
+  it('when an edit seals an exportless script by giving it an import', async () => {
+    const before: Files = {
+      'src/x.ts': `class Widget ${run}\n`,
+      'src/dep.ts': 'export const dep = 1;\n',
+      'src/app/y.ts': reader('../x'),
+    };
+    const after: Files = { 'src/x.ts': `import '../src/dep';\nclass Widget ${run}\n` };
+    const { root, graph, full } = await syncEdit(before, after);
+    expect(stateOf(root, graph)).toEqual(full);
+  }, 120_000);
+
   it('and puts nothing back when the module still lacks the name', async () => {
     const reopened = vi.spyOn(QueryBuilder.prototype, 'replaceResolutionEdgesWithUnresolvedRefs');
     const before: Files = {
