@@ -3872,14 +3872,18 @@ export class ExtractionOrchestrator {
     // dropped default changes what importers can bind without changing any
     // node, so definitionDelta alone cannot decide whether name-matched
     // imports need another look.
-    const exportsBefore = new Map<string, Set<string>>();
-    for (const file of filesToIndex) {
-      const names = new Set<string>();
-      for (const binding of this.queries.getBindingsByFile(file)) {
-        if (binding.exportedAs) names.add(binding.exportedAs);
+    const exportSignatures = (file: string): Set<string> => {
+      const signatures = new Set<string>();
+      for (const b of this.queries.getBindingsByFile(file)) {
+        // Name, kind and re-export source/target, but not node ids or
+        // positions: retargeting `export { default as W } from './a'` to
+        // './b' moves what importers bind, a body edit does not.
+        if (b.exportedAs) signatures.add([b.exportedAs, b.kind, b.name, b.targetSpec, b.targetName].join('\0'));
       }
-      exportsBefore.set(file, names);
-    }
+      return signatures;
+    };
+    const exportsBefore = new Map<string, Set<string>>();
+    for (const file of filesToIndex) exportsBefore.set(file, exportSignatures(file));
 
     // Load only grammars needed for changed files
     if (filesToIndex.length > 0) {
@@ -3931,10 +3935,7 @@ export class ExtractionOrchestrator {
     const exportDelta: string[] = [];
     for (const file of filesToIndex) {
       const before = exportsBefore.get(file) ?? new Set<string>();
-      const after = new Set<string>();
-      for (const binding of this.queries.getBindingsByFile(file)) {
-        if (binding.exportedAs) after.add(binding.exportedAs);
-      }
+      const after = exportSignatures(file);
       if (before.size !== after.size || [...before].some((name) => !after.has(name))) exportDelta.push(file);
     }
 
