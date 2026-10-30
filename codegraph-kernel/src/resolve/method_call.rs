@@ -1076,6 +1076,17 @@ if inferred.is_none() && r.language == "dart" {
             McShape::Parsed { receiver, method, inferable, dotted } => (receiver, method, inferable, dotted),
             McShape::Done(res) => return Ok(res),
         };
+        // A built-in method on a bare receiver nothing types is the built-in's:
+        // the name alone never makes it a project method's (#1987). A receiver
+        // rooted at `this`/`super` (a field chain) or at a class name is
+        // evidence of its own; constructed, imported and typed receivers
+        // resolve before this free path.
+        if is_js_family(&r.language) && JS_BUILT_IN_METHODS.contains(method_name.as_str()) {
+            let root = object_or_class.split('.').next().unwrap_or(&object_or_class);
+            if root != "this" && root != "super" && !root.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                return Ok(None);
+            }
+        }
 
         if matches!(r.language.as_str(), "java" | "kotlin") {
             if let Some(hit) = self.enum_constant_call(&object_or_class, &method_name, r)? { return Ok(Some(hit)); }

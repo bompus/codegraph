@@ -979,20 +979,29 @@ pub(super) static PYTHON_BUILT_INS: LazyLock<HashSet<&'static str>> = LazyLock::
     .collect()
 });
 
-/// JS_BUILT_IN_METHODS (import-resolver.ts): methods of the JavaScript
-/// built-ins, almost always the built-in when called on an unknown receiver.
+/// JS_BUILT_IN_METHODS (import-resolver.ts, js-builtins.ts): methods every
+/// JavaScript value inherits (array, string, promise, function, event and
+/// iterator methods, and fetch's body methods), almost always the built-in
+/// when called on a receiver nothing types.
 pub(super) static JS_BUILT_IN_METHODS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [
-        "push", "pop", "shift", "unshift", "slice", "splice", "concat", "join", "reverse", "sort", "indexOf",
-        "lastIndexOf", "includes", "find", "findIndex", "findLast", "findLastIndex", "filter", "map", "forEach",
-        "reduce", "reduceRight", "some", "every", "flat", "flatMap", "fill", "at", "keys", "values", "entries",
+        "push", "pop", "shift", "unshift", "slice", "splice", "concat", "join", "reverse", "sort",
+        "indexOf", "lastIndexOf", "includes", "find", "findIndex", "findLast", "findLastIndex",
+        "filter", "map", "forEach", "reduce", "reduceRight", "some", "every", "flat", "flatMap",
+        "fill", "at", "keys", "values", "entries", "copyWithin", "toReversed", "toSorted",
+        "toSpliced", "with", "subarray",
         "get", "set", "has", "delete", "clear", "add",
         "then", "catch", "finally", "text", "json", "arrayBuffer", "blob", "formData",
-        "split", "trim", "trimStart", "trimEnd", "startsWith", "endsWith", "replace", "replaceAll", "match",
-        "matchAll", "toLowerCase", "toUpperCase", "padStart", "padEnd", "charAt", "charCodeAt", "codePointAt",
-        "substring", "substr", "repeat", "localeCompare", "normalize",
-        "toString", "valueOf", "hasOwnProperty", "toJSON", "call", "apply", "bind",
-        "on", "off", "once", "addEventListener", "removeEventListener", "dispatchEvent", "next", "abort",
+        "split", "trim", "trimStart", "trimEnd", "trimLeft", "trimRight", "startsWith", "endsWith",
+        "replace", "replaceAll", "match", "matchAll", "search", "toLowerCase", "toUpperCase",
+        "toLocaleLowerCase", "toLocaleUpperCase", "padStart", "padEnd", "charAt", "charCodeAt",
+        "codePointAt", "substring", "substr", "repeat", "localeCompare", "normalize",
+        "toString", "toLocaleString", "valueOf", "hasOwnProperty", "toJSON", "call", "apply", "bind",
+        "on", "off", "once", "emit", "addListener", "removeListener", "removeAllListeners",
+        "prependListener", "prependOnceListener", "listeners", "rawListeners", "listenerCount",
+        "eventNames", "setMaxListeners", "getMaxListeners", "addEventListener",
+        "removeEventListener", "dispatchEvent", "next", "return", "throw", "drop", "take", "toArray",
+        "abort",
     ]
     .into_iter()
     .collect()
