@@ -1076,18 +1076,6 @@ if inferred.is_none() && r.language == "dart" {
             McShape::Parsed { receiver, method, inferable, dotted } => (receiver, method, inferable, dotted),
             McShape::Done(res) => return Ok(res),
         };
-        // A built-in method on a bare receiver nothing types is the built-in's:
-        // the name alone never makes it a project method's (#1987). A receiver
-        // rooted at `this`/`super` (a field chain) or at a class name is
-        // evidence of its own; constructed, imported and typed receivers
-        // resolve before this free path.
-        if is_js_family(&r.language) && JS_BUILT_IN_METHODS.contains(method_name.as_str()) {
-            let root = object_or_class.split('.').next().unwrap_or(&object_or_class);
-            if root != "this" && root != "super" && !root.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-                return Ok(None);
-            }
-        }
-
         if matches!(r.language.as_str(), "java" | "kotlin") {
             if let Some(hit) = self.enum_constant_call(&object_or_class, &method_name, r)? { return Ok(Some(hit)); }
         }
@@ -1309,6 +1297,26 @@ if inferred.is_none() && r.language == "dart" {
             }
         }
 
+
+        // A built-in method name is not evidence of a project member (#1987):
+        // `list.map()` and `cache.get()` on a receiver nothing validates are
+        // the built-in's. The strategies below scan a class or the project by
+        // the receiver's and the method's names. A receiver rooted at
+        // `this`/`super` has its own evidence, and a class-name root counts
+        // only when the file does not bind that name to a value, which would
+        // shadow the class. Typed, constructed, imported and object-literal
+        // receivers resolved above.
+        if r.reference_kind == "calls" && is_js_family(&r.language)
+            && JS_BUILTIN_METHODS.contains(method_name.as_str()) {
+            let root = object_or_class.split('.').next().unwrap_or(&object_or_class);
+            let class_name = root.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                && !self
+                    .receiver_binding(root, r)?
+                    .is_some_and(|b| matches!(b.kind.as_str(), "param" | "local"));
+            if root != "this" && root != "super" && !class_name {
+                return Ok(None);
+            }
+        }
 
         // A VB.NET receiver the file declares as a variable (`Dim logger As
         // New FileLogger()`) is a value; that its spelling matches a type
