@@ -490,7 +490,8 @@ export class SessionsIndex {
     const filters: Array<[string, string | undefined]> = [
       ['docs.role = ?', opts.role],
       ['docs.ts >= ?', opts.sinceIso],
-      ['docs.ts < ?', opts.untilIso],
+      // As instants: stored stamps keep their source's spelling (`12:00:00Z`, `12:00:00.250Z`, `+00:00`), which text order does not sort by time.
+      ['julianday(docs.ts) < julianday(?)', opts.untilIso],
       ['files.session GLOB ?', opts.session ? `${opts.session}*` : undefined],
     ];
     for (const [clause, value] of filters) {

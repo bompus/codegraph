@@ -1504,6 +1504,28 @@ describe('large Codex rollouts are scanned, not parsed whole', () => {
   });
 });
 
+describe('SessionsIndex until bound', () => {
+  it('compares stored timestamps as instants, whatever their fractional-second or offset form', () => {
+    const dir = fixtureDir();
+    const stamps = ['2026-10-20T12:00:00Z', '2026-10-20T12:00:00.250Z', '2026-10-20T12:00:00.750Z', '2026-10-20T06:00:00-06:00', '2026-10-20T07:00:00-06:00'];
+    writeJsonl(
+      path.join(dir, 'aaaa-1111.jsonl'),
+      stamps.map((timestamp, i) => user(`cutoffprobe passage number ${i} for the cutoff test`, { timestamp })),
+      1_700_000_000,
+    );
+    const index = SessionsIndex.open(':memory:');
+    index.refresh(dir);
+    expect(index.search('cutoffprobe', { limit: 10 }).map((h) => h.ts).sort()).toEqual([...stamps].sort());
+    const before = (until: string) => index.search('cutoffprobe', { limit: 10, untilIso: until }).map((h) => h.ts).sort();
+    // 12:00:00Z, 12:00:00.250Z and 06:00:00-06:00 (which is 12:00:00Z) all precede 12:00:00.500Z; text order puts the plain-Z form after '.500Z'.
+    expect(before('2026-10-20T12:00:00.500Z')).toEqual(['2026-10-20T06:00:00-06:00', '2026-10-20T12:00:00.250Z', '2026-10-20T12:00:00Z']);
+    // An instant equal to the bound is not before it, in any spelling.
+    expect(before('2026-10-20T12:00:00.000Z')).toEqual([]);
+    expect(before('2026-10-20T12:00:01.000Z')).toHaveLength(4);
+    index.close();
+  });
+});
+
 describe('parseUntil', () => {
   it('reads a date as midnight UTC, keeps a timestamp, and flags text that is not a date', () => {
     expect(parseUntil('2026-10-20')).toBe('2026-10-20T00:00:00.000Z');
