@@ -115,6 +115,16 @@ class AnnotatedController {
     public String @Nullable [] feed() {
         return null;
     }
+
+    @GetMapping("/unicode")
+    public Üser unicode() {
+        return null;
+    }
+
+    @RequestMapping(value = "/unicode-name", method = RequestMethod.GET)
+    public String café() {
+        return null;
+    }
 }
 `;
 
@@ -216,6 +226,8 @@ describe.each(['native', 'wasm'].filter((backend) => backend === 'wasm' || kerne
       'GET /annotated/qualified': `method:qualified@${lineOf(ANNOTATED_SRC, '@GetMapping("/qualified")')}`,
       'GET /annotated/multi': `method:multi@${lineOf(ANNOTATED_SRC, '@RequestMapping(value = "/multi"')}`,
       'GET /annotated/feed': `method:feed@${lineOf(ANNOTATED_SRC, '@RequestMapping(value = "/feed"')}`,
+      'GET /annotated/unicode': `method:unicode@${lineOf(ANNOTATED_SRC, '@GetMapping("/unicode")')}`,
+      'GET /annotated/unicode-name': `method:café@${lineOf(ANNOTATED_SRC, '@RequestMapping(value = "/unicode-name"')}`,
     });
   });
 

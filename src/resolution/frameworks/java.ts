@@ -576,7 +576,9 @@ const KOTLIN_FUN_MODIFIERS = new Set([
 /** Words that begin a declaration other than a method where a Java return type would stand. */
 const NOT_A_RETURN_TYPE = new Set(['class', 'interface', 'enum', 'record']);
 
-const IDENTIFIER = /[A-Za-z_$][\w$]*/y;
+// Java and Kotlin identifiers follow Unicode letters/marks, not just ASCII
+// (`public Üser list()`): the scanner must read the written identifier.
+const IDENTIFIER = /[\p{L}_$][\p{L}\p{N}\p{M}_$]*/uy;
 
 function readIdentifier(s: string, i: number): string | null {
   IDENTIFIER.lastIndex = i;
