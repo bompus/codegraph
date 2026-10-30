@@ -2155,7 +2155,7 @@ export const tools: ToolDefinition[] = [
         },
         until: {
           type: 'string',
-          description: 'Only docs before this date or timestamp, for example "2026-10-20". With sinceDays it bounds a window.',
+          description: 'Only docs before this date ("2026-10-20", read as UTC) or timestamp with its zone ("2026-10-20T05:00:00-06:00"). With sinceDays it bounds a window.',
         },
         session: {
           type: 'string',
@@ -4694,7 +4694,7 @@ export class ToolHandler {
     const projectRoot = listed.length > 0 ? '' : this.getCodeGraph(args.projectPath as string | undefined).getProjectRoot();
     const sinceDays = Number(args.sinceDays);
     const untilIso = parseUntil(args.until);
-    if (untilIso === null) return this.errorResult('until must be a date or timestamp such as 2026-10-20');
+    if (untilIso === null) return this.errorResult('until must be a real date such as 2026-10-20, or a timestamp with its zone such as 2026-10-20T05:00:00Z');
     const role = typeof args.role === 'string' ? args.role : undefined;
     const session = typeof args.session === 'string' ? args.session : undefined;
     try {

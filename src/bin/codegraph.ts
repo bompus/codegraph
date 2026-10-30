@@ -1505,7 +1505,7 @@ program
   .option('-l, --limit <number>', 'Maximum hits', '10')
   .option('-r, --role <role>', 'Only user, assistant, summary or commit docs')
   .option('--since <days>', 'Only docs from the last N days')
-  .option('--until <date>', 'Only docs before this date or timestamp (for example 2026-10-20)')
+  .option('--until <date>', 'Only docs before this date (2026-10-20, UTC) or timestamp with its zone (2026-10-20T05:00:00-06:00)')
   .option('--session <id-prefix>', 'Only one session (id prefix)')
   .option('--any', 'OR the words instead of requiring all of them')
   .option('--full', 'Show each hit\'s whole passage (16,000 bytes in all) instead of a snippet')
@@ -1517,7 +1517,7 @@ program
     const { parseUntil } = await import('../sessions');
     const untilIso = parseUntil(options.until);
     if (untilIso === null) {
-      error(`--until must be a date or timestamp such as 2026-10-20, got "${options.until}"`);
+      error(`--until must be a real date such as 2026-10-20, or a timestamp with its zone such as 2026-10-20T05:00:00Z, got "${options.until}"`);
       process.exit(1);
     }
     try {

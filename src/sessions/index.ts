@@ -555,14 +555,23 @@ export class SessionsIndex {
   }
 }
 
+/** `2026-10-20`, or a timestamp that names its zone: `2026-10-20T05:00:00-06:00`, `...Z`. */
+const UNTIL_FORM = /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2}))?$/;
+
 /**
  * The ISO instant a user-typed `until` bound means: a date (`2026-10-20`, read
- * as midnight UTC) or a timestamp. `undefined` when none was given, `null` when
- * the text is not a date.
+ * as midnight UTC) or a timestamp with its zone. `undefined` when none was
+ * given, `null` when the text is neither, names a day that does not exist, or
+ * leaves the zone to the machine's.
  */
 export function parseUntil(raw: unknown): string | undefined | null {
   if (raw === undefined || raw === null || raw === '') return undefined;
-  const ms = typeof raw === 'string' ? Date.parse(raw) : NaN;
+  const form = typeof raw === 'string' ? UNTIL_FORM.exec(raw) : null;
+  if (!form) return null;
+  const [, year, month, day] = form.map(Number);
+  const real = new Date(Date.UTC(year!, month! - 1, day!));
+  if (real.getUTCMonth() !== month! - 1 || real.getUTCDate() !== day) return null;
+  const ms = Date.parse(raw as string);
   return Number.isNaN(ms) ? null : new Date(ms).toISOString();
 }
 

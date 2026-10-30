@@ -1511,6 +1511,13 @@ describe('parseUntil', () => {
     expect(parseUntil(undefined)).toBeUndefined();
     expect(parseUntil('')).toBeUndefined();
     expect(parseUntil('last tuesday')).toBeNull();
+    // A date that does not exist is refused, not moved to the next month.
+    expect(parseUntil('2026-02-30')).toBeNull();
+    expect(parseUntil('2026-02-29')).toBeNull();
+    expect(parseUntil('2028-02-29')).toBe('2028-02-29T00:00:00.000Z');
+    // A timestamp must name its zone; guessing the machine's would move the cutoff with TZ.
+    expect(parseUntil('2026-10-20T00:00:00')).toBeNull();
+    expect(parseUntil('2026-10-20T05:00:00-06:00')).toBe('2026-10-20T11:00:00.000Z');
     expect(parseUntil(5)).toBeNull();
   });
 });
