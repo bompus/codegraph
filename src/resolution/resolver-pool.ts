@@ -237,7 +237,13 @@ export class ResolverPool {
     const workerScript = resolverWorkerScript();
     if (workerScript === null) return null;
     try {
-      return new ResolverPool(workerScript, size);
+      const pool = new ResolverPool(workerScript, size);
+      // A worker can fail its boot before openPool observes readiness. Without
+      // a handler here that rejection is unhandled, and Node terminates the
+      // indexing process before the main-thread fallback can run. The later
+      // ready() await still sees the rejection and opens the fallback path.
+      void pool.ready().catch(() => undefined);
+      return pool;
     } catch {
       return null;
     }

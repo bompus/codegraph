@@ -2832,6 +2832,15 @@ export class ReferenceResolver {
       }
     }
 
+    // A sweep whose refs are all prerequisites (imports/extends/implements)
+    // never enters a calls batch, so openPool never ran. Synthesis would then
+    // post passes to workers that never opened; above MAIN_RETRY_MAX_NODES it
+    // skips those passes and silently drops their edges. Open the pool now, or
+    // discard it so synthesis takes the sequential path.
+    if (pool && !poolReady) {
+      if (!(await openPool())) await destroyPool();
+    }
+
     // Dynamic-edge synthesis: now that all base `calls` edges are persisted,
     // synthesize observer/callback dispatch edges (dispatcher → registered
     // callbacks) that static parsing leaves out. Best-effort — never fail the

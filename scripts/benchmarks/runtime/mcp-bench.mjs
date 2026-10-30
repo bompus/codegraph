@@ -12,6 +12,11 @@ import { createRequire } from 'node:module';
 const [, , arm, runtime, build, repoRaw, cgName, EDIT, queriesFile] = process.argv;
 if (!queriesFile) throw new Error('usage: mcp-bench.mjs <arm> <runtime> <build> <repo> <cgdir-name> <edit-file> <queries.json>');
 const repo = path.resolve(repoRaw);
+// The daemon's pid and socket live under the bench-specific index dir. Without
+// this, stopDaemonAt below reads the default .codegraph pid and leaves THIS
+// arm's daemon watching, so the next arm's edit is synced by every daemon
+// still alive — a contaminated sync, and idle numbers from the wrong process.
+process.env.CODEGRAPH_DIR = cgName;
 const CLI = path.join(build, 'dist/bin/codegraph.js');
 const require = createRequire(import.meta.url);
 const { stopDaemonAt } = require(path.join(build, 'dist/mcp/daemon-registry.js'));
