@@ -45,6 +45,27 @@ impl KernelResolver {
             };
         }
         if r.reference_kind == "calls" {
+            // A call on an instance `Foo.new(…)` made, bare or namespaced
+            // (`new Foo().m`, `new A::B().m!`): an instance method of the class
+            // Ruby's lookup finds for `Foo` there, its own or one its ancestry
+            // declares — never a namesake's by the method name alone. A class
+            // the project doesn't declare (rack-protection's `Request.new(env)`
+            // is rack's) has no method here.
+            if let Some(c) = re!(r"^new (::)?([A-Z]\w*(?:::[A-Z]\w*)*)\(\)\.([A-Za-z_]\w*[?!=]?)$").captures(&r.reference_name) {
+                let class = self
+                    .ruby_constants_named(&c[2], r, c.get(1).is_some())?
+                    .into_iter()
+                    .next()
+                    .filter(|n| n.kind == "class");
+                let method = match class {
+                    Some(class) => self.ruby_method_of(&class.qualified_name, &c[3], r, "instance")?,
+                    None => None,
+                };
+                return Ok(Some(match method {
+                    Some((method, own)) => ResolveOutcome::resolved(&method, if own { 0.9 } else { 0.85 }, "instance-method", true, None),
+                    None => ResolveOutcome::unresolved(),
+                }));
+            }
             let Some(c) = re!(r"^(::)?([A-Z]\w*(?:::[A-Z]\w*)*)\.([A-Za-z_]\w*[?!=]?)$").captures(r.reference_name.trim_start_matches("()")) else {
                 return Ok(None);
             };
@@ -58,7 +79,7 @@ impl KernelResolver {
             let Some(owner) = owner else {
                 return Ok(Some(ResolveOutcome::unresolved()));
             };
-            return match self.ruby_method_of(&owner.qualified_name, &c[3], r)? {
+            return match self.ruby_method_of(&owner.qualified_name, &c[3], r, "class")? {
                 Some((method, own)) => Ok(Some(ResolveOutcome::resolved(
                     &method,
                     if own { 0.85 } else { 0.8 },
@@ -121,7 +142,7 @@ impl KernelResolver {
     /// else on the first ancestor in its Ruby ancestry that declares it.
     /// Returns the method and whether it is the owner's own. `r` is the call
     /// site: production code never reaches a method only a test declares.
-    pub(super) fn ruby_method_of(&mut self, owner_qn: &str, name: &str, r: &ResolveRefIn) -> Res<Option<(Arc<KNode>, bool)>> {
+    pub(super) fn ruby_method_of(&mut self, owner_qn: &str, name: &str, r: &ResolveRefIn, kind: &str) -> Res<Option<(Arc<KNode>, bool)>> {
         let production = !super::resolver_upstream::test_suite_path(&r.file_path);
         let own: Vec<Arc<KNode>> = self
             .nodes_by_qualified_name(&format!("{owner_qn}::{name}"))?
@@ -129,7 +150,7 @@ impl KernelResolver {
             .filter(|n| n.language == "ruby" && n.kind == "method" && !(production && super::resolver_upstream::test_suite_path(&n.file_path)))
             .cloned()
             .collect();
-        if let Some(m) = ruby_methods_of_kind_first(ruby_ordered(own, r), "class").into_iter().next() {
+        if let Some(m) = ruby_methods_of_kind_first(ruby_ordered(own, r), kind).into_iter().next() {
             return Ok(Some((m, true)));
         }
         let ancestry = self.ruby_ancestry(owner_qn)?;
@@ -142,7 +163,7 @@ impl KernelResolver {
                 .filter(|n| n.language == "ruby" && n.kind == "method" && !(production && super::resolver_upstream::test_suite_path(&n.file_path)))
                 .cloned()
                 .collect();
-            if let Some(m) = ruby_methods_of_kind_first(ruby_ordered(found, r), "class").into_iter().next() {
+            if let Some(m) = ruby_methods_of_kind_first(ruby_ordered(found, r), kind).into_iter().next() {
                 return Ok(Some((m, false)));
             }
         }

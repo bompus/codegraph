@@ -660,6 +660,14 @@ impl KernelResolver {
         } else {
             None
         }
+        .or_else(|| {
+            // A Ruby method name may end in `!` or `?`: `writer.flush!`, `writer.ready?`.
+            if r.language == "ruby" {
+                re!(r"^([A-Za-z0-9_.]+)\.([A-Za-z0-9_]+[!?])$").captures(&r.reference_name)
+            } else {
+                None
+            }
+        })
         .or_else(|| dot_re.captures(&r.reference_name));
         if dot_match.is_none() && r.language == "cpp" {
             let op_re = re!(r"^([A-Za-z0-9_.]+)\.(operator[^A-Za-z0-9_\s.]+)$");
@@ -1490,7 +1498,16 @@ if inferred.is_none() && r.language == "dart" {
                     resolved_by: "instance-method",
                 }));
             }
-            if target.len() > 1 {
+            // Not for a Ruby name ending in `!` or `?` called on a value:
+            // `key?`, `empty?`, `respond_to?`, `is_a?` and `merge!` are what the
+            // core classes answer on nearly every receiver, and the receiver's
+            // words can't tell which project method of the name, if any, is
+            // meant. A constant receiver (`MarshalWithFallback.dumped?`) still
+            // names its owner.
+            let ruby_bang_or_predicate = r.language == "ruby"
+                && method_name.ends_with(['!', '?'])
+                && super::call_shape::receiver_link(&object_or_class).starts_with(|c: char| c.is_ascii_lowercase() || c == '_');
+            if target.len() > 1 && !ruby_bang_or_predicate {
                 let receiver_words = split_camel_case(super::call_shape::receiver_link(&object_or_class));
                 // Same-file candidates first, so a score tie resolves to the
                 // call site's own file (`score > bestScore` keeps first seen).
@@ -1663,7 +1680,7 @@ if inferred.is_none() && r.language == "dart" {
             // method (`def self.m`) when it and `def m` share the qualified
             // name, then the owner's Ruby ancestry (#2834).
             if c.language == "ruby" {
-                if let Some((found, own)) = self.ruby_method_of(&c.qualified_name, method, r)? {
+                if let Some((found, own)) = self.ruby_method_of(&c.qualified_name, method, r, "class")? {
                     return Ok(Some(KCand { node: found, confidence: if own { confidence } else { 0.8 }, resolved_by }));
                 }
                 continue;
