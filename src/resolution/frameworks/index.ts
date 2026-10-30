@@ -161,12 +161,13 @@ interface SkipStore {
  * skip is valid only while the file's indexed hash is its current content, so
  * a caller that runs before this run's edits are stored passes them as
  * `stale`: those files are read again. `persist: false` reads the skips
- * without writing any (a read-only connection).
+ * without writing any (a read-only connection). `onSkipped` hears of each
+ * file a skip let a detector pass over unread.
  */
 export function detectFrameworksWithSkips(
   context: ResolutionContext,
   store: SkipStore,
-  options: { stale?: ReadonlySet<string>; persist?: boolean } = {}
+  options: { stale?: ReadonlySet<string>; persist?: boolean; onSkipped?: (file: string) => void } = {}
 ): FrameworkResolver[] {
   let known = new Map<string, Set<string>>();
   try {
@@ -179,7 +180,7 @@ export function detectFrameworksWithSkips(
   } catch {
     known = new Map(); // No skip table yet: detect from the files alone.
   }
-  const skips = new SynthSkips(known);
+  const skips = new SynthSkips(known, options.onSkipped);
   const detected = detectFrameworks({ ...context, synthSkips: skips });
   const rows = skips.take();
   if (options.persist !== false && rows.length > 0) {

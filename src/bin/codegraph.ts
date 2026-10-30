@@ -88,6 +88,7 @@ import { BROWSER_ENV, DEFAULT_UI_PORT } from '../ui-server/constants';
 import type { UiServerHandle } from '../ui-server';
 import { lookupSymbolNodes, describeSymbolNode, groupDefinitions } from '../graph/symbol-lookup';
 import { isDocumentationNode } from '../graph/traversal';
+import { callSiteLines, formatCallSiteLines } from '../graph/call-sites';
 import { goPackageReaderFor } from '../graph/go-package';
 import type { Node, Edge } from '../types';
 import { isTestPath } from '../search/query-utils';
@@ -410,6 +411,9 @@ function formatSymbolNotFound(symbol: string, fuzzyNames: string[]): string {
 function cliNode(node: Node) {
   return { name: node.name, kind: node.kind, filePath: node.filePath, startLine: node.startLine };
 }
+
+/** Call-site lines `codegraph callers` prints for one caller; `--json` lists them all. */
+const CLI_CALL_SITES_SHOWN = 10;
 
 /** Attribute a group's edges to every overload of this definition. */
 function cliDefinition(group: Node[]) {
@@ -1198,6 +1202,10 @@ program
 
       const buildInfo = cg.getIndexBuildInfo();
       const reindexRecommended = cg.isIndexStale();
+      // Frameworks that came or went since the last full index (#2516), as a
+      // sync recorded them or as detected now: files indexed before then were
+      // read without the change.
+      const frameworkChanges = cg.getFrameworkChangesSinceIndex();
       const indexState = cg.getIndexState();
       // Zero on a healthy index; non-zero at rest means a resolution pass was
       // interrupted, so some files' call edges are missing (#1187).
@@ -1236,7 +1244,9 @@ program
             builtWithVersion: buildInfo.version,
             builtWithExtractionVersion: buildInfo.extractionVersion,
             currentExtractionVersion: EXTRACTION_VERSION,
-            reindexRecommended,
+            reindexRecommended: reindexRecommended || frameworkChanges !== null,
+            // { added, removed } frameworks since the last full index, or null.
+            frameworksChangedSinceIndex: frameworkChanges,
             // 'complete' | 'partial' (files silently dropped) | 'indexing'
             // (a run was killed mid-index — the index is truncated) |
             // 'failed' | null (predates the marker).
@@ -1357,6 +1367,15 @@ program
         const builtWith = buildInfo.version ? `v${buildInfo.version.replace(/^v/, '')}` : 'an earlier version';
         warn(`Index was built by ${builtWith}; re-index to pick up this engine's improvements.`);
         info('Run "codegraph index" (full rebuild) or "codegraph sync"');
+        console.log();
+      }
+      if (frameworkChanges) {
+        const changed = [
+          ...(frameworkChanges.added.length > 0 ? [`added ${frameworkChanges.added.join(', ')}`] : []),
+          ...(frameworkChanges.removed.length > 0 ? [`removed ${frameworkChanges.removed.join(', ')}`] : []),
+        ].join('; ');
+        warn(`Frameworks changed since the last full index (${changed}); files indexed before then were read without the change.`);
+        info('Run "codegraph index" to re-index every file with them');
         console.log();
       }
 
@@ -2471,29 +2490,47 @@ for (const direction of ['callers', 'callees'] as const) {
           const note = filteredOut
             ? `no definition of "${symbol}" matches file "${options.file}" — showing all definitions instead.`
             : undefined;
+          // Every site of each neighbour (#2909): a caller that calls the symbol on
+          // two lines has both, and a symbol that calls itself is a row of its own.
           const collected = groups.map((group) => {
             const nodes = new Map<string, Node>();
             const edges = new Map<string, Edge>();
+            const recursive = new Set<string>();
             for (const target of group) {
-              const connections = direction === 'callers' ? cg.getCallers(target.id) : cg.getCallees(target.id);
-              for (const { node, edge } of connections) {
-                nodes.set(node.id, node);
-                edges.set(`${edge.source}->${edge.target}:${edge.kind}`, edge);
+              for (const row of cg.getCallSites(target.id, direction)) {
+                nodes.set(row.node.id, row.node);
+                if (row.recursive) recursive.add(row.node.id);
+                for (const edge of row.edges) {
+                  edges.set(`${edge.source}|${edge.target}|${edge.kind}|${edge.line ?? -1}|${edge.column ?? -1}`, edge);
+                }
               }
             }
-            return { group, nodes: [...nodes.values()], edges: [...edges.values()] };
+            return { group, nodes: [...nodes.values()], edges: [...edges.values()], recursive };
           });
 
-          const relationships = (node: Node, edges: Edge[]) => [...new Set(edges
-            .filter((edge) => (direction === 'callers' ? edge.source : edge.target) === node.id)
-            .map((edge) => edge.kind))];
+          const ownEdges = (node: Node, edges: Edge[]) =>
+            edges.filter((edge) => (direction === 'callers' ? edge.source : edge.target) === node.id);
+          const relationships = (node: Node, edges: Edge[]) => [...new Set(ownEdges(node, edges).map((edge) => edge.kind))];
+          // A caller is listed at the lines its calls sit on, the lines to edit; a
+          // callee at its own declaration, where a call leads.
+          const location = (node: Node, edges: Edge[]) => {
+            const lines = direction === 'callers' ? callSiteLines(ownEdges(node, edges)) : [];
+            if (lines.length > 0) return `:${formatCallSiteLines(lines, CLI_CALL_SITES_SHOWN)}`;
+            return node.startLine ? `:${node.startLine}` : '';
+          };
+          const row = (node: Node, edges: Edge[], recursive: boolean) => ({
+            ...cliNode(node),
+            relationships: relationships(node, edges),
+            lines: callSiteLines(ownEdges(node, edges)),
+            recursive,
+          });
           if (options.json) {
-            const definitions = collected.map(({ group, nodes, edges }) => {
+            const definitions = collected.map(({ group, nodes, edges, recursive }) => {
               const limited = nodes.slice(0, limit);
               const shown = new Set(limited.map((node) => node.id));
               return {
                 ...cliDefinition(group),
-                [direction]: limited.map((node) => ({ id: node.id, ...cliNode(node), relationships: relationships(node, edges) })),
+                [direction]: limited.map((node) => ({ id: node.id, ...row(node, edges, recursive.has(node.id)) })),
                 edges: edges.filter((edge) => shown.has(direction === 'callers' ? edge.source : edge.target)),
                 total: nodes.length,
                 limit,
@@ -2505,6 +2542,7 @@ for (const direction of ['callers', 'callees'] as const) {
               for (const node of nodes) union.set(node.id, node);
             }
             const total = union.size;
+            const allEdges = collected.flatMap((entry) => entry.edges);
             console.log(JSON.stringify({
               symbol,
               targets: groups.flat().map((node) => cliDefinition([node]).definition),
@@ -2514,8 +2552,8 @@ for (const direction of ['callers', 'callees'] as const) {
               filteredOut,
               note,
               definitions,
-              [direction]: [...union.values()].slice(0, limit).map((node) => ({ ...cliNode(node),
-                relationships: relationships(node, collected.flatMap((entry) => entry.edges)) })),
+              [direction]: [...union.values()].slice(0, limit).map((node) =>
+                row(node, allEdges, collected.some((entry) => entry.recursive.has(node.id)))),
               total,
               limit,
               truncated: total > limit,
@@ -2525,7 +2563,7 @@ for (const direction of ['callers', 'callees'] as const) {
             if (ambiguous) {
               console.log(chalk.bold(`\n${title} of "${symbol}" — ${groups.length} distinct definitions (narrow with --file):`));
             }
-            for (const { group, nodes, edges } of collected) {
+            for (const { group, nodes, edges, recursive } of collected) {
               const limited = nodes.slice(0, limit);
               const total = nodes.length;
               const truncated = total > limit;
@@ -2541,11 +2579,11 @@ for (const direction of ['callers', 'callees'] as const) {
                 else info(`No ${direction} found for "${symbol}"`);
               }
               for (const node of limited) {
-                const loc = node.startLine ? `:${node.startLine}` : '';
                 const kinds = relationships(node, edges).filter((kind) => kind !== 'calls');
                 const relation = kinds.length ? ` [${kinds.join(', ')}]` : '';
-                console.log(chalk.cyan(node.kind.padEnd(12)) + chalk.white(node.name) + chalk.dim(relation));
-                console.log(chalk.dim(`  ${node.filePath}${loc}`));
+                const itself = recursive.has(node.id) ? ' (calls itself)' : '';
+                console.log(chalk.cyan(node.kind.padEnd(12)) + chalk.white(node.name) + chalk.dim(itself + relation));
+                console.log(chalk.dim(`  ${node.filePath}${location(node, edges)}`));
                 console.log();
               }
               if (truncated) console.log(chalk.dim(`Showing ${limited.length} of ${total}; pass --limit to widen.`));

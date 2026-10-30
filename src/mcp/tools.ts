@@ -38,7 +38,7 @@ import {
 import type { PendingFile } from '../sync';
 import type { Node, Edge, SearchResult, Subgraph, NodeKind, GraphStats } from '../types';
 import type { NodeSpan } from '../db/queries';
-import { isDistinctiveIdentifier, isTestFile, isTestPath, normalizeNameToken, STOP_WORDS } from '../search/query-utils';
+import { isDistinctiveIdentifier, isQueryNameToken, isTestFile, isTestPath, normalizeNameToken, splitAtCjkSwitches, STOP_WORDS } from '../search/query-utils';
 import { groupDefinitions, isQualifiedSymbol, lastQualifierPart, matchesSymbol, qualifiedSymbolMatches } from '../graph/symbol-lookup';
 import { goPackageReaderFor } from '../graph/go-package';
 import {
@@ -64,6 +64,8 @@ import { countImplementers } from '../graph/type-hierarchy';
 import { isNameGuess } from '../graph/edge-trust';
 import { isDocumentationNode } from '../graph/traversal';
 import { describeSynthesizedHop } from '../graph/synthesized-hop';
+import { callSiteLines, formatCallSiteLines } from '../graph/call-sites';
+import type { CallSiteRow } from '../graph/traversal';
 import { isCopybookInclude, MAX_COPYBOOK_INCLUDES, type NamedCopybook } from '../graph/cobol-copybooks';
 import {
   findAllSymbols,
@@ -153,7 +155,7 @@ function wslSharedIndexGuidance(err: WslSharedIndexError): string {
 export { PathRefusalError } from '../errors';
 import { PathRefusalError } from '../errors';
 import { indexedHashInput } from '../file-limits';
-import { resolve as resolvePath, relative as relativePath } from 'path';
+import { resolve as resolvePath, relative as relativePath, dirname } from 'path';
 
 /** Maximum output length to prevent context bloat (characters) */
 const MAX_OUTPUT_LENGTH = 15000;
@@ -1351,15 +1353,18 @@ export function elidedBodyNote(filePath: string, name: string, from: number, to:
 /**
  * The symbol-shaped tokens of an explore query, the way its named-symbol
  * seeding reads them: split on spaces, commas and brackets, a source-file
- * extension dropped (`Program.cs` names `Program`), at least 3 characters,
- * plain or qualified identifiers only, deduped, at most 16.
+ * extension dropped (`Program.cs` names `Program`), cut where Han, kana or
+ * Hangul meets another script (`NavMeshAgent类型`), plain or qualified names
+ * in any script of at least 3 characters, or 2 in Han, kana or Hangul
+ * (`入口`, `로그인`), deduped, at most 16.
  */
 export function exploreQueryTokens(query: string): string[] {
   const FILE_EXT = /\.(?:java|kt|kts|ts|tsx|js|jsx|mjs|cjs|cs|py|go|rb|php|swift|rs|cpp|cc|cxx|c|h|hpp|scala|lua|dart|vue|svelte|astro|erl|hrl)$/i;
   return [...new Set(
     query.split(/[\s,()[\]]+/)
       .map((t) => t.replace(FILE_EXT, '').trim())
-      .filter((t) => t.length >= 3 && /^[A-Za-z_$][\w$]*(?:(?:::|\.)[\w$]+)*$/.test(t))
+      .flatMap(splitAtCjkSwitches)
+      .filter(isQueryNameToken)
   )].slice(0, 16);
 }
 
@@ -2357,6 +2362,9 @@ export function getStaticTools(): ToolDefinition[] {
  */
 const DEFAULT_MCP_TOOLS = new Set(['explore', 'sessions']);
 
+/** Call-site lines codegraph_callers shows per caller (#2909), so one busy caller stays one line. */
+const MCP_CALL_SITES_SHOWN = 10;
+
 /** realpath when the path exists, the path itself otherwise — never throws. */
 function canonicalPath(p: string): string {
   try {
@@ -3352,7 +3360,16 @@ export class ToolHandler {
       // serve it. Resolved on the main thread so the watcher lives here even
       // when dispatch is off-loaded to a worker.
       if (typeof pathCheck === 'string') {
-        await this.awaitProjectGate(pathCheck);
+        // A file inside a project (an agent passing the file it is looking at)
+        // stands for its directory, like any other path inside it (#2982).
+        // Rewritten here so the gate, the worker, the worktree notice and
+        // getCodeGraph all see the same directory.
+        let projectPath = pathCheck;
+        try {
+          if (statSync(pathCheck).isFile()) projectPath = dirname(pathCheck);
+        } catch { /* a missing path walks up to its .codegraph/ as before */ }
+        if (projectPath !== pathCheck) args = { ...args, projectPath };
+        await this.awaitProjectGate(projectPath);
       }
       // The `path` and `pattern` properties used by codegraph_files are
       // also path-shaped — apply the same cap.
@@ -3673,27 +3690,35 @@ export class ToolHandler {
       ? `\n\n> **Note:** no definition of "${symbol}" matches file "${fileFilter}" — showing all definitions instead.`
       : '';
 
+    // Every site of each caller (#2909): one row per caller, at the lines its
+    // calls sit on, and the symbol itself when it calls itself.
     const collect = (defNodes: Node[]) => {
-      const seen = new Set<string>();
       const callers: Node[] = [];
       const labels = new Map<string, string>();
+      const sites = new Map<string, Edge[]>();
+      const recursive = new Set<string>();
       for (const node of defNodes) {
-        for (const c of cg.getCallers(node.id)) {
-          if (!seen.has(c.node.id)) {
-            seen.add(c.node.id);
-            callers.push(c.node);
-            answerPaths.add(c.node.filePath);
-            const label = this.edgeLabel(c.edge);
-            if (label) labels.set(c.node.id, label);
+        for (const c of cg.getCallSites(node.id, 'callers')) {
+          const known = sites.get(c.node.id);
+          if (known) {
+            known.push(...c.edges);
+            continue;
           }
+          sites.set(c.node.id, [...c.edges]);
+          if (c.recursive) recursive.add(c.node.id);
+          callers.push(c.node);
+          answerPaths.add(c.node.filePath);
+          const label = this.edgeLabel(c.edges[0]!);
+          if (label) labels.set(c.node.id, label);
         }
       }
-      return { callers, labels };
+      const locations = new Map(callers.map((n) => [n.id, this.callSiteLocation(n, sites.get(n.id) ?? [])]));
+      return { callers, labels, locations, recursive };
     };
 
     // Single definition (or same-file overloads): the familiar flat list.
     if (groups.length === 1) {
-      const { callers, labels } = collect(groups[0]!);
+      const { callers, labels, locations, recursive } = collect(groups[0]!);
       if (callers.length === 0) {
         return this.answerResult(cg, `No callers found for "${symbol}"${allMatches.note}${filterNote}`, answerPaths);
       }
@@ -3705,7 +3730,7 @@ export class ToolHandler {
       const cut = callers.length > limit
         ? `\n\n> Showing ${limit} of ${callers.length} callers; pass \`limit\` (up to 100) to widen.`
         : '';
-      const formatted = this.formatNodeList(callers.slice(0, limit), `Callers of ${symbol}`, labels) + cut + note + filterNote;
+      const formatted = this.formatNodeList(callers.slice(0, limit), `Callers of ${symbol}`, labels, locations, recursive) + cut + note + filterNote;
       return this.answerResult(cg, this.truncateOutput(formatted), answerPaths);
     }
 
@@ -3716,16 +3741,14 @@ export class ToolHandler {
       `**Callers of ${symbol} — ${groups.length} distinct definitions (narrow with \`file\`)**`,
     ];
     for (const group of groups) {
-      const { callers, labels } = collect(group);
+      const { callers, labels, locations, recursive } = collect(group);
       lines.push('', this.definitionHeading(group));
       if (callers.length === 0) {
         lines.push('- (no callers)');
         continue;
       }
       for (const node of callers.slice(0, limit)) {
-        const location = node.startLine ? `:${node.startLine}` : '';
-        const label = labels.get(node.id);
-        lines.push(`- ${node.name} (${node.kind}) - ${node.filePath}${location}${label ? ` — via ${label}` : ''}`);
+        lines.push(this.formatNodeListEntry(node, labels, locations, recursive));
       }
       if (callers.length > limit) {
         lines.push(`- … +${callers.length - limit} more (pass \`limit\` to widen)`);
@@ -3756,26 +3779,30 @@ export class ToolHandler {
       ? `\n\n> **Note:** no definition of "${symbol}" matches file "${fileFilter}" — showing all definitions instead.`
       : '';
 
+    // Callees are listed at their own declarations, where a call leads; a
+    // symbol that calls itself is one of them (#2909).
     const collect = (defNodes: Node[]) => {
       const seen = new Set<string>();
       const callees: Node[] = [];
       const labels = new Map<string, string>();
+      const recursive = new Set<string>();
       for (const node of defNodes) {
-        for (const c of cg.getCallees(node.id)) {
+        for (const c of cg.getCallSites(node.id, 'callees')) {
           if (!seen.has(c.node.id)) {
             seen.add(c.node.id);
+            if (c.recursive) recursive.add(c.node.id);
             callees.push(c.node);
             answerPaths.add(c.node.filePath);
-            const label = this.edgeLabel(c.edge);
+            const label = this.edgeLabel(c.edges[0]!);
             if (label) labels.set(c.node.id, label);
           }
         }
       }
-      return { callees, labels };
+      return { callees, labels, recursive };
     };
 
     if (groups.length === 1) {
-      const { callees, labels } = collect(groups[0]!);
+      const { callees, labels, recursive } = collect(groups[0]!);
       if (callees.length === 0) {
         return this.answerResult(cg, `No callees found for "${symbol}"${allMatches.note}${filterNote}`, answerPaths);
       }
@@ -3787,7 +3814,7 @@ export class ToolHandler {
       const cut = callees.length > limit
         ? `\n\n> Showing ${limit} of ${callees.length} callees; pass \`limit\` (up to 100) to widen.`
         : '';
-      const formatted = this.formatNodeList(callees.slice(0, limit), `Callees of ${symbol}`, labels) + cut + note + filterNote;
+      const formatted = this.formatNodeList(callees.slice(0, limit), `Callees of ${symbol}`, labels, undefined, recursive) + cut + note + filterNote;
       return this.answerResult(cg, this.truncateOutput(formatted), answerPaths);
     }
 
@@ -3796,16 +3823,14 @@ export class ToolHandler {
       `**Callees of ${symbol} — ${groups.length} distinct definitions (narrow with \`file\`)**`,
     ];
     for (const group of groups) {
-      const { callees, labels } = collect(group);
+      const { callees, labels, recursive } = collect(group);
       lines.push('', this.definitionHeading(group));
       if (callees.length === 0) {
         lines.push('- (no callees)');
         continue;
       }
       for (const node of callees.slice(0, limit)) {
-        const location = node.startLine ? `:${node.startLine}` : '';
-        const label = labels.get(node.id);
-        lines.push(`- ${node.name} (${node.kind}) - ${node.filePath}${location}${label ? ` — via ${label}` : ''}`);
+        lines.push(this.formatNodeListEntry(node, labels, undefined, recursive));
       }
       if (callees.length > limit) {
         lines.push(`- … +${callees.length - limit} more (pass \`limit\` to widen)`);
@@ -9690,33 +9715,35 @@ export class ToolHandler {
    */
   private formatTrail(cg: CodeGraph, node: Node): string {
     const TRAIL_CAP = 12;
-    const fmt = (e: { node: Node; edge: Edge }) => {
-      const base = `${e.node.name} (${e.node.filePath}:${e.node.startLine})`;
-      const synth = this.synthEdgeNote(e.edge);
+    /** Call-site lines shown per caller, so one busy caller can't crowd the trail. */
+    const TRAIL_CALL_SITES = 3;
+    const fmt = (row: CallSiteRow, where: string) => {
+      const base = `${row.node.name} (${where})`;
+      const synth = this.synthEdgeNote(row.edges[0]!);
       if (synth) return `${base} [${synth}]`;
-      return isNameGuess(e.edge) ? `${base} [name match, unverified]` : base;
+      return isNameGuess(row.edges[0]!) ? `${base} [name match, unverified]` : base;
     };
-    const collect = (edges: Array<{ node: Node; edge: Edge }>): Array<{ node: Node; edge: Edge }> => {
-      const seen = new Set<string>([node.id]);
-      const out: Array<{ node: Node; edge: Edge }> = [];
-      for (const e of edges) {
-        if (seen.has(e.node.id)) continue;
-        seen.add(e.node.id);
-        out.push(e);
-      }
-      return out;
-    };
-    const callees = collect(cg.getCallees(node.id));
-    const callers = collect(cg.getCallers(node.id));
+    // A callee reads at its declaration, where following it leads. A caller
+    // reads at the lines its calls sit on, every one a line to edit when this
+    // symbol changes (#2909), and a symbol that calls itself is among its own
+    // callers, once.
+    const callees = cg.getCallSites(node.id, 'callees').filter((row) => !row.recursive);
+    const callers = cg.getCallSites(node.id, 'callers');
     const dups = this.nearDuplicateNote(cg, node);
     if (callees.length === 0 && callers.length === 0 && !dups) return '';
+    const callee = (row: CallSiteRow) => fmt(row, `${row.node.filePath}:${row.node.startLine}`);
+    const caller = (row: CallSiteRow) => {
+      const sites = callSiteLines(row.edges);
+      const at = sites.length > 0 ? formatCallSiteLines(sites, TRAIL_CALL_SITES) : String(row.node.startLine);
+      return fmt(row, `${row.node.filePath}:${at}${row.recursive ? ', calls itself' : ''}`);
+    };
     const lines: string[] = ['', '**Trail — codegraph_node any of these to follow it (no Read needed)**'];
     if (dups) lines.push(`**Near-duplicates (update together) ≈** ${dups}`);
     if (callees.length > 0) {
-      lines.push(`**Calls →** ${callees.slice(0, TRAIL_CAP).map(fmt).join(', ')}${callees.length > TRAIL_CAP ? `, +${callees.length - TRAIL_CAP} more` : ''}`);
+      lines.push(`**Calls →** ${callees.slice(0, TRAIL_CAP).map(callee).join(', ')}${callees.length > TRAIL_CAP ? `, +${callees.length - TRAIL_CAP} more` : ''}`);
     }
     if (callers.length > 0) {
-      lines.push(`**Called by ←** ${callers.slice(0, TRAIL_CAP).map(fmt).join(', ')}${callers.length > TRAIL_CAP ? `, +${callers.length - TRAIL_CAP} more` : ''}`);
+      lines.push(`**Called by ←** ${callers.slice(0, TRAIL_CAP).map(caller).join(', ')}${callers.length > TRAIL_CAP ? `, +${callers.length - TRAIL_CAP} more` : ''}`);
     }
     return lines.join('\n');
   }
@@ -9743,7 +9770,9 @@ export class ToolHandler {
     // (e.g. the server resolved up from a nested worktree to the main checkout).
     // Queries then reflect that tree's branch, not the worktree being edited.
     // status shows the verbose, multi-line form; the read tools get the compact
-    // one-liner via withWorktreeNotice. Both share the cached detection.
+    // one-liner via withWorktreeNotice. Both share the cached detection, and
+    // both are worded for the agent: the user can index the worktree, the
+    // agent doesn't.
     const mismatch = this.worktreeMismatchFor(args.projectPath as string | undefined);
 
     const lines: string[] = [
@@ -9752,7 +9781,7 @@ export class ToolHandler {
       '',
     ];
     if (mismatch) {
-      lines.push(`> ⚠ ${worktreeMismatchWarning(mismatch).replace(/\n/g, '\n> ')}`, '');
+      lines.push(`> ⚠ ${worktreeMismatchWarning(mismatch, 'agent').replace(/\n/g, '\n> ')}`, '');
     }
     lines.push(
       `**Files indexed:** ${stats.fileCount}`,
@@ -10155,20 +10184,45 @@ export class ToolHandler {
     return lines.join('\n');
   }
 
-  private formatNodeList(nodes: Node[], title: string, labels?: Map<string, string>): string {
+  private formatNodeList(
+    nodes: Node[],
+    title: string,
+    labels?: Map<string, string>,
+    locations?: Map<string, string>,
+    recursive?: Set<string>,
+  ): string {
     const lines: string[] = [`**${title} (${nodes.length} found)**`, ''];
-
-    for (const node of nodes) {
-      const location = node.startLine ? `:${node.startLine}` : '';
-      // Compact: just name, kind, location — plus the relationship when it
-      // isn't a plain call (callback registration, instantiation, …).
-      const label = labels?.get(node.id);
-      lines.push(
-        `- ${node.name} (${node.kind}) - ${node.filePath}${location}${label ? ` — via ${label}` : ''}`
-      );
-    }
-
+    for (const node of nodes) lines.push(this.formatNodeListEntry(node, labels, locations, recursive));
     return lines.join('\n');
+  }
+
+  /**
+   * One callers/callees entry. Compact: name, kind, location (the caller's
+   * call sites when `locations` has them, else the declaration's line), the
+   * relationship when it isn't a plain call (callback registration,
+   * instantiation, …), and whether the symbol calls itself.
+   */
+  private formatNodeListEntry(
+    node: Node,
+    labels?: Map<string, string>,
+    locations?: Map<string, string>,
+    recursive?: Set<string>,
+  ): string {
+    const location = locations?.get(node.id) ?? (node.startLine ? `:${node.startLine}` : '');
+    const label = labels?.get(node.id);
+    const itself = recursive?.has(node.id) ? ' — calls itself' : '';
+    return `- ${node.name} (${node.kind}) - ${node.filePath}${location}${label ? ` — via ${label}` : ''}${itself}`;
+  }
+
+  /**
+   * `:9, 10` — where a caller's calls sit, the lines to edit when the symbol
+   * changes (#2909), capped at {@link MCP_CALL_SITES_SHOWN}; the caller's own
+   * line when its edges carry none.
+   */
+  private callSiteLocation(node: Node, edges: readonly Edge[]): string {
+    const lines = callSiteLines(edges);
+    if (lines.length > 0) return `:${formatCallSiteLines(lines, MCP_CALL_SITES_SHOWN)}`;
+    return node.startLine ? `:${node.startLine}` : '';
   }
 
   /**

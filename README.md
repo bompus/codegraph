@@ -1078,12 +1078,15 @@ See [Get Started](#get-started) for the one-line install commands.
 ## Supported Agents
 
 The interactive installer auto-detects and configures each of these — wiring up
-the MCP server (which delivers its own usage guidance, so no instructions file
-is written):
+the MCP server, which delivers its own usage guidance. For Claude Code, Codex
+CLI, Gemini CLI and opencode it also writes a short marker-fenced CodeGraph
+section into the agent's instructions file (`CLAUDE.md` / `AGENTS.md` /
+`GEMINI.md`), so subagents and non-MCP agents learn the `codegraph explore`
+command:
 
 - **Claude Code**
 - **Cursor**
-- **Codex CLI**
+- **Codex CLI** — the Codex IDE extension reads the same config: a global install writes `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`), and a local install writes `.codex/config.toml`, which Codex uses only in a project you've marked as trusted
 - **opencode** — MCP entry is OpenCode 2's `mcp.servers.codegraph` with `codemode: false` (keeps `codegraph_explore` on the native tool list; `codegraph install` migrates the older `mcp.codegraph` shape)
 - **Hermes Agent**
 - **Gemini CLI**
@@ -1185,7 +1188,7 @@ Framework routing is validated the same way, on a canonical app per framework: E
 
 **Two `codegraph serve --mcp` on one project fight over the index / auto-sync stops** — CodeGraph allows one live MCP *writer* per project (the shared background daemon, or a single direct-mode process). Extra clients should proxy to that daemon. If you set `CODEGRAPH_NO_DAEMON=1`, run only one `serve --mcp` for that project; a second instance exits with a clear writer-lock error (see `writer.pid` under `.codegraph/`; its persistent `writer.pid.mutation.lock` coordinates ownership changes and needs no stale-lock deletion). Prefer leaving the daemon enabled so multiple MCP hosts share one watcher.
 
-**MCP tool calls fail with `Transport closed` while `codegraph status`/`sync` are healthy** — almost always WSL2 with the project on a Windows drive (a `/mnt/c` or `/mnt/d` path), where the local socket CodeGraph uses to share one background server across sessions is unreliable. CodeGraph now falls back to serving the session in-process instead of dropping the connection, and keeps trying to reach the shared server in the background: first after 5 seconds, backing off to every 5 minutes. `CODEGRAPH_DAEMON_RETRY_MS` and `CODEGRAPH_DAEMON_RETRY_MAX_MS` set those two delays, and `CODEGRAPH_DAEMON_RETRY_MS=0` stops retrying. If you still hit it, set `CODEGRAPH_NO_DAEMON=1` in your MCP server's environment to skip the shared server entirely (each session runs in its own process). Moving the project onto the Linux-native filesystem (e.g. under `~/` instead of `/mnt/`) restores the shared server.
+**MCP tool calls fail with `Transport closed` while `codegraph status`/`sync` are healthy** — almost always WSL2 with the project on a Windows drive (a `/mnt/c` or `/mnt/d` path), where the local socket CodeGraph uses to share one background server across sessions is unreliable. CodeGraph works around this itself now: when the project's filesystem can't host that socket, the shared server puts it in the system temp directory instead, and when the shared server still can't be reached, or drops, the session is served in-process instead of losing the connection, and keeps trying to reach the shared server in the background: first after 5 seconds, backing off to every 5 minutes. `CODEGRAPH_DAEMON_RETRY_MS` and `CODEGRAPH_DAEMON_RETRY_MAX_MS` set those two delays, and `CODEGRAPH_DAEMON_RETRY_MS=0` stops retrying. If you still hit it, set `CODEGRAPH_NO_DAEMON=1` in your MCP server's environment to skip the shared server entirely (each session runs in its own process). Moving the project onto the Linux-native filesystem (e.g. under `~/` instead of `/mnt/`) restores the shared server.
 
 **Missing symbols** — The MCP server auto-syncs on save (wait a couple seconds). Run `codegraph sync` manually if needed. Check that the file's language is supported and isn't inside a `.gitignore`d or default-excluded directory (e.g. `node_modules`, `dist`).
 
