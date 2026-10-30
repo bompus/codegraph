@@ -998,6 +998,19 @@ pub(super) static JS_BUILT_IN_METHODS: LazyLock<HashSet<&'static str>> = LazyLoc
     .collect()
 });
 
+/// The browser's host objects a script reaches by name (JS_BROWSER_HOST_GLOBALS,
+/// js-builtins.ts): the global object under its names and its members that
+/// code calls straight on. A call on one is the browser's, not a project
+/// method, unless the file binds or imports the name (#2907).
+pub(super) static JS_BROWSER_HOST_GLOBALS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    [
+        "window", "self", "globalThis", "document", "localStorage", "sessionStorage",
+        "location", "history", "navigator", "screen", "performance",
+    ]
+    .into_iter()
+    .collect()
+});
+
 pub(super) static PYTHON_BUILT_IN_METHODS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [
         "append", "extend", "insert", "remove", "pop", "clear", "sort", "reverse", "copy", "update",

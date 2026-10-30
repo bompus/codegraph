@@ -304,7 +304,21 @@ impl KernelResolver {
             for raw in source.get(start..end).unwrap_or_default() {
                 let line = strip_line_comments(raw);
                 if let Some(t) = FIELD_OF.capture(&line, field) {
-                    return Ok(Some((t.trim().to_string(), s.file_path.clone())));
+                    let mut ty = t.trim().to_string();
+                    // A func type's results follow its parameter list, past
+                    // spaces (`get func() A`), which the first token cuts off.
+                    if ty.starts_with("func") {
+                        let toks: Vec<&str> = line.split_whitespace().collect();
+                        if let Some(i) = toks.iter().position(|w| *w == field) {
+                            let joined = toks[i + 1..].join(" ");
+                            // `get func() *A; other *B` — the next field is
+                            // no part of this type, nor is a struct tag.
+                            let joined = joined.split(';').next().unwrap_or(&joined);
+                            let joined = joined.split('`').next().unwrap_or(joined);
+                            ty = joined.trim_end_matches(['}', ';']).trim().to_string();
+                        }
+                    }
+                    return Ok(Some((ty, s.file_path.clone())));
                 }
                 // An embedded field spells only its type — `KV` of `struct
                 // { KV; name string }` answers `KV` for the field `KV`.
@@ -318,6 +332,7 @@ impl KernelResolver {
         }
         Ok(None)
     }
+
 
     /// The `index`th result of a Go call's callee — `*Session` of `func
     /// New() (*Session, error)` at 0, `*Txn` of `func Begin() (int, *Txn)`
@@ -786,25 +801,35 @@ impl KernelResolver {
                             if self.go_is_outside_package(q, &file)? {
                                 return Ok(None);
                             }
-                            if let Some(d) = self.go_imported_package_dir(&file, q)? {
-                                if !self.go_package_types(callee, &d)?.is_empty() {
-                                    return Ok(Some((format!("{q}.{callee}"), file)));
-                                }
-                                // `pkg.F(…)` — F's result.
-                                for f in self.nodes_by_name(callee)?.iter().filter(|n| {
-                                    n.language == "go" && n.kind == "function" && pos_dirname(&n.file_path) == d
-                                }) {
-                                    if let Some(t) = self.go_call_result_at(f, result_idx) {
-                                        return Ok(Some((t, f.file_path.clone())));
+                            // A local or parameter of the package's name is the
+                            // value, not the package: `shadowPkg(store *Holder)`
+                            // makes `store.New()` the method, whose result types
+                            // the call (#2543).
+                            if !self.is_shadowed_import(q, r)? {
+                                if let Some(d) = self.go_imported_package_dir(&file, q)? {
+                                    if !self.go_package_types(callee, &d)?.is_empty() {
+                                        return Ok(Some((format!("{q}.{callee}"), file)));
                                     }
+                                    // `pkg.F(…)` — F's result.
+                                    for f in self.nodes_by_name(callee)?.iter().filter(|n| {
+                                        n.language == "go" && n.kind == "function" && pos_dirname(&n.file_path) == d
+                                    }) {
+                                        if let Some(t) = self.go_call_result_at(f, result_idx) {
+                                            return Ok(Some((t, f.file_path.clone())));
+                                        }
+                                    }
+                                    return Ok(None);
                                 }
-                                return Ok(None);
                             }
                             // `m.F(…)` — F's first result, on m's type.
                             let Some((base_ty, base_at)) = self.go_expr_written(operand, file_text, r)? else {
                                 return Ok(None);
                             };
                             let Some((tn, dir)) = self.go_type_package(&base_ty, &base_at)? else {
+                                // A qualified type of a package the project does not
+                                // index names nothing the call can be read from; a
+                                // literal type's text is the answer (Outside).
+                                if base_ty.contains('.') { return Ok(None); }
                                 return Ok(Some((base_ty, base_at)));
                             };
                             let want = format!("{tn}::{callee}");
@@ -821,8 +846,12 @@ impl KernelResolver {
                                 }
                             }
                             // `h.get()` — a field of func type called as a
-                            // callee: its type is no named method holder's.
+                            // callee: the call's type is the func type's
+                            // `result_idx`th result, not the func value.
                             if let Some((ft, at)) = self.go_field_type(&tn, callee, &dir)? {
+                                if let Some(result) = go_func_type_result(&ft, result_idx) {
+                                    return Ok(Some((result, at)));
+                                }
                                 return Ok(Some((ft, at)));
                             }
                             return Ok(None);
@@ -834,6 +863,7 @@ impl KernelResolver {
                             return Ok(None);
                         };
                         let Some((tn, dir)) = self.go_type_package(&w, &at)? else {
+                            if w.contains('.') { return Ok(None); }
                             return Ok(Some((w, at)));
                         };
                         let want = format!("{tn}::{callee}");
@@ -1017,4 +1047,42 @@ impl KernelResolver {
             }
         }
     }
+}
+
+/// The `index`th result a written Go func type declares: `func() A` is `A`,
+/// `func(int) (A, error)` at 0 is `A` and at 1 `error` (none). A func value's
+/// call has the type its declaration spells, which is what a func-typed
+/// field's call gives (`h.get().Run()` on `get func() A`).
+fn go_func_type_result(ft: &str, index: usize) -> Option<String> {
+    let tail = ft.trim().strip_prefix("func")?;
+    let mut depth = 0usize;
+    let mut params_end = None;
+    for (i, c) in tail.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 { params_end = Some(i + 1); break; }
+            }
+            _ => {}
+        }
+    }
+    let raw = tail[params_end?..].trim().trim_end_matches('{').trim();
+    let inner = raw.strip_prefix('(').and_then(|s| s.strip_suffix(')')).unwrap_or(raw);
+    let mut depth = 0usize;
+    let mut starts = vec![0usize];
+    let mut commas: Vec<usize> = Vec::new();
+    for (i, c) in inner.char_indices() {
+        match c {
+            '[' | '(' | '{' => depth += 1,
+            ']' | ')' | '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => { commas.push(i); starts.push(i + 1); }
+            _ => {}
+        }
+    }
+    if index >= starts.len() { return None; }
+    let end = commas.get(index).copied().unwrap_or(inner.len());
+    let nth = inner[starts[index]..end].trim();
+    let nth = nth.rsplit(' ').next().unwrap_or(nth).trim();
+    if nth.is_empty() || nth == "error" { None } else { Some(nth.to_string()) }
 }

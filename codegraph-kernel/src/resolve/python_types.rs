@@ -995,7 +995,7 @@ impl KernelResolver {
                 let trimmed = line.trim_start();
                 if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
                 if line.len() - trimmed.len() >= binding_indent { continue; }
-                if re!(r"^(?:if|elif|else|for|while|try|except|finally|with)").is_match(trimmed) {
+                if re!(r"^(?:if|elif|else|for|while|try|except|finally|with)\b").is_match(trimmed) {
                     return true;
                 }
             }
@@ -1004,9 +1004,6 @@ impl KernelResolver {
         // `PyBinding` lines are zero-based; the ref's line is one-based.
         let at = r.line.max(0) as usize;
         let eligible = |line: &usize, rebinds: &bool| *rebinds && *line < at;
-        if lines.iter().any(|(_, line, rebinds)| eligible(line, rebinds) && control_bound(*line)) {
-            return Ok(Some(Answer::Unknown));
-        }
         if let Some((i, line, _)) = lines
             .iter()
             .filter(|(_, line, rebinds)| eligible(line, rebinds))

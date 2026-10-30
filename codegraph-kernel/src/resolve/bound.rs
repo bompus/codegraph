@@ -794,7 +794,7 @@ if site.language == "dart" && site.reference_kind == "calls" {
     /// qualified names, and `qualified` looks `type_name` up as one: a
     /// class's parent is the one its declaration resolved to, never every
     /// same-named class in other namespaces.
-    fn supertype_names(&mut self, type_name: &str, r: &ResolveRefIn, from_site: bool, qualified: bool) -> Res<Vec<String>> {
+    pub(super) fn supertype_names(&mut self, type_name: &str, r: &ResolveRefIn, from_site: bool, qualified: bool) -> Res<Vec<String>> {
         let mut names: Vec<String> = Vec::new();
         for tn in self.supertype_type_nodes(type_name, r, from_site, qualified)? {
             // Ruby and PHP look in mixins before the parent class.

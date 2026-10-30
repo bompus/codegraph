@@ -253,6 +253,16 @@ impl KernelResolver {
         let site = r.clone().at(cls);
         let mut out = Vec::new();
         for name in python_base_names(&lines, (cls.start_line - 1).max(0) as usize) {
+            // `class Adapter(*bases, Right)` with `bases = (Left,)`: the tuple's
+            // classes are bases too, in the order it writes them.
+            if let Some(variable) = name.trim().strip_prefix('*') {
+                for element in python_unpacked_bases(&lines, variable, (cls.start_line - 1).max(0) as usize) {
+                    if let Some(base) = self.python_ref_class(&element, &site)? {
+                        out.push(base);
+                    }
+                }
+                continue;
+            }
             if let Some(base) = self.python_ref_class(&name, &site)? {
                 out.push(base);
             }
@@ -956,7 +966,8 @@ fn python_base_names(lines: &[String], at: usize) -> Vec<String> {
     names
         .into_iter()
         .map(|n| n.trim().to_string())
-        .filter(|n| !n.is_empty() && !n.contains('=') && !n.starts_with('*'))
+        // A splat base (`*bases`) is kept: python_bases expands its tuple.
+        .filter(|n| !n.is_empty() && !n.contains('=') && !n.starts_with("**"))
         .collect()
 }
 
@@ -1063,4 +1074,28 @@ mod tests {
         assert_eq!(code.iter().map(|(s, _)| *s).collect::<Vec<_>>(), [true, false, false, true]);
         assert_eq!(code[1].1, lines[1]);
     }
+}
+
+/// The class names a module-level tuple variable writes: `bases = (Left, Right)`
+/// for a `class Adapter(*bases)` header. Empty for any other shape.
+fn python_unpacked_bases(lines: &[String], variable: &str, before: usize) -> Vec<String> {
+    let Ok(pattern) = regex::Regex::new(&format!(r"(?m)^{}\s*=\s*\(([^)]*)\)", regex::escape(variable.trim()))) else {
+        return Vec::new();
+    };
+    let text = lines.join("\n");
+    // The module-level binding written before the class: an earlier function's
+    // local `bases = (Wrong,)` is no base list.
+    let last = pattern
+        .captures_iter(&text)
+        .filter(|caps| {
+            let at = caps.get(0).map(|m| m.start()).unwrap_or(0);
+            text[..at].matches('\n').count() < before
+        })
+        .last();
+    let Some(caps) = last else { return Vec::new() };
+    caps[1]
+        .split(',')
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty() && item.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.'))
+        .collect()
 }

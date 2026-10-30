@@ -1,6 +1,7 @@
 //! Name machinery (name-matcher.ts): visibility, exact and fuzzy matching, best-match scoring.
 
 use super::*;
+use super::js_objects_upstream::CollapsedCall;
 use super::name_scope::{can_name_in_type_position, is_bare_rust_name};
 
 /// The most a PHP `$this`/`self`/`parent` call settled on a repository trait
@@ -45,6 +46,22 @@ fn prefer_adjacent_implementations(candidates: &mut Vec<Arc<KNode>>, r: &Resolve
         let stem = [".d.ts", ".d.mts", ".d.cts"].iter().find_map(|suffix| n.file_path.strip_suffix(suffix));
         stem.is_none_or(|stem| !implementations.contains(&(stem.to_string(), n.qualified_name.clone())))
     });
+}
+
+/// Byte offsets of `name` in `text` where it stands as a whole word: not
+/// preceded or followed by a name character (`$` included, as JavaScript
+/// allows it in identifiers). The regex crate has no look-around.
+pub(super) fn name_offsets<'t>(text: &'t str, name: &'t str) -> impl Iterator<Item = usize> + 't {
+    text.match_indices(name).map(|(at, _)| at).filter(move |at| {
+        let before = text[..*at].chars().next_back().is_none_or(|c| !is_name_char(c));
+        let after = at + name.len();
+        let after = text[after..].chars().next().is_none_or(|c| !is_name_char(c));
+        before && after
+    })
+}
+
+fn is_name_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '$'
 }
 
 impl KernelResolver {
@@ -740,6 +757,7 @@ impl KernelResolver {
     pub(super) fn find_best_match(&mut self, r: &ResolveRefIn, candidates: &[Arc<KNode>]) -> Option<Arc<KNode>> {
         let mut best_score = -1f64;
         let mut best: Option<Arc<KNode>> = None;
+        let mut tied: Vec<Arc<KNode>> = Vec::new();
         let mut ref_dirs: Vec<String> =
             r.file_path.split('/').map(|s| s.to_string()).collect();
         ref_dirs.pop();
@@ -786,6 +804,18 @@ impl KernelResolver {
             if score > best_score {
                 best_score = score;
                 best = Some(candidate.clone());
+                tied.clear();
+                tied.push(candidate.clone());
+            } else if score == best_score {
+                tied.push(candidate.clone());
+            }
+        }
+        // Proximity is capped, so on deep trees two copies of the same symbol
+        // in sibling modules can tie; the caller's own copy, if uniquely
+        // closest, wins (upstream 81559dcc).
+        if tied.len() > 1 {
+            if let Some(own) = closest_copy(r, &tied) {
+                return Some(own);
             }
         }
         best
@@ -1103,20 +1133,59 @@ impl KernelResolver {
                 resolved_by: "exact-match",
             }));
         }
-        if candidates.len() as i64 > self.ambiguous_ceiling {
+        // A member of the caller's own class (or what it inherits / is
+        // nested in) is what the name means there, however far away it is
+        // declared. Not for a call written on `super` in JS (upstream
+        // 25776014 / #2497).
+        let member = if self.is_js_super_call_site(r)? {
+            None
+        } else {
+            self.match_enclosing_scope_member(r, &candidates)?
+        };
+        // The scope names the member, not the overload: when the class
+        // declares the name more than once, the one the arguments fit, else
+        // the nearest, is chosen below — among those overloads only.
+        let mut pool: Vec<Arc<KNode>> = candidates.to_vec();
+        if let Some(member) = member {
+            let overloads: Vec<Arc<KNode>> = candidates
+                .iter()
+                .filter(|c| c.qualified_name == member.qualified_name && c.file_path == member.file_path)
+                .cloned()
+                .collect();
+            if overloads.len() <= 1 {
+                return Ok(Some(KCand {
+                    node: member,
+                    confidence: 0.9,
+                    resolved_by: "exact-match",
+                }));
+            }
+            pool = overloads;
+        }
+        if pool.len() as i64 > self.ambiguous_ceiling {
             return Ok(None);
         }
-        let Some(best) = self.find_best_match(r, &candidates) else {
+        let Some(best) = self.find_best_match(r, &pool) else {
             return Ok(None);
         };
-        let best = self.cpp_function_overload(best, &candidates, r)?;
+        let best = self.cpp_function_overload(best, &pool, r)?;
         if bare_js && !is_bare_call_target_kind(&best.kind) {
             return Ok(None);
         }
         if self.is_cross_file_reachable(&best, r)? {
             let proximity = compute_path_proximity(&r.file_path, &best.file_path);
+            // Every candidate is a copy of one symbol and this is the caller's
+            // own copy: the name itself is not ambiguous, only which copy —
+            // so rank it above a proximity guess, below a unique name or the
+            // file's own definition (upstream 81559dcc).
+            let weighed: Vec<Arc<KNode>> = if candidates.iter().any(|c| c.language == r.language) {
+                candidates.iter().filter(|c| c.language == r.language).cloned().collect()
+            } else {
+                candidates.to_vec()
+            };
             let confidence = if self.is_decisive_same_file_match(&best, r, &candidates)? {
                 0.9
+            } else if best.id != r.from_node_id && closest_copy(r, &weighed).is_some_and(|c| c.id == best.id) {
+                0.8
             } else if proximity >= 30 {
                 0.7
             } else {
@@ -1129,6 +1198,512 @@ impl KernelResolver {
             }));
         }
         Ok(None)
+    }
+
+    /// matchEnclosingScopeMember (name-matcher.ts, upstream 25776014): a call
+    /// that means a member of the class it is written in — a receiver-less
+    /// `render()` in Java / Scala, or `this.render()` / `self.render()` in
+    /// TypeScript / JavaScript / Python — binds by the language's scoping, not
+    /// by which same-named method sits nearest: the caller's own class first,
+    /// then what it inherits, then (bare only) enclosing classes.
+    fn match_enclosing_scope_member(&mut self, r: &ResolveRefIn, candidates: &[Arc<KNode>]) -> Res<Option<Arc<KNode>>> {
+        const IMPLICIT: [&str; 2] = ["java", "scala"];
+        const EXPLICIT: [&str; 5] = ["python", "typescript", "tsx", "javascript", "jsx"];
+        if r.reference_kind != "calls" || r.reference_name.contains(['.', ':']) {
+            return Ok(None);
+        }
+        let implicit = IMPLICIT.contains(&r.language.as_str());
+        if !implicit && !EXPLICIT.contains(&r.language.as_str()) {
+            return Ok(None);
+        }
+        let Some(caller) = self.node_by_id(&r.from_node_id)? else {
+            return Ok(None);
+        };
+        if caller.qualified_name.is_empty() {
+            return Ok(None);
+        }
+        let Some(receiver) = self.call_receiver_kind(r)? else {
+            return Ok(None);
+        };
+        if receiver == ReceiverKind::Bare && !implicit {
+            return Ok(None);
+        }
+
+        let name = r.reference_name.as_str();
+        // Candidates keyed by declaring type, qualified and simple.
+        let mut by_owner: HashMap<String, Vec<Arc<KNode>>> = HashMap::new();
+        let mut by_owner_name: HashMap<String, Vec<Arc<KNode>>> = HashMap::new();
+        for c in candidates {
+            let Some(sep) = c.qualified_name.rfind("::") else { continue };
+            if sep == 0 || &c.qualified_name[sep + 2..] != name {
+                continue;
+            }
+            let owner = c.qualified_name[..sep].to_string();
+            let simple = owner.rsplit("::").next().unwrap_or(&owner).to_string();
+            by_owner.entry(owner).or_default().push(c.clone());
+            by_owner.entry(simple.clone()).or_default();
+            by_owner_name.entry(simple).or_default().push(c.clone());
+        }
+        let callable_first = |found: &Vec<Arc<KNode>>| -> Vec<Arc<KNode>> {
+            let mut v = found.clone();
+            v.sort_by_key(|c| i32::from(!(c.kind == "method" || c.kind == "function")));
+            v
+        };
+        // `Owner::Owner` is a constructor: a bare `Owner(...)` builds a new
+        // instance, it does not call an inherited or enclosing member.
+        let members = |owner: &str| -> Vec<Arc<KNode>> {
+            if owner == name || owner.ends_with(&format!("::{name}")) {
+                Vec::new()
+            } else {
+                callable_first(by_owner.get(owner).unwrap_or(&Vec::new()))
+            }
+        };
+
+        let segments: Vec<&str> = caller.qualified_name.split("::").collect();
+        let start = if MEMBER_OWNER_KINDS.contains(&caller.kind.as_str()) { segments.len() } else { segments.len() - 1 };
+        for i in (1..=start).rev() {
+            let scope = segments[..i].join("::");
+            let type_decls = self.types_named(&scope, &r.language)?;
+            if type_decls.is_empty() {
+                // `this.`/`super.` name a class member; only a bare call sees locals.
+                if receiver != ReceiverKind::Bare {
+                    continue;
+                }
+                if let Some(local_fn) = members(&scope).into_iter().find(|c| {
+                    c.file_path == r.file_path && (c.kind == "method" || c.kind == "function")
+                }) {
+                    return Ok(Some(local_fn));
+                }
+                continue;
+            }
+            if receiver != ReceiverKind::Super {
+                // pick(scope, true): the caller's file first; another file
+                // only when a single type carries the qualified name.
+                let found = members(&scope);
+                if !found.is_empty() {
+                    if let Some(local) = found.iter().find(|c| c.file_path == r.file_path) {
+                        return Ok(Some(local.clone()));
+                    }
+                    if type_decls.len() == 1 {
+                        return Ok(Some(found[0].clone()));
+                    }
+                }
+            }
+            // The type's own supertypes first; by name when they reach nothing.
+            let decl = self.decl_of(&type_decls, r);
+            let simple = segments[i - 1];
+            let supers = self.direct_supertypes(&type_decls, simple, r)?;
+            let via_super = match &decl {
+                Some(d) => self.inherited_through(d, &by_owner, name, receiver, r)?,
+                None => None,
+            };
+            let via_super = match via_super {
+                Some(v) => Some(v),
+                None => self.inherited_by_name(&supers, simple, &by_owner_name, name, receiver, r)?,
+            };
+            if let Some(v) = via_super {
+                return Ok(Some(v));
+            }
+            // `this`/`self`/`super` is the innermost instance; outer classes
+            // are reachable only by a bare call.
+            if receiver != ReceiverKind::Bare {
+                return Ok(None);
+            }
+            // A supertype outside the index may declare the name: stop rather
+            // than guess past it.
+            if supers.is_empty() && self.declares_supertype(&type_decls, simple, r)? {
+                return Ok(None);
+            }
+        }
+        Ok(None)
+    }
+
+    /// The receiver a call site's line names: `render()`, `this.render()`,
+    /// `self.render()`, `super.render()` all extract as `render` (upstream
+    /// callReceiverKind). None when the receiver is something else.
+    fn call_receiver_kind(&mut self, r: &ResolveRefIn) -> Res<Option<ReceiverKind>> {
+        let Some(src) = self.read_file(&r.file_path) else {
+            return Ok(None);
+        };
+        let Some(line) = src.line((r.line - 1) as usize) else {
+            return Ok(None);
+        };
+        let mut at: Option<usize> = None;
+        for start in name_offsets(line, &r.reference_name) {
+            at = Some(start);
+            if start >= r.column as usize {
+                break;
+            }
+        }
+        let Some(at) = at else {
+            return Ok(None);
+        };
+        let before = &line[..at];
+        if re!(r"(?:^|[^\w$.])super(?:\s*\([^()]*\)|<[^<>]*>)?\s*\.\s*$").is_match(before) {
+            return Ok(Some(ReceiverKind::Super));
+        }
+        if re!(r"(?:^|[^\w$.])this\s*\??\.\s*$").is_match(before) {
+            return Ok(Some(ReceiverKind::Slf));
+        }
+        // A JS `self` the file doesn't bind is the global object, not the instance.
+        if re!(r"(?:^|[^\w$.])self\s*\??\.\s*$").is_match(before) {
+            if is_js_family(&r.language) && self.is_browser_host_global("self", r)? {
+                return Ok(None);
+            }
+            return Ok(Some(ReceiverKind::Slf));
+        }
+        if r.language == "python" && re!(r"(?:^|[^\w$.])cls\s*\.\s*$").is_match(before) {
+            return Ok(Some(ReceiverKind::Slf));
+        }
+        if re!(r"(?:\.|->|::)\s*$").is_match(before) {
+            return Ok(None);
+        }
+        Ok(Some(ReceiverKind::Bare))
+    }
+
+    /// typesNamed: owner-kind nodes carrying the qualified name, same language
+    /// family as the ref.
+    fn types_named(&mut self, qn: &str, lang: &str) -> Res<Vec<Arc<KNode>>> {
+        Ok(self
+            .nodes_by_qualified_name(qn)?
+            .iter()
+            .filter(|n| MEMBER_OWNER_KINDS.contains(&n.kind.as_str()) && same_language_family(&n.language, lang))
+            .cloned()
+            .collect())
+    }
+
+    /// declOf: the declaration of `scope` the call sits in, else the only one.
+    fn decl_of(&mut self, decls: &[Arc<KNode>], r: &ResolveRefIn) -> Option<Arc<KNode>> {
+        let enclosing: Vec<&Arc<KNode>> = decls
+            .iter()
+            .filter(|n| n.file_path == r.file_path && n.start_line <= r.line && n.end_line >= r.line)
+            .collect();
+        if let Some(last) = enclosing.last() {
+            return Some((*last).clone());
+        }
+        if decls.len() == 1 {
+            return Some(decls[0].clone());
+        }
+        None
+    }
+
+    /// A type declaration's header: its text up to the body's `{`, every
+    /// declaration of that name joined (upstream typeHeader/headerOf).
+    fn type_header(&mut self, decls: &[Arc<KNode>], r: &ResolveRefIn) -> Res<Option<String>> {
+        let enclosing: Vec<&Arc<KNode>> = decls
+            .iter()
+            .filter(|n| n.file_path == r.file_path && n.start_line <= r.line && n.end_line >= r.line)
+            .collect();
+        let chosen: Vec<Arc<KNode>> = if let Some(last) = enclosing.last() {
+            vec![(*last).clone()]
+        } else {
+            decls.to_vec()
+        };
+        if decls.is_empty() {
+            return Ok(None);
+        }
+        let mut header = String::new();
+        for decl in chosen {
+            let Some(src) = self.read_file(&decl.file_path) else {
+                return Ok(None);
+            };
+            let start = (decl.start_line - 1) as usize;
+            let stop = (decl.start_line as usize + 30).min(src.lines.len());
+            for l in start..stop {
+                let Some(text) = src.line(l) else { break };
+                match text.find('{') {
+                    Some(b) => {
+                        header.push(' ');
+                        header.push_str(&text[..b]);
+                        break;
+                    }
+                    None => {
+                        header.push(' ');
+                        header.push_str(text);
+                    }
+                }
+            }
+        }
+        Ok(Some(header))
+    }
+
+    /// directSupertypes: of the simple name's resolved supertypes, the ones
+    /// the declaration's header names, in header order.
+    fn direct_supertypes(&mut self, decls: &[Arc<KNode>], simple: &str, r: &ResolveRefIn) -> Res<Vec<String>> {
+        let all = self.supertype_names(simple, r, false, false)?;
+        if all.is_empty() {
+            return Ok(all);
+        }
+        let Some(header) = self.type_header(decls, r)? else {
+            return Ok(all);
+        };
+        let mut keyed: Vec<(i64, String)> = all
+            .into_iter()
+            .map(|t| {
+                let pos = name_offsets(&header, &t).next().map(|p| p as i64).unwrap_or(-1);
+                (pos, t)
+            })
+            .filter(|(p, _)| *p >= 0)
+            .collect();
+        keyed.sort_by_key(|(p, _)| *p);
+        Ok(keyed.into_iter().map(|(_, t)| t).collect())
+    }
+
+    /// Python's C3 linearization over the header's base list, with
+    /// `*bases` expanded. Falls back to appending the remaining heads when a
+    /// hierarchy is inconsistent, so a cycle cannot borrow a member.
+    fn python_c3(&mut self, class: &Arc<KNode>, r: &ResolveRefIn, depth: u32) -> Res<Vec<Arc<KNode>>> {
+        if depth > 8 {
+            return Ok(vec![class.clone()]);
+        }
+        let bases = self.python_bases(class, r)?;
+        let mut seqs: Vec<Vec<Arc<KNode>>> = Vec::with_capacity(bases.len() + 1);
+        for base in &bases {
+            seqs.push(self.python_c3(base, r, depth + 1)?);
+        }
+        seqs.push(bases);
+        let mut out = vec![class.clone()];
+        loop {
+            seqs.retain(|q| !q.is_empty());
+            if seqs.is_empty() {
+                return Ok(out);
+            }
+            let head = seqs
+                .iter()
+                .map(|q| q[0].clone())
+                .find(|h| !seqs.iter().any(|q| q[1..].iter().any(|n| n.id == h.id)));
+            let Some(head) = head else {
+                for q in &seqs {
+                    if !out.iter().any(|c| c.id == q[0].id) {
+                        out.push(q[0].clone());
+                    }
+                }
+                return Ok(out);
+            };
+            if !out.iter().any(|c| c.id == head.id) {
+                out.push(head.clone());
+            }
+            for q in seqs.iter_mut() {
+                if !q.is_empty() && q[0].id == head.id {
+                    q.remove(0);
+                }
+            }
+        }
+    }
+
+    /// inheritedThrough: members reached through the declaration's own
+    /// resolved extends/implements edges, breadth-first, in header order;
+    /// an interface/abstract declaration answers only when nothing concrete
+    /// does (upstream 25776014).
+    fn inherited_through(
+        &mut self,
+        ty: &Arc<KNode>,
+        by_owner: &HashMap<String, Vec<Arc<KNode>>>,
+        name: &str,
+        receiver: ReceiverKind,
+        r: &ResolveRefIn,
+    ) -> Res<Option<Arc<KNode>>> {
+        // Python reads the member along its C3 order, and each class's *own*
+        // member decides: `Adapter(Left, Right)` with `Left(Root)` and
+        // `Right(Root)` reaches Right's, though Root is written first in Left's
+        // subtree. `python_bases` also expands a header's `*bases`.
+        if r.language == "python" {
+            for class in self.python_c3(ty, r, 0)?.iter().skip(1) {
+                if class.name == name {
+                    continue;
+                }
+                if self.python_class_assigns(class, name)? {
+                    return Ok(Some(class.clone()));
+                }
+                let mut own: Vec<_> = self
+                    .nodes_by_qualified_name(&format!("{}::{}", class.qualified_name, name))?
+                    .iter()
+                    .filter(|n| n.file_path == class.file_path)
+                    .cloned()
+                    .collect();
+                own.retain(|c| {
+                    !(receiver == ReceiverKind::Super
+                        && (c.is_abstract || class.kind == "interface" || class.kind == "protocol"))
+                });
+                if let Some(first) = own.first() {
+                    return Ok(Some(first.clone()));
+                }
+            }
+            return Ok(None);
+        }
+        let mut seen: HashSet<String> = HashSet::from([ty.id.clone()]);
+        let mut frontier = vec![ty.clone()];
+        let mut declared: Option<Arc<KNode>> = None;
+        for _depth in 0..4 {
+            if frontier.is_empty() {
+                break;
+            }
+            let mut next = Vec::new();
+            for t in &frontier {
+                // Supertypes in the order the header names them.
+                let mut supers = self.supertype_nodes(&t.id)?;
+                if supers.len() >= 2 {
+                    let header = self.header_of(t)?;
+                    let at = |s: &Arc<KNode>| -> i64 {
+                        name_offsets(&header, &s.name).next().map(|p| p as i64).unwrap_or(i64::MAX)
+                    };
+                    supers.sort_by_key(|s| at(s));
+                }
+                for s in supers {
+                    if seen.contains(&s.id) {
+                        continue;
+                    }
+                    seen.insert(s.id.clone());
+                    next.push(s.clone());
+                    if s.name == name {
+                        continue;
+                    }
+                    let abstract_only = s.kind == "interface" || s.kind == "protocol";
+                    let mut found: Vec<Arc<KNode>> = by_owner
+                        .get(&s.qualified_name)
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|c| {
+                            c.file_path == s.file_path
+                                && !(receiver == ReceiverKind::Super && (c.is_abstract || abstract_only))
+                        })
+                        .collect();
+                    found.sort_by_key(|c| i32::from(!(c.kind == "method" || c.kind == "function")));
+                    if found.is_empty() {
+                        continue;
+                    }
+                    if !abstract_only && !found[0].is_abstract {
+                        return Ok(Some(found[0].clone()));
+                    }
+                    if declared.is_none() {
+                        declared = Some(found[0].clone());
+                    }
+                }
+            }
+            frontier = next;
+        }
+        let _ = r;
+        Ok(declared)
+    }
+
+    /// inherited (by name): breadth-first over resolved extends/implements
+    /// names from the caller's own type's supertypes.
+    fn inherited_by_name(
+        &mut self,
+        first_supers: &[String],
+        type_name: &str,
+        by_owner_name: &HashMap<String, Vec<Arc<KNode>>>,
+        name: &str,
+        receiver: ReceiverKind,
+        r: &ResolveRefIn,
+    ) -> Res<Option<Arc<KNode>>> {
+        let mut frontier = vec![type_name.to_string()];
+        let mut seen: HashSet<String> = HashSet::from([type_name.to_string()]);
+        for depth in 0..4 {
+            if frontier.is_empty() {
+                break;
+            }
+            let mut next = Vec::new();
+            for t in &frontier {
+                let supers: Vec<String> = if depth == 0 {
+                    first_supers.to_vec()
+                } else {
+                    self.supertype_names(t, r, false, false)?
+                };
+                for s in supers {
+                    if seen.contains(&s) {
+                        continue;
+                    }
+                    seen.insert(s.clone());
+                    next.push(s.clone());
+                    if s == name {
+                        continue;
+                    }
+                    let Some(cands) = by_owner_name.get(&s) else {
+                        continue;
+                    };
+                    // Supertypes come back as bare names: a same-named type
+                    // of another language is not it.
+                    let own_language = self.nodes_by_name(&s)?.iter().any(|n| {
+                        MEMBER_OWNER_KINDS.contains(&n.kind.as_str()) && n.language == r.language
+                    });
+                    let mut kept: Vec<Arc<KNode>> = Vec::new();
+                    for c in cands {
+                        if own_language && c.language != r.language {
+                            continue;
+                        }
+                        if receiver == ReceiverKind::Super
+                            && (c.is_abstract || self.member_in_interface(c)?)
+                        {
+                            continue;
+                        }
+                        kept.push(c.clone());
+                    }
+                    let mut found = kept;
+                    found.sort_by_key(|c| i32::from(!(c.kind == "method" || c.kind == "function")));
+                    // Overloads share a file; copies across files are a guess
+                    // unless one is the caller's.
+                    if !found.is_empty() && found.iter().all(|c| c.file_path == found[0].file_path) {
+                        return Ok(Some(found[0].clone()));
+                    }
+                    if !found.is_empty() {
+                        return Ok(found.iter().find(|c| c.file_path == r.file_path).cloned());
+                    }
+                }
+            }
+            frontier = next;
+        }
+        Ok(None)
+    }
+
+    /// isInterfaceMember: the member's owner resolves to an interface/protocol.
+    fn member_in_interface(&mut self, member: &Arc<KNode>) -> Res<bool> {
+        let Some(sep) = member.qualified_name.rfind("::") else {
+            return Ok(false);
+        };
+        Ok(self
+            .nodes_by_qualified_name(&member.qualified_name[..sep])?
+            .iter()
+            .any(|n| n.kind == "interface" || n.kind == "protocol"))
+    }
+
+    /// A declaration's header — its text up to the body's `{` (upstream
+    /// headerOf).
+    pub(super) fn header_of(&mut self, decl: &Arc<KNode>) -> Res<String> {
+        let mut header = String::new();
+        let Some(src) = self.read_file(&decl.file_path) else {
+            return Ok(header);
+        };
+        let start = (decl.start_line - 1) as usize;
+        let stop = (decl.start_line as usize + 30).min(src.lines.len());
+        for l in start..stop {
+            let Some(text) = src.line(l) else { break };
+            match text.find('{') {
+                Some(b) => {
+                    header.push(' ');
+                    header.push_str(&text[..b]);
+                    break;
+                }
+                None => {
+                    header.push(' ');
+                    header.push_str(text);
+                }
+            }
+        }
+        Ok(header)
+    }
+
+    /// declaresSupertype: the declaration's header names an
+    /// extends/implements/with or a C++ `:` base list.
+    fn declares_supertype(&mut self, decls: &[Arc<KNode>], simple: &str, r: &ResolveRefIn) -> Res<bool> {
+        if simple.starts_with('<') {
+            return Ok(true); // an anonymous class always has one
+        }
+        let Some(header) = self.type_header(decls, r)? else {
+            return Ok(true);
+        };
+        Ok(re!(r"\b(?:extends|implements|with)\b|[\w>)\]]\s*:(?:[^:]|$)").is_match(&header))
     }
 
     /// Whether `findBestMatch` picked `best` because it is THE definition in
@@ -1559,7 +2134,11 @@ impl KernelResolver {
             && super::lua_alias::is_global(&r.reference_name)
             && !self.nodes_in_file(&r.file_path)?.iter().any(|n| n.name == r.reference_name && n.kind == "function") { return Ok(None); }
         if let Some(alias) = self.csharp_alias_type_target(r)? { return Ok(Some(alias)); }
-        if let Some(c) = self.match_collapsed_object_call(r)? { return Ok(Some(c)); }
+        match self.match_collapsed_object_call(r)? {
+            CollapsedCall::Hit(c) => return Ok(Some(c)),
+            CollapsedCall::Declined => return Ok(None),
+            CollapsedCall::NotOurs => {}
+        }
         if let Some(c) = self.match_by_exact_name(r)? {
             return Ok(Some(c));
         }
@@ -2153,6 +2732,71 @@ pub(super) fn compute_path_proximity(file_path1: &str, file_path2: &str) -> i64 
     let mut dir1: Vec<String> = file_path1.split('/').map(|s| s.to_string()).collect();
     dir1.pop();
     path_proximity_from_dirs(&dir1, file_path2)
+}
+
+/// MEMBER_OWNER_KINDS (name-matcher.ts): node kinds a member scope can be.
+const MEMBER_OWNER_KINDS: [&str; 8] =
+    ["class", "struct", "interface", "trait", "protocol", "enum", "union", "module"];
+
+/// callReceiverKind's answer: how the call site names its receiver.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReceiverKind {
+    Bare,
+    Slf,
+    Super,
+}
+
+/// sharedDirDepth (name-matcher.ts): leading directory segments two file
+/// paths share, uncapped.
+fn shared_dir_depth(file_path1: &str, file_path2: &str) -> usize {
+    let mut a: Vec<&str> = file_path1.split('/').collect();
+    let mut b: Vec<&str> = file_path2.split('/').collect();
+    a.pop();
+    b.pop();
+    let mut shared = 0;
+    while shared < a.len() && shared < b.len() && a[shared] == b[shared] {
+        shared += 1;
+    }
+    shared
+}
+
+/// closestCopy (name-matcher.ts, upstream 81559dcc): when every candidate is
+/// a copy of the same symbol — same qualified name, kind and file basename,
+/// as when a module is duplicated under another source root — return the copy
+/// whose file shares the longest directory prefix with the reference. None
+/// when the candidates are not all copies or no copy is uniquely closest.
+fn closest_copy(r: &ResolveRefIn, candidates: &[Arc<KNode>]) -> Option<Arc<KNode>> {
+    if candidates.len() < 2 {
+        return None;
+    }
+    let first = &candidates[0];
+    let base = first.file_path.rsplit('/').next().unwrap_or("");
+    let mut best: Option<Arc<KNode>> = None;
+    let mut best_depth = 0usize;
+    let mut have = false;
+    let mut unique = false;
+    for c in candidates {
+        if c.qualified_name != first.qualified_name
+            || c.kind != first.kind
+            || c.file_path.rsplit('/').next().unwrap_or("") != base
+        {
+            return None;
+        }
+        let depth = shared_dir_depth(&r.file_path, &c.file_path);
+        if !have || depth > best_depth {
+            best_depth = depth;
+            best = Some(c.clone());
+            have = true;
+            unique = true;
+        } else if depth == best_depth {
+            unique = false;
+        }
+    }
+    if unique {
+        best
+    } else {
+        None
+    }
 }
 
 /// The file's lines with `//` and one-line `/* */` comments removed, rejoined.
