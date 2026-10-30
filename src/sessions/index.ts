@@ -557,13 +557,14 @@ export class SessionsIndex {
 }
 
 /** `2026-10-20`, or a timestamp that names its zone: `2026-10-20T05:00:00-06:00`, `...Z`. */
-const UNTIL_FORM = /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2}))?$/;
+const UNTIL_FORM = /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2}))?$/;
 
 /**
  * The ISO instant a user-typed `until` bound means: a date (`2026-10-20`, read
  * as midnight UTC) or a timestamp with its zone. `undefined` when none was
- * given, `null` when the text is neither, names a day that does not exist, or
- * leaves the zone to the machine's.
+ * given, `null` when the text is neither, names a day that does not exist,
+ * leaves the zone to the machine's, or gives more than millisecond precision.
+ * Stored stamps are compared to the bound at millisecond precision too.
  */
 export function parseUntil(raw: unknown): string | undefined | null {
   if (raw === undefined || raw === null || raw === '') return undefined;
