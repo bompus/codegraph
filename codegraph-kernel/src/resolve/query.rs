@@ -562,6 +562,7 @@ impl KernelResolver {
         let nodes = self.nodes_in_file_unfiltered(file_path)?;
         let mut by_name: HashMap<String, Arc<KNode>> = HashMap::new();
         let mut default_component: Option<Arc<KNode>> = None;
+        let mut default_fn_class: Option<Arc<KNode>> = None;
         for n in nodes.iter() {
             if !n.is_exported {
                 continue;
@@ -570,8 +571,34 @@ impl KernelResolver {
             if default_component.is_none() && n.kind == "component" && matches!(std::path::Path::new(file_path).extension().and_then(|s| s.to_str()), Some("svelte" | "vue" | "astro")) {
                 default_component = Some(n.clone());
             }
+            if default_fn_class.is_none() && (n.kind == "function" || n.kind == "class") {
+                default_fn_class = Some(n.clone());
+            }
         }
         let rows = self.bindings(file_path)?;
+        // `export default <expression>` leaves a nodeless `default` marker row
+        // (as does an anonymous function, class or arrow, which binds nothing).
+        let marker_lines: Vec<i64> = rows
+            .iter()
+            .filter(|r| r.exported_as.as_deref() == Some("default") && r.node_id.is_none())
+            .map(|r| r.line)
+            .collect();
+        let mut default_expr = false;
+        if !marker_lines.is_empty() {
+            if let Some(lines) = self.read_file(file_path) {
+                let text = lines.text();
+                let mut anonymous = false;
+                for &line in marker_lines.iter() {
+                    let head = text.split('\n').nth(line.saturating_sub(1) as usize).unwrap_or("");
+                    if export_default_head_is_anonymous(head) {
+                        anonymous = true;
+                    } else {
+                        default_expr = true;
+                    }
+                }
+                default_expr &= !anonymous;
+            }
+        }
         let by_id: HashMap<&str, &Arc<KNode>> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         let mut default_binding: Option<Arc<KNode>> = None;
         if let Some(bound) = default_export_binding(&rows) {
@@ -616,6 +643,8 @@ impl KernelResolver {
             by_name,
             default_component,
             default_binding,
+            default_fn_class,
+            default_expr,
         });
         self.export_index.insert(file_path.to_string(), idx.clone());
         Ok(idx)
@@ -667,7 +696,8 @@ impl KernelResolver {
         if want.is_default {
             let direct = export_index.by_name.get("default").cloned()
                 .or_else(|| export_index.default_binding.clone())
-                .or_else(|| export_index.default_component.clone());
+                .or_else(|| export_index.default_component.clone())
+                .or_else(|| export_index.default_fn_class.clone().filter(|_| export_index.default_expr));
             if let Some(d) = direct {
                 return self.memo_symbol_opt(memo_key, Some(d.clone()));
             }
@@ -761,6 +791,43 @@ impl KernelResolver {
 /// `export default NAME` names, from the file's binding rows.
 pub(super) fn default_export_binding(rows: &[KBinding]) -> Option<&KBinding> {
     rows.iter().find(|r| r.exported_as.as_deref() == Some("default") && r.node_id.is_some())
+}
+
+/// readDefaultExport's `'anonymous'` (import-resolver.ts): the line a
+/// nodeless `default` binding row marks opens `export default` on a
+/// function, class or arrow with no name. `export default memo(Card)` or
+/// `new Service()` is an expression and answers `false`; a head the line
+/// doesn't begin conservatively answers `true`.
+fn export_default_head_is_anonymous(line: &str) -> bool {
+    let Some(m) = re!(r"^[ \t]*export[ \t]+default[ \t]+").find(line) else {
+        return true;
+    };
+    let mut rest = &line[m.end()..];
+    if let Some(after) = rest.strip_prefix("async") {
+        rest = after.trim_start();
+    }
+    if re!(r"^(?:function|class)").is_match(rest) {
+        return true;
+    }
+    // `x =>` is anonymous; `(…)` is an arrow's parameters when `=>` or a
+    // return type follows it, else a parenthesized expression.
+    if re!(r"^[A-Za-z_$][\w$]*[ \t]*=>").is_match(rest) {
+        return true;
+    }
+    if rest.starts_with('(') {
+        let mut depth = 0i32;
+        for (i, c) in rest.char_indices() {
+            if c == '(' {
+                depth += 1;
+            } else if c == ')' {
+                depth -= 1;
+                if depth == 0 {
+                    return re!(r"^[ \t]*(?:=>|:)").is_match(&rest[i + 1..]);
+                }
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
