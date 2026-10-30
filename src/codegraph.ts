@@ -1316,8 +1316,18 @@ export class CodeGraph {
                 const file = this.queries.getFileByPath(filePath);
                 return file ? [{ path: filePath, language: file.language }] : [];
               });
-              const nameMatched = reopenNameMatchedImports(
-                this.queries, importReader, editedModules, edgesBeforeResolution,
+              // A body-only edit leaves the module's exported names untouched,
+              // so no name match into it can change — and a non-exported node
+              // delta (the benchmark's top-level probe marker) cannot affect
+              // importers either. Run the scan only for files whose exported
+              // names changed: adds, drops, renames, re-exports and default
+              // moves all appear in exportDelta. Skipping otherwise is what
+              // keeps a save in a widely imported barrel from parsing every
+              // importer (38s and 20GB on n8n for one comment line).
+              const exportsChanged = new Set(result.exportDelta ?? []);
+              const modulesToScan = editedModules.filter((m) => exportsChanged.has(m.path));
+              const nameMatched = modulesToScan.length === 0 ? 0 : reopenNameMatchedImports(
+                this.queries, importReader, modulesToScan, edgesBeforeResolution,
                 (specifier, fromFile, language) => this.resolver.resolveModuleFile(specifier, fromFile, language),
                 (ref) => this.resolver.resolveNow(ref)
               );

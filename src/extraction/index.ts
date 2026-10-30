@@ -167,6 +167,8 @@ export interface SyncResult {
    * nothing downstream.
    */
   definitionDelta?: string[];
+  /** Files whose exported-name set changed (adds, drops, renames, re-exports, default moves). */
+  exportDelta?: string[];
 }
 
 /**
@@ -3866,6 +3868,18 @@ export class ExtractionOrchestrator {
     if (filesToIndex.length > 0) {
       for (const pair of this.queries.getNodeNamePairsByFiles(filesToIndex)) pairsBefore.add(pair);
     }
+    // The exported-name set BEFORE the store, per file. A re-export or a
+    // dropped default changes what importers can bind without changing any
+    // node, so definitionDelta alone cannot decide whether name-matched
+    // imports need another look.
+    const exportsBefore = new Map<string, Set<string>>();
+    for (const file of filesToIndex) {
+      const names = new Set<string>();
+      for (const binding of this.queries.getBindingsByFile(file)) {
+        if (binding.exportedAs) names.add(binding.exportedAs);
+      }
+      exportsBefore.set(file, names);
+    }
 
     // Load only grammars needed for changed files
     if (filesToIndex.length > 0) {
@@ -3914,6 +3928,15 @@ export class ExtractionOrchestrator {
     for (const pair of pairsBefore) if (!pairsAfter.has(pair)) deltaNames.add(nameOf(pair));
     for (const pair of pairsAfter) if (!pairsBefore.has(pair)) deltaNames.add(nameOf(pair));
     const definitionDelta = [...deltaNames];
+    const exportDelta: string[] = [];
+    for (const file of filesToIndex) {
+      const before = exportsBefore.get(file) ?? new Set<string>();
+      const after = new Set<string>();
+      for (const binding of this.queries.getBindingsByFile(file)) {
+        if (binding.exportedAs) after.add(binding.exportedAs);
+      }
+      if (before.size !== after.size || [...before].some((name) => !after.has(name))) exportDelta.push(file);
+    }
 
     return {
       filesChecked,
@@ -3927,6 +3950,7 @@ export class ExtractionOrchestrator {
       ...(addedFilePaths.length > 0 ? { addedFilePaths } : {}),
       ...(failedFilePaths.length > 0 ? { failedFilePaths } : {}),
       definitionDelta: definitionDelta.length > 0 ? definitionDelta : undefined,
+      ...(exportDelta.length > 0 ? { exportDelta } : {}),
     };
   }
 
