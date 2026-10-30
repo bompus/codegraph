@@ -16,7 +16,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { CodeGraph } from '../src';
-import { detectFrameworks } from '../src/resolution/frameworks';
+import { detectFrameworksWithSkips } from '../src/resolution/frameworks';
 import { clearDeclaredDependencies, declaredDependencies } from '../src/resolution/frameworks/package-deps';
 import type { ResolutionContext } from '../src/resolution/types';
 
@@ -27,7 +27,7 @@ vi.mock('child_process', async (importOriginal) => {
 });
 vi.mock('../src/resolution/frameworks', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/resolution/frameworks')>();
-  return { ...actual, detectFrameworks: vi.fn(actual.detectFrameworks) };
+  return { ...actual, detectFrameworksWithSkips: vi.fn(actual.detectFrameworksWithSkips) };
 });
 
 const EXPRESS = JSON.stringify({ dependencies: { express: '^4.18.0' } });
@@ -66,6 +66,23 @@ describe('framework detection in a long-lived graph (#2516)', () => {
     await cg.sync(mode === 'scoped' ? { paths: ['src/routes.js'] } : {});
     expect(cg.getDetectedFrameworks()).toContain('express');
     expect(routes('src/routes.js')).toEqual(['GET /hello']);
+  });
+
+  it('detects again when an edit gives a file a framework import the skip table had passed over', async () => {
+    write('src/a.js', 'export const a = 1;\n');
+    write('src/b.js', 'export const b = 1;\n');
+    cg = CodeGraph.initSync(root);
+    await cg.indexAll();
+    cg.close();
+    // A fresh process: the first sync detects with the skips the index run recorded, so a.js is not read.
+    cg = CodeGraph.openSync(root);
+    write('src/b.js', 'export const b = 2;\n');
+    await cg.sync({ paths: ['src/b.js'] });
+
+    // The resolver detects on its own after each sync; the routes show what extraction detected.
+    write('src/a.js', "import { Hono } from 'hono';\nconst app = new Hono();\napp.get('/ping', () => 'pong');\n");
+    await cg.sync({ paths: ['src/a.js'] });
+    expect(routes('src/a.js')).toEqual(['GET /ping']);
   });
 
   it('detects again when a file is added, with no manifest change', async () => {
@@ -151,6 +168,7 @@ describe('a scoped sync in a fresh process keeps off the full scan (#2516)', () 
     fs.writeFileSync(path.join(root, 'package.json'), EXPRESS);
     fs.mkdirSync(path.join(root, 'src'));
     fs.writeFileSync(path.join(root, 'src', 'routes.js'), ROUTES);
+    fs.writeFileSync(path.join(root, 'src', 'tool.py'), 'def run():\n    return 1\n');
     git('add', '-A');
     git('commit', '-qm', 'init');
     const built = CodeGraph.initSync(root);
@@ -160,13 +178,20 @@ describe('a scoped sync in a fresh process keeps off the full scan (#2516)', () 
     // The watcher's process: open, then sync one edited file at a time.
     cg = CodeGraph.openSync(root);
     vi.mocked(cp.execFileSync).mockClear();
-    vi.mocked(detectFrameworks).mockClear();
+    vi.mocked(detectFrameworksWithSkips).mockClear();
+    // The fork's http-routing detector reads every JS/TS source file, so an edit to one
+    // is detection input and detects again; the first sync edits routes.js to show that.
+    // The edits after it are to a Python file no detector reads.
+    fs.writeFileSync(path.join(root, 'src', 'routes.js'), ROUTES + '// edit 1\n');
+    await cg.sync({ paths: ['src/routes.js'] });
     for (const n of [2, 3]) {
-      fs.writeFileSync(path.join(root, 'src', 'routes.js'), ROUTES + `// edit ${n}\n`);
-      await cg.sync({ paths: ['src/routes.js'] });
+      fs.writeFileSync(path.join(root, 'src', 'tool.py'), `def run():\n    return ${n}\n`);
+      await cg.sync({ paths: ['src/tool.py'] });
     }
     expect(scans()).toEqual([]);
-    expect(vi.mocked(detectFrameworks)).toHaveBeenCalledTimes(1);
+    // The fork's sync detects with the skip table; the resolver's own pass after each sync passes no `stale`.
+    const syncDetections = vi.mocked(detectFrameworksWithSkips).mock.calls.filter(([, , options]) => options?.stale);
+    expect(syncDetections).toHaveLength(1);
     expect(cg.getNodesInFile('src/routes.js').filter((n) => n.kind === 'route').map((n) => n.name)).toEqual(['GET /hello']);
   });
 });
