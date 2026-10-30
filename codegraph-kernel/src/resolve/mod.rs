@@ -749,6 +749,9 @@ pub struct KernelResolver {
     rust_typed_refs: HashSet<i64>,
     /// rustTraitOf, by method id → the enclosing trait node's id.
     rust_trait_of_memo: HashMap<String, Option<String>>,
+    /// RUST_TYPE_MEMBERS (name-matcher.ts): a `Type::member` lookup, by
+    /// (type id, member) → the member node's id.
+    rust_type_member_memo: HashMap<String, Option<String>>,
     /// goDotImports, by file path.
     go_dot_imports_memo: HashMap<String, fields::GoDotImports>,
     /// A Go bound-receiver arm proved the receiver has no project method —
@@ -1086,6 +1089,7 @@ impl KernelResolver {
             rust_trait_memo: HashMap::new(),
             rust_typed_refs: HashSet::new(),
             rust_trait_of_memo: HashMap::new(),
+            rust_type_member_memo: HashMap::new(),
             go_dot_imports_memo: HashMap::new(),
             go_mc_terminal: false,
             go_mc_untyped_local: false,
