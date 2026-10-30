@@ -644,6 +644,7 @@ mod kotlin_receiver;
 mod this_member;
 mod member_fn_ref;
 mod python_globals;
+mod python_expression_scope;
 mod object_literal;
 mod cpp;
 mod cpp_types;
