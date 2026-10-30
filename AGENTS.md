@@ -69,22 +69,15 @@ The public API surface is `src/index.ts`, which re-exports types and the `CodeGr
 
 ### Module layout
 
-- `src/index.ts` is the public library API; `src/codegraph.ts` is the `CodeGraph` class that wires the system together.
-- `src/db/` owns the `node:sqlite` database, schema, and prepared queries. Source development requires Node 22.13 or newer (or Bun 1.4.0 or newer); published bundles carry their own supported runtime.
-- `src/extraction/` schedules parsing; `src/resolution/` drives the kernel resolver, maps imports, and runs framework resolvers and synthesizers (callbacks, routers, cross-tier flows) over its verdicts.
+Directory names say what each `src/` folder does; these are the parts they do not say.
+
 - `codegraph-kernel/` is the Rust (napi-rs) kernel. `src/<lang>/` holds each language's extraction walker; `src/resolve/` is the only reference resolver, entered at `mod.rs`. Files named `*_upstream.rs` port upstream's deleted TypeScript resolver (`src/resolution/name-matcher.ts` and friends); read the original with `git show upstream/main:<path>`. Kernel tests are `__tests__/kernel-*.test.ts`.
 - `src/graph/` owns shared graph derivations. If more than one surface renders a derivation, put it here rather than in an individual handler.
-- `src/context/` and `src/search/` format and retrieve context; `src/sync/` owns watching and git-hook helpers.
-- `src/mcp/` defines the MCP server and its agent-facing instructions; `src/installer/` defines host integrations.
-- `src/bin/codegraph.ts` is the CLI. `src/ui/` is the terminal UI; `src/ui-server/` and `ui/` implement the browser viewer and component package.
 - The browser viewer is not released yet: `codegraph ui` / `web` are refused and hidden from `--help` unless `CODEGRAPH_UI=1` is set (`src/bin/viewer-gate.ts`). Viewer changelog entries wait in `docs/viewer-launch-changelog.md`, not under `[Unreleased]`.
 
 ### NodeKind / EdgeKind
 
-Defined in `src/types.ts`. Both extractors and resolvers must use these exact strings.
-
-- **NodeKind**: `file`, `module`, `class`, `struct`, `interface`, `trait`, `protocol`, `function`, `method`, `property`, `field`, `variable`, `constant`, `enum`, `enum_member`, `type_alias`, `namespace`, `parameter`, `import`, `export`, `route`, `component`, `union`, `endpoint`.
-- **EdgeKind**: `contains`, `calls`, `imports`, `exports`, `extends`, `implements`, `references`, `type_of`, `returns`, `instantiates`, `overrides`, `decorates`.
+Defined in `src/types.ts` (`NODE_KINDS`, `EDGE_KINDS`). Extractors and resolvers must use those exact strings.
 
 ### MCP server instructions
 
