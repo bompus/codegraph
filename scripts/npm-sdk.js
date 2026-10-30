@@ -16,7 +16,7 @@
 // package ships its own dist/**/*.d.ts tree (pointed at by `types`), built from
 // the same release so it can never skew from the runtime it re-exports.
 //
-// node:sqlite (Node >= 22.5) is required to OPEN a graph, but only lazily inside
+// node:sqlite (Node >= 22.13) is required to OPEN a graph, but only lazily inside
 // the SQLite adapter — so loading this module is safe on older Node, and the
 // node:sqlite requirement surfaces with an actionable error only when a DB is
 // actually opened. Heavy extraction additionally wants the bundled launcher's
