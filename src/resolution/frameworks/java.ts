@@ -721,7 +721,7 @@ function annotatedMethodName(s: string, at: number, lang: 'java' | 'kotlin'): st
         if (i < 0) return null;
       } else if (s[j] === '.') {
         let k = skipSpace(s, j + 1);
-        if (s[k] === '@') {
+        while (s[k] === '@') {
           const annotation = readAnnotation(s, k, lang);
           if (!annotation) return null;
           k = skipSpace(s, annotation.end);

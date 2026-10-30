@@ -89,6 +89,7 @@ const ANNOTATED = 'src/main/java/com/example/AnnotatedController.java';
 const ANNOTATED_SRC = `package com.example;
 
 import java.util.List;
+import org.springframework.lang.NonNull;
 import org.springframework.lang.Nullable;
 import org.springframework.web.bind.annotation.*;
 
@@ -101,7 +102,12 @@ class AnnotatedController {
     }
 
     @GetMapping("/qualified")
-    public java.util.@Nullable List<String> qualified() {
+    public java.util.@Nullable @NonNull List<String> qualified() {
+        return null;
+    }
+
+    @RequestMapping(value = "/multi", method = RequestMethod.GET)
+    public java.util.@Nullable @NonNull List<String> multi() {
         return null;
     }
 
@@ -208,6 +214,7 @@ describe.each(['native', 'wasm'].filter((backend) => backend === 'wasm' || kerne
     expect(handlers(g, ANNOTATED)).toEqual({
       'GET /annotated/names': `method:names@${lineOf(ANNOTATED_SRC, '@GetMapping("/names")')}`,
       'GET /annotated/qualified': `method:qualified@${lineOf(ANNOTATED_SRC, '@GetMapping("/qualified")')}`,
+      'GET /annotated/multi': `method:multi@${lineOf(ANNOTATED_SRC, '@RequestMapping(value = "/multi"')}`,
       'GET /annotated/feed': `method:feed@${lineOf(ANNOTATED_SRC, '@RequestMapping(value = "/feed"')}`,
     });
   });

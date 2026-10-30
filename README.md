@@ -819,7 +819,7 @@ codegraph affected src/auth.ts --filter "e2e/*"     # Whole-name glob; matches a
 |--------|-------------|---------|
 | `--stdin` | Read file list from stdin | `false` |
 | `-d, --depth <n>` | Max dependency traversal depth | `5` |
-| `-f, --filter <glob>` | Whole-name glob for test files: a pattern with `/` matches from any folder boundary, a leading `/` or `./` anchors it at the project root, and a trailing `/` takes everything under that folder | auto-detect |
+| `-f, --filter <glob>` | Whole-name glob for test files: a pattern with no slash matches the file name at any depth; one with `/` matches from any folder boundary; a leading `/` or `./` anchors it at the project root; a trailing `/` takes everything under that folder | auto-detect |
 | `-j, --json` | Output as JSON | `false` |
 | `-q, --quiet` | Output file paths only | `false` |
 
