@@ -51,7 +51,7 @@ type InMessage =
   | { type: 'open'; dbPath: string; projectRoot: string; kernelDbPath?: string | null; kernelGeneration?: string; supertypesComplete?: boolean }
   | { type: 'recycle'; id: number; kernel?: { dbPath: string; generation: string } }
   | { type: 'resolve'; id: number; refs: UnresolvedReference[] }
-  | { type: 'synth'; id: number; pass: string }
+  | { type: 'synth'; id: number; pass: string; shard?: { index: number; count: number; from?: number; to?: number } }
   | { type: 'close' };
 
 let dbPath: string | null = null;
@@ -144,7 +144,7 @@ port.on('message', (msg: InMessage) => {
           try {
             // Skips read here, written by the main thread: this connection is read-only.
             const skips = new SynthSkips(q.loadSynthSkips(SYNTH_SKIPS_VERSION, pass.name));
-            const edges = await pass.run(q, { ...r.getResolutionContext(), synthSkips: skips }, createYielder());
+            const edges = await pass.run(q, { ...r.getResolutionContext(), synthSkips: skips }, createYielder(), undefined, msg.shard);
             port.postMessage({ type: 'synth-result', id: msg.id, edges, ms: Date.now() - t0, skips: skips.take() });
           } catch (err) {
             port.postMessage({
