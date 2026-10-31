@@ -68,7 +68,7 @@ import { CodeGraphPackageVersion } from './mcp/version';
 import { extractSegmentSearchWords, segmentLookupVariants, splitIdentifierSegments } from './search/identifier-segments';
 import { seedLiteralsInQuery, seedRouteNamesInQuery } from './extraction/literal-capture';
 import { createYielder } from './resolution/cooperative-yield';
-import { createImportReader, reopenNameMatchedImports, reopenReferencesThroughAddedFiles, reopenReferencesThroughBarrels, reopenReferencesThroughChangedDefaults, reopenReferencesThroughDeclaredPackages } from './resolution/module-importers';
+import { createImportReader, reopenNameMatchedImports, reopenReferencesThroughAddedFiles, reopenReferencesThroughBarrels, reopenReferencesThroughChangedDefaults, reopenReferencesThroughDeclaredPackages, reopenReferencesThroughRetargetedModules } from './resolution/module-importers';
 import { ESM_IMPORT_LANGUAGES } from './resolution/import-resolver';
 import { minRefsForPool } from './resolution/resolver-pool';
 
@@ -151,6 +151,8 @@ export interface IndexOptions {
 /** project_metadata key for the Python package-root digest (see sync). */
 const PYTHON_ROOTS_METADATA_KEY = 'python_root_fingerprint';
 const WORKSPACE_METADATA_KEY = 'js_workspace_fingerprint';
+/** The tsconfig / jsconfig and go.mod files the index was resolved by, with a digest of each (#2977). */
+const MODULE_CONFIG_METADATA_KEY = 'module_config_snapshot';
 /** Metadata key: the frameworks (sorted JSON names) the last full index extracted every file with. */
 const FRAMEWORKS_AT_INDEX_KEY = 'frameworks_at_index';
 /**
@@ -882,6 +884,7 @@ export class CodeGraph {
         // extraction stamp (the bulk would still be stale). See extraction-version.ts.
         if (result.success) this.stampPythonRootFingerprint();
         if (result.success) this.stampWorkspaceFingerprint();
+        if (result.success) this.stampModuleConfigSnapshot();
         if (result.success) this.stampIndexedFrameworks();
 
         if (result.success && result.filesIndexed > 0) {
@@ -1009,6 +1012,23 @@ export class CodeGraph {
   private stampWorkspaceFingerprint(fingerprint = this.resolver.getWorkspaceFingerprint()): void {
     try {
       this.queries.setMetadata(WORKSPACE_METADATA_KEY, fingerprint);
+    } catch { /* metadata is advisory */ }
+  }
+
+  /** Record the module-config files the index was resolved by, for a later sync to compare against (see sync). */
+  private stampModuleConfigSnapshot(): void {
+    try {
+      const stored = this.queries.getMetadata(MODULE_CONFIG_METADATA_KEY);
+      this.queries.setMetadata(MODULE_CONFIG_METADATA_KEY, JSON.stringify(this.resolver.getModuleConfigSnapshot(stored)));
+    } catch { /* metadata is advisory */ }
+  }
+
+  /** The same, only when the snapshot differs from the stored one: a config changed, or resolution read one the index had not recorded. */
+  private stampModuleConfigSnapshotIfMoved(): void {
+    try {
+      const stored = this.queries.getMetadata(MODULE_CONFIG_METADATA_KEY);
+      const now = JSON.stringify(this.resolver.getModuleConfigSnapshot(stored));
+      if (now !== stored) this.queries.setMetadata(MODULE_CONFIG_METADATA_KEY, now);
     } catch { /* metadata is advisory */ }
   }
 
@@ -1441,6 +1461,23 @@ export class CodeGraph {
                 (ref) => this.resolver.resolveNow(ref)
               ));
               if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] sync-name-matched-imports: ${Date.now() - tNamed}ms (${nameMatched} refs re-opened)`);
+
+              // A module whose `export … from` points elsewhere now, or passes
+              // a name on no longer: `export { foo } from './a'` made `'./b'`
+              // keeps `import { foo } from './index'` on `a.ts` (#2978). The
+              // barrel declares nothing of `foo`, so no delta names it, and the
+              // walks above read files below a barrel, not the barrel's own
+              // importers, and the name-matched pass only bindings a name match
+              // took. What they bind through it goes back for the sweep, after
+              // that pass has read the bindings it is about.
+              const tRetargeted = Date.now();
+              const retargeted = (result.reExportsChangedFilePaths ?? []).flatMap((filePath) => {
+                const file = this.queries.getFileByPath(filePath);
+                return file ? [{ path: filePath, language: file.language }] : [];
+              });
+              const throughRetargeted = retargeted.length === 0 ? 0
+                : reopenReferencesThroughRetargetedModules(this.queries, importReader, retargeted);
+              if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] sync-retargeted-modules: ${Date.now() - tRetargeted}ms (${throughRetargeted} refs re-opened)`);
             } finally {
               this.resolver.closeKernel();
               walValve?.start();
@@ -1487,7 +1524,8 @@ export class CodeGraph {
         // as a full index resolves.
         //
         // `definitionDelta` is empty for a body-only edit, so the overwhelmingly
-        // common sync pays one branch. CODEGRAPH_NO_REBIND=1 disables it.
+        // common sync pays one branch. CODEGRAPH_NO_REBIND=1 disables it, and
+        // the failed-ref re-open that follows the rebind with it.
         if (result.definitionDelta && process.env.CODEGRAPH_NO_REBIND !== '1') {
           const tRebind = Date.now();
           const rebound = this.orchestrator.resurrectStaleResolutionEdges(
@@ -1495,9 +1533,19 @@ export class CodeGraph {
             result.changedFilePaths ?? [],
             edgesBeforeRetry
           );
+          // And the failed refs under those names: a call that failed only
+          // because two definitions shared its name (`x.go()` with `go` in two
+          // classes) resolves once one of them is gone. The retry above looks
+          // failed refs up by the names the changed files carry now, which a
+          // deleted file or a name renamed away no longer has, and a sync that
+          // only deletes files skips it. The sweep below resolves what this
+          // re-opens.
+          const reopenedFailed = this.queries.reopenFailedReferences(
+            this.queries.getRetryableFailedReferences(result.definitionDelta).flatMap((ref) => (ref.rowId === undefined ? [] : [ref.rowId]))
+          );
           if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
             console.error(
-              `[phase-timing] sync-rebind: ${Date.now() - tRebind}ms (${result.definitionDelta.length} changed names, ${rebound} edges re-opened)`
+              `[phase-timing] sync-rebind: ${Date.now() - tRebind}ms (${result.definitionDelta.length} changed names, ${rebound} edges and ${reopenedFailed} failed refs re-opened)`
             );
           }
         }
@@ -1584,6 +1632,40 @@ export class CodeGraph {
               }
             }
             if (before !== now) this.stampPythonRootFingerprint(now);
+          } finally {
+            this.resolver.closeKernel();
+            walValve?.start();
+          }
+        }
+
+        // tsconfig / jsconfig `paths` and `baseUrl`, and go.mod's module path
+        // (#2977). The resolver reads them once and keeps the maps for its
+        // lifetime, and the watcher follows source files only, so an edit to
+        // one kept resolving imports by the old mapping: in this process, and
+        // in later ones too, since a sync re-resolves only the changed files.
+        // The index carries a digest of every config file resolution read
+        // (`extends` chains included) plus the root's candidates; when one
+        // differs, the maps are dropped and every import the file governs is
+        // re-opened for the sweep below, as a moved workspace map re-opens
+        // the ES-module imports. A handful of small files, read on every sync.
+        // An index stamped by an older engine has no snapshot: record one.
+        {
+          const tConfig = Date.now();
+          if (walValve) { walValve.stop(); await walValve.drain(); }
+          try {
+            const stored = this.queries.getMetadata(MODULE_CONFIG_METADATA_KEY);
+            const snapshot = this.resolver.getModuleConfigSnapshot(stored);
+            const was = resolution().parseModuleConfigSnapshot(stored);
+            const changed = stored === null ? [] : Object.keys(snapshot).filter((rel) => (was[rel] ?? 'absent') !== snapshot[rel]);
+            if (changed.length > 0) {
+              this.resolver.resetModuleConfig();
+              let reopened = 0;
+              for (const language of resolution().moduleConfigLanguages(changed)) reopened += this.orchestrator.resurrectResolutionEdgesForLanguage(language);
+              this.queries.setSynthesisPending(true);
+              if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
+                console.error(`[phase-timing] sync-module-config: ${Date.now() - tConfig}ms (${changed.join(', ')} changed, ${reopened} refs re-opened)`);
+              }
+            }
           } finally {
             this.resolver.closeKernel();
             walValve?.start();
@@ -1812,6 +1894,9 @@ export class CodeGraph {
         }
 
         if (fullReconcile && result.filesChecked > 0) this.pendingFullReconcile = false;
+        // The config files this sync's resolution read join the snapshot, and
+        // a changed one is recorded as it is now (#2977).
+        this.stampModuleConfigSnapshotIfMoved();
         result.durationMs = Date.now() - startedAt;
         return result;
       } finally {
