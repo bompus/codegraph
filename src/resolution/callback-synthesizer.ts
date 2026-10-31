@@ -2781,7 +2781,7 @@ function skipSpace(code: string, at: number, step: 1 | -1): number {
  * `const { t } = useI18n()` is that function more often than not — but a
  * tag's is a component the props or a library hand in, which is no node here.
  */
-async function reactJsxChildEdges(ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
+async function reactJsxChildEdges(ctx: ResolutionContext, onYield: MaybeYield, shard?: { index: number; count: number }): Promise<Edge[]> {
   let scannedFiles = 0;
   const edges: Edge[] = [];
   const seen = new Set<string>();
@@ -2801,7 +2801,12 @@ async function reactJsxChildEdges(ctx: ResolutionContext, onYield: MaybeYield): 
     return node;
   };
   let scanned = 0;
-  for (const file of ctx.getAllFiles()) {
+  // Shard by contiguous file ranges so concatenating the shards in index
+  // order reproduces the single-pass file order (edge order included).
+  const allFiles = ctx.getAllFiles();
+  const from = shard ? Math.floor((allFiles.length * shard.index) / shard.count) : 0;
+  const to = shard ? Math.floor((allFiles.length * (shard.index + 1)) / shard.count) : allFiles.length;
+  for (const file of allFiles.slice(from, to)) {
     if ((++scannedFiles & 15) === 0) await onYield();
     if ((++scanned & 255) === 0) await onYield(); // #1091: yield mid-scan on huge graphs
     if (skipped(ctx, 'jsxEdges', file)) continue;
@@ -7151,7 +7156,8 @@ export interface SynthPassDef {
     queries: QueryBuilder,
     ctx: ResolutionContext,
     yieldToLoop: MaybeYield,
-    subProgress?: (fraction: number) => void
+    subProgress?: (fraction: number) => void,
+    shard?: { index: number; count: number }
   ) => Promise<Edge[]>;
 }
 
@@ -7263,7 +7269,7 @@ export const SYNTH_PASSES: SynthPassDef[] = [
   { name: 'emitterEdges', gate: ALWAYS, run: (_q, c, y) => eventEmitterEdges(c, y) },
   { name: 'windowMessageEdges', gate: (has) => has(...JS_FAMILY), run: (_q, c, y) => windowMessageEdges(c, y) },
   { name: 'renderEdges', gate: ALWAYS, run: (q, c, y) => reactRenderEdges(q, c, y) },
-  { name: 'jsxEdges', gate: (has) => has(...JS_FAMILY), run: (_q, c, y) => reactJsxChildEdges(c, y) },
+  { name: 'jsxEdges', gate: (has) => has(...JS_FAMILY), run: (_q, c, y, _sp, shard) => reactJsxChildEdges(c, y, shard) },
   { name: 'vueEdges', gate: (has) => has('vue'), run: (_q, c, y) => vueTemplateEdges(c, y) },
   { name: 'svelteKitEdges', gate: (has) => has('svelte'), run: (_q, c, y) => svelteKitLoadEdges(c, y) },
   { name: 'pascalEdges', gate: ALWAYS, run: (_q, c, y) => pascalFormEdges(c, y) },
@@ -7418,7 +7424,7 @@ export async function synthesizeCallbackEdges(
   // A live resolver pool to fan the independent passes across (structural type
   // so this file never imports the pool — resolver-worker imports THIS file).
   // Null/omitted → the sequential path, byte-identical to the pool path.
-  pool?: { runSynthPass(name: string): Promise<{ edges: Edge[]; ms: number; skips?: Array<[string, string, string]> }>; readonly size?: number } | null,
+  pool?: { runSynthPass(name: string, shard?: { index: number; count: number }): Promise<{ edges: Edge[]; ms: number; skips?: Array<[string, string, string]> }>; readonly size?: number } | null,
   // WAL-valve writer backstop (WalCheckpointValve.backpressure), called at
   // pool-idle points in the edge-insert loops below — the passes themselves
   // only read; every write in this function happens with the pool idle.
@@ -7443,7 +7449,7 @@ async function synthesizeWith(
   // A live resolver pool to fan the independent passes across (structural type
   // so this file never imports the pool — resolver-worker imports THIS file).
   // Null/omitted → the sequential path, byte-identical to the pool path.
-  pool?: { runSynthPass(name: string): Promise<{ edges: Edge[]; ms: number; skips?: Array<[string, string, string]> }>; readonly size?: number } | null,
+  pool?: { runSynthPass(name: string, shard?: { index: number; count: number }): Promise<{ edges: Edge[]; ms: number; skips?: Array<[string, string, string]> }>; readonly size?: number } | null,
   // WAL-valve writer backstop (WalCheckpointValve.backpressure), called at
   // pool-idle points in the edge-insert loops below — the passes themselves
   // only read; every write in this function happens with the pool idle.
@@ -7610,19 +7616,45 @@ async function synthesizeWith(
         await runPassOnMain(i);
       }
     };
+    // The JSX pass is the long pole on React/Next repos (1.4s on supabase
+    // against 0.7s for the next pass). Split it into contiguous file ranges
+    // across the pool; shard order preserves the single-pass file order, so
+    // edge order is unchanged. The other passes keep the lane scheduler.
+    const jsxIdx = gatedIn.findIndex((i) => SYNTH_PASSES[i]!.name === 'jsxEdges');
+    const jsxShards = jsxIdx >= 0 && (pool.size ?? 0) >= 2 ? Math.min(pool.size!, 8) : 0;
+    const shardedJsx = (async (): Promise<void> => {
+      if (!jsxShards || jsxIdx < 0) return;
+      const t0 = Date.now();
+      try {
+        const parts = await Promise.all(
+          Array.from({ length: jsxShards }, (_, k) => pool.runSynthPass('jsxEdges', { index: k, count: jsxShards }))
+        );
+        const edges: Edge[] = [];
+        for (const part of parts) {
+          edges.push(...part.edges);
+          if (part.skips) workerSkips.push(...part.skips);
+        }
+        passEdges[jsxIdx] = edges;
+        markPass('jsxEdges (sharded)', Date.now() - t0);
+      } catch {
+        // One shard failed: rerun the pass once on the main thread, as the
+        // worker-failure path does for other passes.
+        await runPassOnMain(jsxIdx);
+      }
+    })();
     // One pass per worker at a time, heaviest first. Handing every pass out
     // at once split them by count, and a worker interleaves what it holds, so
     // a heavy pass finished only with its worker's whole share: on vscode the
     // 6s registry pass ended ~16s in. Pulling keeps workers busy until the
     // queue drains. Edges merge by registry index below, so order is free.
     const lanes = Math.min(pool.size ?? gatedIn.length, gatedIn.length);
-    const queue = [...gatedIn].sort(
-      (a, b) => synthPassCostHint(SYNTH_PASSES[b]!.name) - synthPassCostHint(SYNTH_PASSES[a]!.name) || a - b
-    );
+    const queue = [...gatedIn]
+      .filter((i) => !jsxShards || i !== jsxIdx)
+      .sort((a, b) => synthPassCostHint(SYNTH_PASSES[b]!.name) - synthPassCostHint(SYNTH_PASSES[a]!.name) || a - b);
     const lane = async (): Promise<void> => {
       for (let i = queue.shift(); i !== undefined; i = queue.shift()) await runPooled(i);
     };
-    await Promise.all(Array.from({ length: lanes }, lane));
+    await Promise.all([shardedJsx, ...Array.from({ length: lanes }, lane)]);
   } else {
     for (const i of gatedIn) {
       await runPassOnMain(i);

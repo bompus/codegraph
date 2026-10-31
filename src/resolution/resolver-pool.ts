@@ -470,14 +470,14 @@ export class ResolverPool {
    * the pass's edge list; the caller merges in canonical order. Rejects on
    * worker failure — the caller retries the pass on the main thread.
    */
-  async runSynthPass(passName: string): Promise<SynthPassResult> {
+  async runSynthPass(passName: string, shard?: { index: number; count: number }): Promise<SynthPassResult> {
     if (this.failed) throw this.failed;
     const id = this.nextId++;
     const pw = this.workers.reduce((a, b) => (b.busy < a.busy ? b : a));
     pw.busy++;
     return new Promise<SynthPassResult>((resolve, reject) => {
       this.synthWaiters.set(id, { resolve, reject });
-      pw.worker.postMessage({ type: 'synth', id, pass: passName });
+      pw.worker.postMessage({ type: 'synth', id, pass: passName, shard });
     });
   }
 
