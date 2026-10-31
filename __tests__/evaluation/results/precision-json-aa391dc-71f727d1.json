@@ -1,0 +1,200 @@
+{
+  "timestamp": "2026-10-31T03:00:58.733Z",
+  "corpus": "json",
+  "repo": "https://github.com/nlohmann/json.git",
+  "commit": "aa391dc",
+  "codegraphSha": "71f727d1",
+  "summary": {
+    "absentCases": 11,
+    "absentHeld": 11,
+    "presentCases": 7,
+    "presentHeld": 7,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "(none)": 13070,
+    "instance-method": 6643,
+    "qualified-name": 3946,
+    "exact-match": 2641,
+    "file-path": 1742,
+    "import": 670,
+    "function-ref": 49,
+    "field-call": 1
+  },
+  "edges": 28762,
+  "results": [
+    {
+      "caseId": "json-value-not-internal-serializer",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-fuzzer-contains-word",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:511ae2bab26a12794fe5b8e38095ef6f",
+          "to": "method:c7bd7bd104f933f1ecf2fcd44528462f",
+          "resolvedBy": "instance-method"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-fuzzer-end-calls-begin",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:a583c5de8fb77fcf2e47f72d5f052f20",
+          "to": "method:c7bd7bd104f933f1ecf2fcd44528462f",
+          "resolvedBy": "instance-method"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-front-member",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:8654732301dd561330bd7d76aaaac333",
+          "to": "method:3e3f4b2356976a63aaa31053c5cb2161",
+          "resolvedBy": "instance-method"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-rend-member",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:0dda1746e6adfea526da71f9367b169b",
+          "to": "method:3e3f4b2356976a63aaa31053c5cb2161",
+          "resolvedBy": "instance-method"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-subscript-member",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:77ad649124c3bf33008dde65773f52e6",
+          "to": "method:3e3f4b2356976a63aaa31053c5cb2161",
+          "resolvedBy": "instance-method"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-emplace-member",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:c3902fb60811ce9452300172d8c55ee0",
+          "to": "method:3e3f4b2356976a63aaa31053c5cb2161",
+          "resolvedBy": "instance-method"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-no-cross-test-member",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-no-eigen-member",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-no-udt-member",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-no-fifo-member",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-no-array-member",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-no-ordered-map-this",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-no-adl-to-helper",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-no-using-std-to-proxy",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-no-doctest-to-dictionary",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-no-abi-adl-to-member",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-items-calls-proxy-ctor",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:43fd87584a379054069e29e9f2000a50",
+          "to": "method:2c30311abef74670c4da1607ca5259fb",
+          "resolvedBy": "import"
+        },
+        {
+          "from": "method:b768fbb5951dfeae8fcc4e6af4e53c84",
+          "to": "method:2c30311abef74670c4da1607ca5259fb",
+          "resolvedBy": "import"
+        }
+      ],
+      "missingEndpoints": []
+    }
+  ]
+}

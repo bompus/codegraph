@@ -828,6 +828,8 @@ pub struct KernelResolver {
     /// The files a C or C++ file sees without knowing its includes, for the file last asked:
     /// every construction in a file shares them. (One entry: a set holds nearly every header.)
     cpp_visible_memo: Option<(String, Rc<HashSet<String>>)>,
+    /// The calls (`file:line:column:name`) whose arguments cpp_argument_type_ranking is typing.
+    cpp_argument_choices_in_flight: HashSet<String>,
     /// Assignments and annotations typing a Python class's `self.<field>`,
     /// by (class id, field).
     py_field_facts_memo: HashMap<(String, String), Rc<Vec<member_fn_ref::PyFieldFact>>>,
@@ -1124,6 +1126,7 @@ impl KernelResolver {
             py_descendants_memo: HashMap::new(),
             py_bases_memo: HashMap::new(),
             cpp_visible_memo: None,
+            cpp_argument_choices_in_flight: HashSet::new(),
             py_field_facts_memo: HashMap::new(),
             py_globals: Default::default(),
             ruby_ancestry_memo: HashMap::new(),

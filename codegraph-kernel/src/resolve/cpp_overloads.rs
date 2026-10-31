@@ -165,7 +165,15 @@ impl KernelResolver {
     /// best, or its const twin, and whether it alone fits them best. None when no argument's type
     /// can be read.
     fn cpp_argument_type_ranking(&mut self, tied: Vec<Arc<KNode>>, name: &str, r: &ResolveRefIn) -> Res<Option<(Arc<KNode>, bool)>> {
-        let Some(types) = self.cpp_call_argument_types(name, r)? else { return Ok(None) };
+        // Typing an argument can come back to this choice: in `extras(extras(id).prev())`
+        // on an overloaded `extras`, the inner `extras(id)` is chosen by the arguments
+        // of the call the reference is at — the outer one — and each lap starts its
+        // depth afresh. Re-entered, answer as when no argument's type is known.
+        let key = format!("{}:{}:{}:{}", r.file_path, r.line, r.column, name);
+        if !self.cpp_argument_choices_in_flight.insert(key.clone()) { return Ok(None); }
+        let types = self.cpp_call_argument_types(name, r);
+        self.cpp_argument_choices_in_flight.remove(&key);
+        let Some(types) = types? else { return Ok(None) };
         if types.iter().all(Option::is_none) { return Ok(None); }
         let mut fits = Vec::with_capacity(tied.len());
         for n in &tied { fits.push(self.cpp_argument_type_fit(n, &types, r)?); }
