@@ -194,7 +194,10 @@ export async function refreshNearDuplicates(deps: NearDuplicateDeps): Promise<{ 
   const rows: Array<{ nodeId: string; nodeUpdatedAt: number; sig: Uint8Array }> = [];
   // The shingle sets just computed, keyed by node id: scoring reuses them
   // instead of re-tokenizing every body that lands in a candidate pair.
-  const freshSets = new Map<string, Set<number>>();
+  // The in-process path stores Sets; the off-thread signer stores its
+  // transferred Uint32Arrays and the pair pass builds a Set only for a body
+  // that actually lands in a candidate pair (36k Sets was most of the handoff).
+  const freshSets = new Map<string, Set<number> | Uint32Array>();
   if (deps.sign) {
     // The bodies are grouped by file for the in-process path; the signer takes
     // them as one batch and the worker/pool groups what it can.
@@ -209,8 +212,7 @@ export async function refreshNearDuplicates(deps: NearDuplicateDeps): Promise<{ 
     for (const s of signed) {
       const b = byId.get(s.id);
       if (!b) continue;
-      const set = s.set.length > 0 ? new Set(s.set) : null;
-      if (set) freshSets.set(b.id, set);
+      if (s.set.length > 0) freshSets.set(b.id, s.set);
       rows.push({ nodeId: b.id, nodeUpdatedAt: b.updatedAt, sig: s.sig.length > 0 ? s.sig : new Uint8Array(0) });
     }
   } else {
@@ -271,7 +273,7 @@ export function forEachBandBucket(
 }
 
 /** LSH over the stored signatures, one band at a time so memory stays linear in the bodies. */
-function pairNearDuplicates(deps: NearDuplicateDeps, freshSets?: ReadonlyMap<string, Set<number>>): { kept: number; rescored: number } {
+function pairNearDuplicates(deps: NearDuplicateDeps, freshSets?: ReadonlyMap<string, Set<number> | Uint32Array>): { kept: number; rescored: number } {
   const { queries } = deps;
   // Every signature in one scan (rowid order), then each band's buckets from
   // the bytes in memory: sixteen SQL scans with a per-row substr and base64
@@ -313,7 +315,8 @@ function pairNearDuplicates(deps: NearDuplicateDeps, freshSets?: ReadonlyMap<str
       const node = queries.getNodeById(row.nodeId);
       // A set signed this refresh is already in memory; only unchanged bodies
       // pay the tokenize pass.
-      const cached = node ? freshSets?.get(node.id) : undefined;
+      const cachedRaw = node ? freshSets?.get(node.id) : undefined;
+      const cached = cachedRaw instanceof Set ? cachedRaw : cachedRaw ? new Set(cachedRaw) : undefined;
       const text = !cached && node ? lines(node.filePath)?.slice(node.startLine - 1, node.endLine).join('\n') : undefined;
       hit = { nodeId: row.nodeId, sig: asSignature(row.sig), set: cached ?? (text ? shingles(text, node!.name) : null) };
       sigs.set(rowid, hit);
