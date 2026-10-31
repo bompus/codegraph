@@ -30,6 +30,7 @@
 
 import { parseSourceTreeSync, type TreeNode } from './parse-tree';
 import { DecodingMode, EntityDecoder, htmlDecodeTree } from 'entities/decode';
+import { SFC_SCRIPT_OR_STYLE_ELEMENT, sfcElementHasBody } from './sfc-script';
 
 export interface VueTemplateCall {
   /** The callee as a script-side call names it: `useBar`, `store.fetchUsers`. */
@@ -77,10 +78,11 @@ const FOR_ALIAS = /([\s\S]*?)\s+(?:in|of)\s+(\S[\s\S]*)/;
 
 /** Every call written in the root `<template>` of a Vue SFC, in source order. */
 export function vueTemplateCalls(source: string): VueTemplateCall[] {
-  // Blank <script>/<style> blocks and HTML comments, keeping every offset.
+  // Blank <script>/<style> blocks and HTML comments, keeping every offset. A
+  // self-closing `<script ... />` has no body to blank: its attributes are markup.
   const blank = (m: string) => m.replace(/[^\n]/g, ' ');
   const masked = source
-    .replace(/<(script|style)(\s[^>]*)?>[\s\S]*?<\/\1\s*>/g, blank)
+    .replace(new RegExp(SFC_SCRIPT_OR_STYLE_ELEMENT), (m) => (sfcElementHasBody(m) ? blank(m) : m))
     .replace(/<!--[\s\S]*?-->/g, blank);
   const root = rootTemplate(masked);
   if (!root) return [];

@@ -134,28 +134,81 @@ impl KernelResolver {
         }
         let first = segments[0];
         if first == "crate" {
+            // The crate root's own `#[path]` decls are the module's — a name
+            // one claims never reaches a namesake `head.rs`.
+            if let Some(head) = segments.get(1) {
+                if let Some(root) = self.rust_root_module(from_file) {
+                    if self
+                        .rust_mod_facts(&root.file)
+                        .is_some_and(|f| f.path_mods.contains(*head))
+                    {
+                        return Ok(None);
+                    }
+                }
+            }
             let root = self.rust_crate_root_dir(from_file)?;
             return Ok(self.rust_resolve_under(root, &segments[1..]));
         }
         if first == "self" {
-            return Ok(
-                self.rust_resolve_under(Some(rust_self_module_dir(from_file)), &segments[1..])
-            );
+            if segments.get(1).is_some_and(|h| {
+                self.rust_mod_facts(from_file)
+                    .is_some_and(|f| f.path_mods.contains(*h))
+            }) {
+                return Ok(None);
+            }
+            let dir = self.rust_module_dir_of(from_file);
+            return Ok(self.rust_resolve_under(Some(dir), &segments[1..]));
         }
         if first == "super" {
             let mut supers = 0usize;
             while segments.get(supers) == Some(&"super") {
                 supers += 1;
             }
-            let mut dir = Some(rust_self_module_dir(from_file));
+            // Walk `super` by the module rules: a `#[path]`-loaded file's
+            // `super` is the module that declares it, not a module of the
+            // directory it happens to sit in.
+            let mut scope = rust_paths::RustModule {
+                file: from_file.to_string(),
+                inline: Vec::new(),
+            };
             for _ in 0..supers {
-                dir = dir.map(|d| pos_dirname(&d).to_string());
+                let Some(s) = self.rust_super_module(&scope) else {
+                    return Ok(None);
+                };
+                scope = s;
             }
-            return Ok(self.rust_resolve_under(dir, &segments[supers..]));
+            if segments.get(supers).is_some_and(|h| {
+                self.rust_mod_facts(&scope.file)
+                    .is_some_and(|f| f.path_mods.contains(*h))
+            }) {
+                return Ok(None);
+            }
+            let mut dir = self.rust_module_dir_of(&scope.file);
+            for seg in &scope.inline {
+                dir = pos_join(&dir, seg);
+            }
+            return Ok(self.rust_resolve_under(Some(dir), &segments[supers..]));
         }
-        let self_hit = self.rust_resolve_under(Some(rust_self_module_dir(from_file)), segments);
+        // A `#[path]` decl of the head stays unknown; the name-only lookup
+        // below may not bypass it to a `head.rs` namesake (rustPathTarget).
+        if self
+            .rust_mod_facts(from_file)
+            .is_some_and(|f| f.path_mods.contains(segments[0]))
+        {
+            return Ok(None);
+        }
+        let dir = self.rust_module_dir_of(from_file);
+        let self_hit = self.rust_resolve_under(Some(dir), segments);
         if self_hit.is_some() {
             return Ok(self_hit);
+        }
+        if let Some(root) = self.rust_root_module(from_file) {
+            if self
+                .rust_mod_facts(&root.file)
+                .is_some_and(|f| f.path_mods.contains(segments[0]))
+            {
+                return Ok(None);
+            }
         }
         let root = self.rust_crate_root_dir(from_file)?;
         Ok(self.rust_resolve_under(root, segments))
@@ -199,8 +252,37 @@ impl KernelResolver {
     /// named e.g. `rust_binder_main.rs` — falls back to climbing the `mod`
     /// declaration chain to the file no other file declares.
     pub(super) fn rust_crate_root_dir(&mut self, from_file: &str) -> Res<Option<String>> {
+        self.rust_crate_root_dir_at(from_file, 0)
+    }
+
+    fn rust_crate_root_dir_at(&mut self, from_file: &str, depth: usize) -> Res<Option<String>> {
         if let Some(v) = self.rust_crate_root_memo.get(from_file) {
             return Ok(v.clone());
+        }
+        // A file a `#[path]` loads is in the crate of the file that declares
+        // it (rustCrateRootModule, claims chained ≤8); an example, test or
+        // bench its manifest gives a `path` of its own is its own crate's
+        // root, its directory the crate's.
+        if depth < 8 {
+            if let Some(claim) = self.rust_path_claim(from_file) {
+                let v = self.rust_crate_root_dir_at(&claim.file, depth + 1)?;
+                self.rust_crate_root_memo
+                    .insert(from_file.to_string(), v.clone());
+                return Ok(v);
+            }
+        }
+        if let Ok(graph) = self.rust_crate_graph() {
+            if Self::rust_crate_dir_of(from_file, &graph).is_some_and(|dir| {
+                graph
+                    .crates
+                    .get(&dir)
+                    .is_some_and(|c| c.others.iter().any(|o| o == from_file))
+            }) {
+                let v = Some(pos_dirname(from_file).to_string());
+                self.rust_crate_root_memo
+                    .insert(from_file.to_string(), v.clone());
+                return Ok(v);
+            }
         }
         let mut dir = pos_dirname(from_file).to_string();
         let mut found = None;

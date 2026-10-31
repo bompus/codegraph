@@ -644,6 +644,7 @@ mod kotlin_receiver;
 mod this_member;
 mod member_fn_ref;
 mod python_globals;
+mod python_expression_scope;
 mod object_literal;
 mod cpp;
 mod cpp_types;
@@ -748,6 +749,9 @@ pub struct KernelResolver {
     rust_typed_refs: HashSet<i64>,
     /// rustTraitOf, by method id → the enclosing trait node's id.
     rust_trait_of_memo: HashMap<String, Option<String>>,
+    /// RUST_TYPE_MEMBERS (name-matcher.ts): a `Type::member` lookup, by
+    /// (type id, member) → the member node's id.
+    rust_type_member_memo: HashMap<String, Option<String>>,
     /// goDotImports, by file path.
     go_dot_imports_memo: HashMap<String, fields::GoDotImports>,
     /// A Go bound-receiver arm proved the receiver has no project method —
@@ -785,6 +789,10 @@ pub struct KernelResolver {
     dart_hierarchy_memo: HashMap<(String, i64), Rc<HashMap<String, u32>>>,
     /// Kotlin supertypes named in a type's head, by type name.
     kotlin_supers_memo: HashMap<String, Rc<Vec<String>>>,
+    /// rubyIvarClass (#3053): the class `initialize` gives an instance
+    /// variable, by `owner\0name`. `None` = untyped (left to the other
+    /// strategies); `Some(None)` = typed to a class the project lacks.
+    ruby_ivar_memo: HashMap<String, Option<Option<Arc<KNode>>>>,
     /// kotlinFileScope, by file.
     declared_member_memo: HashMap<(String, String), Option<String>>,
     declared_member_lines: HashMap<String, Rc<Vec<(String, usize)>>>,
@@ -914,6 +922,14 @@ pub struct KernelResolver {
     /// getRazorUsings memo, by file.
     razor_usings_memo: HashMap<String, Rc<Vec<String>>>,
     rust_crate_root_memo: HashMap<String, Option<String>>,
+    /// rustPathDeclsIn (name-matcher.ts): a file's `#[path]` module declarations, by file.
+    rust_path_decls_memo: HashMap<String, Rc<Vec<rust_modules::rust_paths::RustPathDecl>>>,
+    /// rustPathLoads (name-matcher.ts): each file a `#[path]` loads → its declarations, once.
+    rust_path_loads_memo: Option<Rc<HashMap<String, Vec<rust_modules::rust_paths::RustPathDecl>>>>,
+    /// rustPathLoaders (name-matcher.ts): the declarations loading a file the name rules don't place.
+    rust_path_loaders_memo: HashMap<String, Rc<Vec<rust_modules::rust_paths::RustPathDecl>>>,
+    /// A Rust file's `mod` layout: plain decls, `#[path]` decl names, inline chains, `fn main`.
+    rust_mod_facts_memo: HashMap<String, Option<Rc<rust_modules::rust_paths::RustModFacts>>>,
     /// factory_initializer memo: (file, binding line, root, binding node).
     factory_init_memo: HashMap<(String, i64, String, Option<String>), Rc<method_call::FactoryInit>>,
     /// C/C++ directive summaries and per-root macro timelines (#1838).
@@ -1081,6 +1097,7 @@ impl KernelResolver {
             rust_trait_memo: HashMap::new(),
             rust_typed_refs: HashSet::new(),
             rust_trait_of_memo: HashMap::new(),
+            rust_type_member_memo: HashMap::new(),
             go_dot_imports_memo: HashMap::new(),
             go_mc_terminal: false,
             go_mc_untyped_local: false,
@@ -1121,6 +1138,7 @@ impl KernelResolver {
             kotlin_receiver_types_memo: None,
             kotlin_scope_memo: HashMap::new(),
             kotlin_supers_memo: HashMap::new(),
+            ruby_ivar_memo: HashMap::new(),
             py_descendants_memo: HashMap::new(),
             py_bases_memo: HashMap::new(),
             cpp_visible_memo: None,
@@ -1171,6 +1189,10 @@ impl KernelResolver {
             cobol_copybooks: None,
             razor_usings_memo: HashMap::new(),
             rust_crate_root_memo: HashMap::new(),
+            rust_path_decls_memo: HashMap::new(),
+            rust_path_loads_memo: None,
+            rust_path_loaders_memo: HashMap::new(),
+            rust_mod_facts_memo: HashMap::new(),
             factory_init_memo: HashMap::new(),
             cpp_macros: cpp::MacroCache::default(),
             cpp_namespaces: cpp_namespace::NamespaceCache::default(),

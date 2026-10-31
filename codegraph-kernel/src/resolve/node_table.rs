@@ -547,6 +547,14 @@ pub(super) struct FileExportIndexK {
     pub(super) by_name: HashMap<String, Arc<KNode>>,
     pub(super) default_component: Option<Arc<KNode>>,
     pub(super) default_binding: Option<Arc<KNode>>,
+    /// import-resolver.ts `defaultFnClass`: the file's first exported function
+    /// or class, the guess for `export default <expression>` (`memo(Card)`),
+    /// which names no declaration.
+    pub(super) default_fn_class: Option<Arc<KNode>>,
+    /// The file states an `export default` naming no declaration that is not
+    /// an anonymous function, class or arrow (upstream's `'unstated'`, the
+    /// only case `default_fn_class` answers; `'anonymous'` binds nothing).
+    pub(super) default_expr: bool,
 }
 
 /// WorkspacePackages (workspace-packages.ts).

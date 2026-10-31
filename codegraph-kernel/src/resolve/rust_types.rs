@@ -1693,6 +1693,118 @@ impl KernelResolver {
             None
         })
     }
+    /// The item `Type::member` names when `rust_method_on` finds no method:
+    /// the member of each type the written path or `use` resolves to
+    /// (rustTypeMember, #3025).
+    fn rust_path_type_member(&mut self, w: &Written, member: &str) -> Res<Option<Arc<KNode>>> {
+        for decl in self.rust_type_decls(w)? {
+            if let Some(hit) = self.rust_type_member(&decl, member)? {
+                return Ok(Some(hit));
+            }
+        }
+        Ok(None)
+    }
+
+    /// rustTypeMember (name-matcher.ts): the associated item `member` of the
+    /// Rust type `ty` — an enum's variant; else the type's own (inherent)
+    /// function or `const` in the type's crate, a trait impl's only when it
+    /// is the one item of that name; a trait's own declared method. An impl
+    /// of the type is written in the type's crate, so a namesake type's impl
+    /// in another crate is never it.
+    fn rust_type_member(&mut self, ty: &KNode, member: &str) -> Res<Option<Arc<KNode>>> {
+        if ty.language != "rust"
+            || !matches!(ty.kind.as_str(), "struct" | "enum" | "union" | "trait")
+        {
+            return Ok(None);
+        }
+        let key = format!("{}\0{}", ty.id, member);
+        if let Some(hit) = self.rust_type_member_memo.get(&key) {
+            return match hit {
+                Some(id) => self.node_by_id(id),
+                None => Ok(None),
+            };
+        }
+        let mut found: Option<Arc<KNode>> = None;
+        if ty.kind == "enum" {
+            let qualified = format!("{}::{}", ty.qualified_name, member);
+            found = self
+                .nodes_in_file(&ty.file_path)?
+                .iter()
+                .find(|n| {
+                    n.kind == "enum_member"
+                        && n.qualified_name == qualified
+                        && n.start_line >= ty.start_line
+                        && n.start_line <= ty.end_line
+                })
+                .cloned();
+        }
+        if found.is_none() {
+            let graph = self.rust_crate_graph()?;
+            let own = Self::rust_crate_dir_of(&ty.file_path, &graph);
+            let qualified = format!("{}::{}", ty.name, member);
+            let all: Vec<Arc<KNode>> = self
+                .nodes_by_name(member)?
+                .iter()
+                .filter(|n| {
+                    n.language == "rust"
+                        && matches!(
+                            n.kind.as_str(),
+                            "method" | "function" | "variable" | "constant" | "enum_member"
+                        )
+                        && n.qualified_name == qualified
+                        && Self::rust_crate_dir_of(&n.file_path, &graph) == own
+                        && (ty.kind != "trait"
+                            || (n.file_path == ty.file_path
+                                && n.start_line >= ty.start_line
+                                && n.start_line <= ty.end_line))
+                })
+                .cloned()
+                .collect();
+            let mut inherent = Vec::new();
+            for n in &all {
+                if !self.rust_is_trait_impl_member(n)? {
+                    inherent.push(n.clone());
+                }
+            }
+            let pool = if !inherent.is_empty() {
+                inherent
+            } else if all.len() == 1 {
+                all
+            } else {
+                Vec::new()
+            };
+            found = pool
+                .iter()
+                .find(|n| n.file_path == ty.file_path)
+                .cloned()
+                .or_else(|| pool.into_iter().next());
+        }
+        self.rust_type_member_memo
+            .insert(key, found.as_ref().map(|n| n.id.clone()));
+        Ok(found)
+    }
+
+    /// isRustTraitImplMethod (name-matcher.ts): `candidate` is a method
+    /// inside an `impl Trait for Type` block.
+    fn rust_is_trait_impl_member(&mut self, candidate: &KNode) -> Res<bool> {
+        if candidate.kind != "method" {
+            return Ok(false);
+        }
+        let Some((s, t)) = self.rust_tree_for(&candidate.file_path) else {
+            return Ok(false);
+        };
+        let Some(f) = self.rust_declaration_node(
+            candidate,
+            &t,
+            s.text(),
+            &["function_item", "function_signature_item"],
+        ) else {
+            return Ok(false);
+        };
+        Ok(rust_ancestor(f, &["impl_item"])
+            .is_some_and(|imp| imp.child_by_field_name("trait").is_some()))
+    }
+
     pub(super) fn rust_impl_start(&mut self, file: &str, line: i64, col: i64) -> Option<usize> {
         let (s, t) = self.rust_tree_for(file)?;
         rust_ancestor(
@@ -1921,6 +2033,11 @@ impl KernelResolver {
             // (axum-extra's #[derive(TypedPath)]).
             None if function.kind() == "field_expression" => {
                 self.rust_derived_trait_method(&written, &method, r)?
+            }
+            // `Type::member` — an enum's variant, a `const`, a trait's own
+            // declared method — of the type the path or `use` names (#3025).
+            None if function.kind() == "scoped_identifier" => {
+                self.rust_path_type_member(&written, &method)?
             }
             None => None,
         };

@@ -598,11 +598,7 @@ impl KernelResolver {
                 let to = (decl.end_line.max(0) as usize).min(lines.len());
                 let mixes: Vec<String> = lines[from..to.max(from)]
                     .iter()
-                    .filter_map(|line| {
-                        re!(r"^\s*(?:include|extend|prepend)\s+([A-Z:][A-Za-z0-9_:]*(?:\s*,\s*[A-Z:][A-Za-z0-9_:]*)*)")
-                            .captures(line)
-                            .map(|m| m[1].to_string())
-                    })
+                    .filter_map(|line| ruby_mixin_list(line))
                     .collect();
                 for mix in mixes {
                     for name in re!(r"\s*,\s*").split(&mix) {
@@ -966,4 +962,21 @@ impl KernelResolver {
             node, confidence: 0.9, resolved_by: "instance-method",
         }))
     }
+}
+
+/// The constants an `include` / `extend` / `prepend` line names, comma
+/// separated. A module a call returns (`include RouteSet.new.tap { … }.url_helpers`)
+/// is no mixin of the constant the call starts at: the list ends before a
+/// name that is followed by a `.` or `(`, as a name's own trailing word
+/// characters never do.
+fn ruby_mixin_list(line: &str) -> Option<String> {
+    let m = re!(r"^\s*(?:include|extend|prepend)\s+([A-Z:][A-Za-z0-9_:]*(?:\s*,\s*[A-Z:][A-Za-z0-9_:]*)*)").captures(line)?;
+    let whole = m.get(1)?;
+    let mut names: Vec<&str> = re!(r"\s*,\s*").split(whole.as_str()).collect();
+    let rest = line[whole.end()..].trim_start();
+    if rest.starts_with(['.', '(']) {
+        // Backtracking drops the last name; the one before it is followed by `,`.
+        names.pop();
+    }
+    (!names.is_empty()).then(|| names.join(","))
 }
