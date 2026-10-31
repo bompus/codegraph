@@ -26,6 +26,10 @@ Two earlier attempts in this window were discarded: the admission script compare
 
 Peak-memory change, fork against upstream: gin +64%, Alamofire +40%, pretix +28%, CPython −13%, discourse −13%, supabase +11%, n8n −30%. The fork's larger graphs on gin, Alamofire and supabase are part of the memory and time difference; pretix and CPython are within 1% on nodes.
 
+### Fork-internal index regression (unattributed)
+
+The fork's own index is slower than its 2026-10-28 build at identical graph sizes for supabase (15.6 s → 21.55 s, +38%, 152,274 nodes both runs) and n8n (49.4 s → 70.44 s, +43%, 328,519 nodes both runs). Other fork index times also rose against that table on the same corpora: CPython 25.5 → 31.38 s, pretix 7.48 → 9.13 s, discourse 13.2 → 15.71 s; Alamofire (1.19 → 1.16 s) and gin (1.02 → 0.89 s) improved. The cause is not attributed. The [2026-10-30 re-measurement](fork-vs-upstream-node-2026-10-30.md) required a bisect before the index results are used to decide fork maintenance, and none is recorded. The supabase graph's 33% more nodes is a graph-size caveat, not an explanation of the fork-internal slowdown.
+
 ## One-file sync
 
 | Corpus | Upstream | Fork | Upstream / fork | Verdict |
@@ -71,9 +75,9 @@ The earlier "20 GB → 2 GB" statement is the 2026-10-30 to 2026-10-31 change on
 ## What was not measured
 
 - Bun. The 2026-10-28 Node+Bun campaign remains the source for Bun; this run is Node-only.
-- CLI startup. The 2026-10-28 hyperfine table in the README remains the source and is dated there.
+- CLI startup. The 2026-10-27 hyperfine table at fork `bc27fdb4` against upstream `69af19ac` remains the source and is dated in the README.
 - The 40 upstream commits' individual effects. This is a whole-tree comparison, not a per-commit attribution.
 
 ## Reproducing
 
-The raw run is `~/cg-scratch/bench-2026-10-31c/` (`index-sync.tsv`, `mcp.jsonl`, `admission.json`, logs). The scripts are `scripts/benchmarks/runtime/run-index-sync.sh`, `run-mcp.sh`, `index-sync.sh` and `mcp-bench.mjs`; the corpus list is `~/cg-scratch/index-sync-2026-10-28.list`. The upstream arm needs its own production `node_modules` and `npm run copy-assets` (WASM grammars); the fork uses the native kernel.
+The raw run is `~/cg-scratch/bench-2026-10-31c/` (`index-sync.tsv`, `mcp.jsonl`, `admission.json`, logs). The scripts are `scripts/benchmarks/runtime/run-index-sync.sh`, `run-mcp.sh`, `index-sync.sh`, `mcp-bench.mjs` and the card generator `render-node-cards.py`; the corpus list is `~/cg-scratch/index-sync-2026-10-28.list`. The upstream arm needs its own production `node_modules` and `npm run copy-assets` (WASM grammars); the fork uses the native kernel.
