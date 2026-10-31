@@ -2789,8 +2789,8 @@ function skipSpace(code: string, at: number, step: 1 | -1): number {
 /** Start indices for `count` byte-balanced JSX-pass shards. The pass reads and
  *  scans each candidate file, so file size is the cost proxy; a giant file
  *  still owns its shard, but the rest split evenly. */
-function jsxShardStarts(files: { path: string; size: number }[], count: number): number[] {
-  const candidates = files.filter((f) => !NON_JSX_EXT_RE.test(f.path));
+function jsxShardStarts(files: { path: string; size: number }[], count: number, include: (path: string) => boolean): number[] {
+  const candidates = files.filter((f) => include(f.path));
   const total = candidates.reduce((sum, f) => sum + Math.max(1, f.size), 0);
   const starts: number[] = [];
   let acc = 0;
@@ -4359,16 +4359,18 @@ function resolveRegistryHandler(ctx: ResolutionContext, name: string, chained: s
 
 const REGISTRY_PASS = 'registryEdges';
 
-async function objectRegistryEdges(ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
+async function objectRegistryEdges(ctx: ResolutionContext, onYield: MaybeYield, shard?: { index: number; count: number; from?: number; to?: number }): Promise<Edge[]> {
   const skips = ctx.synthSkips;
   let scannedFiles = 0;
   const edges: Edge[] = [];
   const seen = new Set<string>();
   let scanned = 0;
-  for (const file of ctx.getAllFiles()) {
+  const allFiles = ctx.getAllFiles().filter((f) => REGISTRY_JS_EXT.test(f));
+  const from = shard ? (shard.from ?? Math.floor((allFiles.length * shard.index) / shard.count)) : 0;
+  const to = shard ? (shard.to ?? Math.floor((allFiles.length * (shard.index + 1)) / shard.count)) : allFiles.length;
+  for (const file of allFiles.slice(from, to)) {
     if ((++scannedFiles & 15) === 0) await onYield();
     if ((++scanned & 255) === 0) await onYield(); // #1091: yield mid-scan on huge graphs
-    if (!REGISTRY_JS_EXT.test(file)) continue;
     // Every `continue` below until step 3 depends only on the file's bytes, so
     // it is recorded and a later run skips the file unread (synth-skips.ts).
     if (skips?.has(REGISTRY_PASS, file)) continue;
@@ -7344,7 +7346,7 @@ export const SYNTH_PASSES: SynthPassDef[] = [
   },
   { name: 'ginEdges', gate: (has) => has('go'), run: (q, c, y) => ginMiddlewareChainEdges(q, c, y) },
   { name: 'thunkEdges', gate: (has) => has(...JS_FAMILY), run: (q, c, y) => reduxThunkEdges(q, c, y) },
-  { name: 'registryEdges', gate: ALWAYS, run: (_q, c, y) => objectRegistryEdges(c, y) },
+  { name: 'registryEdges', gate: ALWAYS, run: (_q, c, y, _sp, shard) => objectRegistryEdges(c, y, shard) },
   { name: 'rtkEdges', gate: (has) => has(...JS_FAMILY), run: (q, c, y) => rtkQueryEdges(q, c, y) },
   { name: 'piniaEdges', gate: (has) => has('vue', ...JS_FAMILY), run: (_q, c, y) => piniaStoreEdges(c, y) },
   { name: 'vuexEdges', gate: (has) => has('vue', ...JS_FAMILY), run: (_q, c, y) => vuexDispatchEdges(c, y) },
@@ -7643,26 +7645,33 @@ async function synthesizeWith(
         await runPassOnMain(i);
       }
     };
-    // The JSX pass is the long pole on React/Next repos (1.4s on supabase
-    // against 0.7s for the next pass). Split it into contiguous file ranges
-    // across the pool; shard order preserves the single-pass file order, so
-    // edge order is unchanged. The other passes keep the lane scheduler.
-    const jsxIdx = gatedIn.findIndex((i) => SYNTH_PASSES[i]!.name === 'jsxEdges');
+    // Per-file passes whose work is independently mergeable get split into
+    // contiguous byte-balanced ranges across the pool; shard order preserves
+    // the single-pass file order, so edge order is unchanged. The other
+    // passes keep the lane scheduler.
+    const shardable: Array<[string, (file: string) => boolean]> = [
+      ['jsxEdges', (file) => !NON_JSX_EXT_RE.test(file)],
+      ['registryEdges', (file) => REGISTRY_JS_EXT.test(file)],
+    ];
     const forcedShards = Number(process.env.CODEGRAPH_SYNTH_SHARDS ?? 0);
-    const jsxShards = jsxIdx >= 0 && (pool.size ?? 0) >= 2
+    const shardCount = (pool.size ?? 0) >= 2
       ? (Number.isFinite(forcedShards) && forcedShards >= 1 ? Math.min(forcedShards, 16) : Math.min(pool.size!, 8))
       : 0;
-    const shardedJsx = (async (): Promise<void> => {
-      if (!jsxShards || jsxIdx < 0) return;
+    const plans = shardCount
+      ? shardable
+        .map(([name, include]) => ({ name, include, idx: gatedIn.findIndex((i) => SYNTH_PASSES[i]!.name === name) }))
+        .filter((plan) => plan.idx >= 0)
+        .map((plan) => ({ ...plan, starts: jsxShardStarts(queries.getAllFiles(), shardCount, plan.include) }))
+      : [];
+    const sharded = plans.map((plan) => (async (): Promise<void> => {
       const t0 = Date.now();
       try {
-        const starts = jsxShardStarts(queries.getAllFiles(), jsxShards);
         const parts = await Promise.all(
-          Array.from({ length: jsxShards }, (_, k) => pool.runSynthPass('jsxEdges', {
+          Array.from({ length: shardCount }, (_, k) => pool.runSynthPass(plan.name, {
             index: k,
-            count: jsxShards,
-            from: k === 0 ? undefined : starts[k - 1],
-            to: k === jsxShards - 1 ? undefined : starts[k],
+            count: shardCount,
+            from: k === 0 ? undefined : plan.starts[k - 1],
+            to: k === shardCount - 1 ? undefined : plan.starts[k],
           }))
         );
         const edges: Edge[] = [];
@@ -7670,27 +7679,28 @@ async function synthesizeWith(
           edges.push(...part.edges);
           if (part.skips) workerSkips.push(...part.skips);
         }
-        passEdges[jsxIdx] = edges;
-        markPass('jsxEdges (sharded)', Date.now() - t0);
+        passEdges[plan.idx] = edges;
+        markPass(`${plan.name} (sharded)`, Date.now() - t0);
       } catch {
         // One shard failed: rerun the pass once on the main thread, as the
         // worker-failure path does for other passes.
-        await runPassOnMain(jsxIdx);
+        await runPassOnMain(plan.idx);
       }
-    })();
+    })());
     // One pass per worker at a time, heaviest first. Handing every pass out
     // at once split them by count, and a worker interleaves what it holds, so
     // a heavy pass finished only with its worker's whole share: on vscode the
     // 6s registry pass ended ~16s in. Pulling keeps workers busy until the
     // queue drains. Edges merge by registry index below, so order is free.
     const lanes = Math.min(pool.size ?? gatedIn.length, gatedIn.length);
+    const shardedIdx = new Set(plans.map((plan) => plan.idx));
     const queue = [...gatedIn]
-      .filter((i) => !jsxShards || i !== jsxIdx)
+      .filter((i) => !shardedIdx.has(i))
       .sort((a, b) => synthPassCostHint(SYNTH_PASSES[b]!.name) - synthPassCostHint(SYNTH_PASSES[a]!.name) || a - b);
     const lane = async (): Promise<void> => {
       for (let i = queue.shift(); i !== undefined; i = queue.shift()) await runPooled(i);
     };
-    await Promise.all([shardedJsx, ...Array.from({ length: lanes }, lane)]);
+    await Promise.all([...sharded, ...Array.from({ length: lanes }, lane)]);
   } else {
     for (const i of gatedIn) {
       await runPassOnMain(i);

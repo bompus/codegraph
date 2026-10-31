@@ -38,6 +38,11 @@ function writeProject(): void {
     'src/App.tsx':
       "import { List } from './List';\n" +
       'export default function App() { return <main><List /><List /></main>; }\n',
+    'src/handlers.ts':
+      'function saveHandler() { return 1; }\n' +
+      'function loadHandler() { return 2; }\n' +
+      'const handlers = { save: saveHandler, load: loadHandler };\n' +
+      'export function run(kind: string) { return handlers[kind](); }\n',
   };
   for (const [rel, content] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(tmpDir, rel)), { recursive: true });
@@ -66,6 +71,17 @@ describe('JSX synthesis sharding', () => {
     const single = await indexAndDump('1');
     const sharded = await indexAndDump('4');
     expect(single).toContain('jsx-render');
+    expect(single).toContain('object-registry');
+    if (single !== sharded) {
+      const a = JSON.parse(single) as Array<Record<string, unknown>>;
+      const b = JSON.parse(sharded) as Array<Record<string, unknown>>;
+      for (let i = 0; i < Math.max(a.length, b.length); i++) {
+        if (JSON.stringify(a[i]) !== JSON.stringify(b[i])) {
+          console.log('first diff at', i, 'single=', a[i], 'sharded=', b[i], 'lens', a.length, b.length);
+          break;
+        }
+      }
+    }
     expect(sharded).toBe(single);
   });
 });
