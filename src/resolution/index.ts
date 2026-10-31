@@ -2280,6 +2280,9 @@ export class ReferenceResolver {
     // a 22GB WAL on a 4.6GB DB (migration plan §7a.1).
     parallel?: {
       dbPath: string;
+      /** Full index: sign near-duplicate bodies after synthesis, while the
+       *  pool is still alive; null pool means the in-process path. */
+      nearDuplicates?: (pool: ResolverPool | null) => Promise<void> | void;
       bulkEdgeLoad?: { begin: () => void; end: () => void | Promise<void> };
       /** unresolved_refs index window for the batched loop — the loop only
        *  reads the status index + PK; dropping the sync-path ref indexes cuts
@@ -3051,6 +3054,18 @@ export class ReferenceResolver {
       // synthesis is additive and optional; ignore failures
     }
     if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] callback-synthesis: ${Date.now() - tSynth}ms`);
+    // Full index: sign near-duplicate bodies now, while the pool is still
+    // open and idle. The callback falls back to the in-process path when no
+    // pool engaged; it never fails the index.
+    if (parallel?.nearDuplicates) {
+      try {
+        await parallel.nearDuplicates(pool);
+      } catch (err) {
+        logDebug('Near-duplicate refresh failed; the index stands', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
     } finally {
       if (pool) await pool.destroy().catch(() => undefined);
       // The workers' kernel-reader snapshot is per-run scratch — remove it.

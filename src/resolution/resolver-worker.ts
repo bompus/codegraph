@@ -21,6 +21,9 @@ try {
 } catch { /* cache is best-effort */ }
 
 import { parentPort, workerData } from 'worker_threads';
+import * as fs from 'fs';
+import * as path from 'path';
+import { shingles, signatureFromSet, type NearDupBody, type NearDupSignature } from '../graph/near-duplicates';
 import { SynthSkips, SYNTH_SKIPS_VERSION } from './synth-skips';
 import { createDatabase, SqliteDatabase } from '../db/sqlite-adapter';
 import { QueryBuilder } from '../db/queries';
@@ -52,6 +55,7 @@ type InMessage =
   | { type: 'recycle'; id: number; kernel?: { dbPath: string; generation: string } }
   | { type: 'resolve'; id: number; refs: UnresolvedReference[] }
   | { type: 'synth'; id: number; pass: string; shard?: { index: number; count: number; from?: number; to?: number } }
+  | { type: 'near-dup-sign'; id: number; bodies: NearDupBody[]; projectRoot: string }
   | { type: 'close' };
 
 let dbPath: string | null = null;
@@ -126,6 +130,30 @@ port.on('message', (msg: InMessage) => {
         const out = resolver.resolveListForAdmission(msg.refs);
         if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[pool-timing] worker resolve: ${msg.refs.length} refs in ${Date.now() - tRes}ms`);
         port.postMessage({ type: 'result', id: msg.id, ...out });
+        break;
+      }
+      case 'near-dup-sign': {
+        const byFile = new Map<string, NearDupBody[]>();
+        for (const b of msg.bodies) {
+          const list = byFile.get(b.filePath) ?? [];
+          list.push(b);
+          byFile.set(b.filePath, list);
+        }
+        const results: NearDupSignature[] = [];
+        for (const [file, list] of byFile) {
+          let lines: string[] | null = null;
+          try { lines = fs.readFileSync(path.join(msg.projectRoot, file), 'utf-8').split(/\r?\n/); } catch { lines = null; }
+          for (const b of list) {
+            const set = lines ? shingles(lines.slice(b.startLine - 1, b.endLine).join('\n'), b.name) : null;
+            const sig = set ? signatureFromSet(set) : null;
+            results.push({
+              id: b.id,
+              sig: sig ? new Uint8Array(sig.buffer, sig.byteOffset, sig.byteLength).slice() : new Uint8Array(0),
+              set: set ? Uint32Array.from(set) : new Uint32Array(0),
+            });
+          }
+        }
+        port.postMessage({ type: 'near-dup-signed', id: msg.id, results });
         break;
       }
       case 'synth': {

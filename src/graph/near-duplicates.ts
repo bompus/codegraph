@@ -128,10 +128,32 @@ function asSignature(bytes: Uint8Array): Uint32Array {
   return new Uint32Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
 }
 
+/** One body a sharded signer computes a signature for. */
+export interface NearDupBody {
+  id: string;
+  name: string;
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  updatedAt: number;
+}
+
+/** A signed body: the MinHash bytes plus its shingle set (empty when unreadable). */
+export interface NearDupSignature {
+  id: string;
+  sig: Uint8Array;
+  set: Uint32Array;
+}
+
+/** Off-thread signer for a batch of bodies (the resolver pool in a full index). */
+export type NearDupSigner = (bodies: NearDupBody[]) => Promise<NearDupSignature[]>;
+
 export interface NearDuplicateDeps {
   queries: QueryBuilder;
   /** The file's text, or null when it cannot be read. */
   readFile(filePath: string): string | null;
+  /** When set, compute the signatures off-thread instead of reading files here. */
+  sign?: NearDupSigner;
   /** Generated or configured-away files, left out like tests and vendored code. */
   isExcluded?(filePath: string): boolean;
   /**
@@ -152,7 +174,7 @@ export interface NearDuplicateDeps {
  * the pairs. Returns how many signatures were written and pairs stored
  * (`pairs` is null when nothing changed and the stored pairs stand).
  */
-export function refreshNearDuplicates(deps: NearDuplicateDeps): { signed: number; pairs: number | null; rescored: number } {
+export async function refreshNearDuplicates(deps: NearDuplicateDeps): Promise<{ signed: number; pairs: number | null; rescored: number }> {
   const { queries } = deps;
   const excluded = (p: string) => isTestFile(p) || VENDORED.test(p) || (deps.isExcluded?.(p) ?? false);
   const tSign = Date.now();
@@ -173,13 +195,33 @@ export function refreshNearDuplicates(deps: NearDuplicateDeps): { signed: number
   // The shingle sets just computed, keyed by node id: scoring reuses them
   // instead of re-tokenizing every body that lands in a candidate pair.
   const freshSets = new Map<string, Set<number>>();
-  for (const [filePath, bodies] of stale) {
-    const lines = deps.readFile(filePath)?.split(/\r?\n/);
-    for (const b of bodies) {
-      const set = lines ? shingles(lines.slice(b.startLine - 1, b.endLine).join('\n'), b.name) : null;
-      const sig = set ? signatureFromSet(set) : null;
+  if (deps.sign) {
+    // The bodies are grouped by file for the in-process path; the signer takes
+    // them as one batch and the worker/pool groups what it can.
+    const bodies: NearDupBody[] = [];
+    for (const [filePath, list] of stale) {
+      for (const b of list) {
+        bodies.push({ id: b.id, name: b.name, filePath, startLine: b.startLine, endLine: b.endLine, updatedAt: b.updatedAt });
+      }
+    }
+    const signed = bodies.length > 0 ? await deps.sign(bodies) : [];
+    const byId = new Map(bodies.map((b) => [b.id, b]));
+    for (const s of signed) {
+      const b = byId.get(s.id);
+      if (!b) continue;
+      const set = s.set.length > 0 ? new Set(s.set) : null;
       if (set) freshSets.set(b.id, set);
-      rows.push({ nodeId: b.id, nodeUpdatedAt: b.updatedAt, sig: sig ? new Uint8Array(sig.buffer) : new Uint8Array(0) });
+      rows.push({ nodeId: b.id, nodeUpdatedAt: b.updatedAt, sig: s.sig.length > 0 ? s.sig : new Uint8Array(0) });
+    }
+  } else {
+    for (const [filePath, bodies] of stale) {
+      const lines = deps.readFile(filePath)?.split(/\r?\n/);
+      for (const b of bodies) {
+        const set = lines ? shingles(lines.slice(b.startLine - 1, b.endLine).join('\n'), b.name) : null;
+        const sig = set ? signatureFromSet(set) : null;
+        if (set) freshSets.set(b.id, set);
+        rows.push({ nodeId: b.id, nodeUpdatedAt: b.updatedAt, sig: sig ? new Uint8Array(sig.buffer) : new Uint8Array(0) });
+      }
     }
   }
   // A re-signed body's cached pair scores are stale; a dropped body's are moot.

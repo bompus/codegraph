@@ -11,7 +11,7 @@ import * as os from 'os';
 import CodeGraph from '../src/index';
 import { execFileSync } from 'child_process';
 import { ToolHandler } from '../src/mcp/tools';
-import { forEachBandBucket, refreshNearDuplicates, signature, similarity } from '../src/graph/near-duplicates';
+import { forEachBandBucket, refreshNearDuplicates, shingles, signature, signatureFromSet, similarity } from '../src/graph/near-duplicates';
 
 const urlOf = (name: string, label: string) => [
   `export function ${name}(input: string | URL): string {`,
@@ -173,7 +173,7 @@ describe('near-duplicates in the index', () => {
 
     // dsUrlOf changes: its two pairs are re-scored, the points pair is not read.
     db.prepare("UPDATE nodes SET updated_at = updated_at + 1 WHERE name = 'dsUrlOf'").run();
-    const r = refreshNearDuplicates(deps);
+    const r = await refreshNearDuplicates(deps);
     expect(r.signed).toBe(1);
     expect(r.rescored).toBe(2);
     expect(reads.some((p) => p.includes('points'))).toBe(false);
@@ -181,7 +181,24 @@ describe('near-duplicates in the index', () => {
 
     // Every body re-signed: a full recompute stores the same pairs.
     db.prepare("UPDATE nodes SET updated_at = updated_at + 1 WHERE kind = 'function'").run();
-    refreshNearDuplicates(deps);
+    await refreshNearDuplicates(deps);
+    expect(snapshot()).toEqual(before);
+
+    // The off-thread signer path stores the same signatures and pairs as the
+    // in-process loop (the pool worker computes shingles/signatureFromSet).
+    db.prepare("UPDATE nodes SET updated_at = updated_at + 1 WHERE kind = 'function'").run();
+    const sign = async (bodies: Array<{ id: string; name: string; filePath: string; startLine: number; endLine: number; updatedAt: number }>) =>
+      bodies.map((b) => {
+        const set = shingles(deps.readFile(b.filePath)!.split(/\r?\n/).slice(b.startLine - 1, b.endLine).join('\n'), b.name);
+        const sig = set ? signatureFromSet(set) : null;
+        return {
+          id: b.id,
+          sig: sig ? new Uint8Array(sig.buffer, sig.byteOffset, sig.byteLength).slice() : new Uint8Array(0),
+          set: set ? Uint32Array.from(set) : new Uint32Array(0),
+        };
+      });
+    const viaSigner = await refreshNearDuplicates({ ...deps, sign });
+    expect(viaSigner.signed).toBeGreaterThan(0);
     expect(snapshot()).toEqual(before);
   });
 

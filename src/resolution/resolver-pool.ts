@@ -14,6 +14,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import type { Edge, UnresolvedReference } from '../types';
+import type { NearDupBody, NearDupSignature } from '../graph/near-duplicates';
 import type { KernelResolveStats, ResolvedRef, UnresolvedRef } from './types';
 import { memoryBudgetBytes } from './memory-budget';
 import { terminateOnceStarted, workerStarted } from '../worker-teardown';
@@ -124,6 +125,7 @@ export class ResolverPool {
   private nextId = 0;
   private waiters = new Map<number, { resolve: (r: ChunkResult) => void; reject: (e: Error) => void }>();
   private synthWaiters = new Map<number, { resolve: (r: SynthPassResult) => void; reject: (e: Error) => void }>();
+  private signWaiters = new Map<number, { resolve: (r: NearDupSignature[]) => void; reject: (e: Error) => void }>();
   private recycleWaiters = new Map<number, { arm: () => void; done: () => void }>();
   // Dispatch hold for the WAL backpressure window: in-flight chunks finish
   // and release their read marks, no new ones start, so the valve's
@@ -318,6 +320,11 @@ export class ResolverPool {
           const waiter = this.synthWaiters.get(msg.id);
           this.synthWaiters.delete(msg.id);
           waiter?.resolve({ edges: msg.edges ?? [], ms: msg.ms ?? 0, skips: msg.skips });
+        } else if (msg.type === 'near-dup-signed' && msg.id !== undefined) {
+          pw.busy--;
+          const waiter = this.signWaiters.get(msg.id);
+          this.signWaiters.delete(msg.id);
+          waiter?.resolve((msg as { results?: NearDupSignature[] }).results ?? []);
         } else if (msg.type === 'recycling' && msg.id !== undefined) {
           this.recycleWaiters.get(msg.id)?.arm();
         } else if (msg.type === 'recycled' && msg.id !== undefined) {
@@ -335,6 +342,10 @@ export class ResolverPool {
           } else if (msg.id !== undefined && this.synthWaiters.has(msg.id)) {
             const waiter = this.synthWaiters.get(msg.id)!;
             this.synthWaiters.delete(msg.id);
+            waiter.reject(err);
+          } else if (msg.id !== undefined && this.signWaiters.has(msg.id)) {
+            const waiter = this.signWaiters.get(msg.id)!;
+            this.signWaiters.delete(msg.id);
             waiter.reject(err);
           } else {
             this.fail(err);
@@ -363,6 +374,8 @@ export class ResolverPool {
     this.pendingChunks = [];
     for (const [, waiter] of this.synthWaiters) waiter.reject(this.failed);
     this.synthWaiters.clear();
+    for (const [, waiter] of this.signWaiters) waiter.reject(this.failed);
+    this.signWaiters.clear();
     // Pending recycles resolve rather than reject: their per-call timeout
     // owns rejection, and the recycle caller checks this.failed next round.
     for (const [, w] of this.recycleWaiters) w.done();
@@ -479,6 +492,29 @@ export class ResolverPool {
       this.synthWaiters.set(id, { resolve, reject });
       pw.worker.postMessage({ type: 'synth', id, pass: passName, shard });
     });
+  }
+
+  /**
+   * Sign near-duplicate bodies across the idle pool (the full index calls
+   * this after synthesis, before the pool is destroyed). Workers read the
+   * bodies from disk and return the MinHash bytes plus the shingle set the
+   * pair pass reuses; the main thread writes the rows.
+   */
+  async signNearDuplicates(bodies: NearDupBody[], projectRoot: string): Promise<NearDupSignature[]> {
+    if (this.failed) throw this.failed;
+    if (bodies.length === 0) return [];
+    const lanes = Math.min(this.workers.length, 8, Math.max(1, Math.ceil(bodies.length / 256)));
+    const chunks: NearDupBody[][] = Array.from({ length: lanes }, () => []);
+    const per = Math.ceil(bodies.length / lanes);
+    for (let i = 0; i < bodies.length; i++) chunks[Math.min(lanes - 1, Math.floor(i / per))]!.push(bodies[i]!);
+    const parts = await Promise.all(chunks.filter((c) => c.length > 0).map((chunk) => new Promise<NearDupSignature[]>((resolve, reject) => {
+      const id = this.nextId++;
+      const pw = this.workers.reduce((a, b) => (b.busy < a.busy ? b : a));
+      pw.busy++;
+      this.signWaiters.set(id, { resolve, reject });
+      pw.worker.postMessage({ type: 'near-dup-sign', id, bodies: chunk, projectRoot });
+    })));
+    return parts.flat();
   }
 
   /**
