@@ -1454,6 +1454,31 @@ export class ReferenceResolver {
     return this.kernelReaderSnapshot;
   }
 
+  private kernelSnapshotSeq = 0;
+
+  /**
+   * A second snapshot for the same run, taken after the prerequisite phase so
+   * it holds every implements/extends edge the calls phase reads. The workers
+   * still have the first copy open, so this is a new inode (its own -shm)
+   * rather than an overwrite; the caller recycles the workers onto it. Returns
+   * null on any failure (the caller then destroys the pool and resolves on the
+   * main thread).
+   */
+  private async refreshKernelReaderSnapshot(fold: () => Promise<boolean>): Promise<string | null> {
+    const dbPath = this.queries.getDatabasePath();
+    if (!dbPath || !(await fold())) return null;
+    const snap = `${dbPath}.kr-snapshot-${++this.kernelSnapshotSeq}`;
+    try {
+      fs.rmSync(`${snap}-wal`, { force: true });
+      fs.rmSync(`${snap}-shm`, { force: true });
+      await fs.promises.copyFile(dbPath, snap);
+    } catch {
+      return null;
+    }
+    this.kernelReaderSnapshot = snap;
+    return snap;
+  }
+
   private openKernelResolver(
     parallelDbPath: string | undefined,
     generation?: string,
@@ -2360,15 +2385,19 @@ export class ReferenceResolver {
     let pool: ResolverPool | null = null;
     let poolReady = false;
     // Supertype walks read implements/extends edges, which only the
-    // prerequisite phase writes. The workers are spawned before that phase
-    // but open their snapshot after it (openPool), so it carries them.
+    // prerequisite phase writes. Workers open a snapshot BEFORE that phase so
+    // its refs resolve in parallel with every other batch; once the phase is
+    // persisted the pool is recycled onto a second snapshot that carries the
+    // supertype edges (refreshSnapshotIfDue).
     let inPrereqPhase = true;
     // Prerequisite batches read whose supertype edges are not inserted yet.
     // The prefetch reads the first calls page (ending the phase) while the
     // last prerequisite batch is still in flight, so the phase flag alone
     // says nothing about what the db holds.
     let prereqUnpersisted = 0;
+    let prereqBatchesPersisted = 0;
     const supertypesPersisted = (): boolean => !inPrereqPhase && prereqUnpersisted === 0;
+    let snapshotComplete = false;
     const destroyPool = async (): Promise<void> => {
       const p = pool;
       pool = null;
@@ -2376,10 +2405,8 @@ export class ReferenceResolver {
       if (p) await p.destroy().catch(() => undefined);
     };
     // Spawn the workers as soon as the pool is gated in. Their ~60ms module
-    // load then overlaps the prerequisite batches, which resolve on the
-    // main-thread kernel; the snapshot and open happen once those edges are
-    // persisted (openPool), so the old pre-prerequisite snapshot and its
-    // refresh collapse into one copy after the phase.
+    // load overlaps the kernel-reader snapshot copy and the prerequisite
+    // batches, which resolve in the pool like every other batch.
     const preparePool = async (): Promise<ResolverPool | null> => {
       if (!parallel) return null;
       const poolSize = ResolverPool.preflight(parallel.dbPath, total);
@@ -2390,13 +2417,13 @@ export class ReferenceResolver {
       }
       return p;
     };
-    // The prerequisite→calls boundary: close the main kernel, take the one
-    // snapshot the workers read, and open them. Held until every prerequisite
-    // edge is persisted so the snapshot carries the supertypes the walks use.
-    const openPool = async (): Promise<boolean> => {
+    // Open the workers over the snapshot as it stands. Called before the
+    // first batch (the prerequisite phase included — those refs resolve in
+    // the pool), with `supertypesComplete` telling the kernel whether the
+    // implements/extends edges are all in yet.
+    const openPool = async (supertypesComplete: boolean): Promise<boolean> => {
       if (!pool) return false;
       if (poolReady) return true;
-      if (!supertypesPersisted()) return false;
       const t0 = Date.now();
       // Once workers attach, NO rusqlite conn may share the live -shm — not
       // even the main-thread kernel conn (only same-thread conns are
@@ -2421,7 +2448,10 @@ export class ReferenceResolver {
         await destroyPool();
         return false;
       }
-      pool.open(parallel!.dbPath, this.projectRoot, kernelDbPath, true);
+      pool.open(parallel!.dbPath, this.projectRoot, kernelDbPath, supertypesComplete);
+      // An open over a snapshot that already carries every supertype edge
+      // needs no post-prerequisite refresh.
+      if (supertypesComplete) snapshotComplete = true;
       try {
         await pool.ready();
         poolReady = true;
@@ -2433,6 +2463,42 @@ export class ReferenceResolver {
         await destroyPool();
       }
       return poolReady;
+    };
+    // The prerequisite→calls boundary: every implements/extends edge the walks
+    // read is persisted, so hand the workers a snapshot that has them (a fresh
+    // copy only if a prerequisite batch wrote any) before the first calls
+    // batch fans out. A failed refresh destroys the pool; the calls batches
+    // then resolve on the main thread.
+    const refreshSnapshotIfDue = async (): Promise<void> => {
+      if (!pool || snapshotComplete || !supertypesPersisted() || !this.kernelReaderSnapshot || !parallel?.foldWalForSnapshot) return;
+      snapshotComplete = true;
+      const tLp = Date.now();
+      try {
+        const stale = this.kernelReaderSnapshot;
+        const fresh = prereqBatchesPersisted > 0
+          ? await this.refreshKernelReaderSnapshot(parallel.foldWalForSnapshot)
+          : stale;
+        if (!fresh) throw new Error('snapshot copy failed');
+        await pool.recycleWorkers(fresh);
+        refsSinceRecycle = 0;
+        if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
+          console.error(`[pool-timing] kernel snapshot refreshed after the prerequisite phase: ${fresh} (${Date.now() - tLp}ms)`);
+        }
+        if (fresh !== stale) {
+          for (const suf of ['', '-wal', '-shm']) {
+            try { fs.rmSync(stale + suf, { force: true }); } catch { /* best-effort scratch cleanup */ }
+          }
+        }
+      } catch (err) {
+        if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
+          console.error(`[pool-timing] kernel snapshot refresh failed, resolving on the main thread: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        logDebug('Kernel snapshot refresh failed; resolving on the main thread', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        await destroyPool();
+      }
+      lp('recycle', tLp);
     };
     if (parallel && total >= minRefsForPool()) {
       pool = await preparePool();
@@ -2506,9 +2572,11 @@ export class ReferenceResolver {
     // the supertype edges already persisted, so begin-time sees the same
     // state as settle-time.
     const beginBatch = async (batch: BatchPage): Promise<InFlight> => {
-      // Prerequisite batches resolve on the main kernel while the workers
-      // load; the first calls batch opens the pool over the one snapshot.
-      if (!batch.prereq) await openPool();
+      // Open the pool on the pre-prerequisite snapshot so the prerequisite
+      // refs resolve across the workers too; the calls phase refreshes it
+      // once their supertype edges are persisted.
+      if (pool && !poolReady) await openPool(supertypesPersisted());
+      if (!batch.prereq) await refreshSnapshotIfDue();
       if (pool && poolReady) {
         return {
           mode: 'pool',
@@ -2794,6 +2862,7 @@ export class ReferenceResolver {
       }
       if (batch.prereq) {
         prereqUnpersisted--;
+        prereqBatchesPersisted++;
       }
       lp('insertEdges', tLp);
 
@@ -2946,12 +3015,14 @@ export class ReferenceResolver {
     }
 
     // A sweep whose refs are all prerequisites (imports/extends/implements)
-    // never enters a calls batch, so openPool never ran. Synthesis would then
-    // post passes to workers that never opened; above MAIN_RETRY_MAX_NODES it
-    // skips those passes and silently drops their edges. Open the pool now, or
-    // discard it so synthesis takes the sequential path.
-    if (pool && !poolReady) {
-      if (!(await openPool())) await destroyPool();
+    // never enters a calls batch, so the post-prerequisite refresh never ran.
+    // Refresh now so synthesis reads the supertype edges the loop just
+    // persisted, then keep the pool for its passes (or discard it and let
+    // synthesis take the sequential path).
+    if (pool && poolReady) {
+      await refreshSnapshotIfDue();
+    } else if (pool && !poolReady) {
+      if (!(await openPool(supertypesPersisted()))) await destroyPool();
     }
 
     // Dynamic-edge synthesis: now that all base `calls` edges are persisted,
