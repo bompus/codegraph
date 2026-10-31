@@ -22,6 +22,7 @@ afterEach(() => {
   delete process.env.CODEGRAPH_SYNTH_SHARDS;
   delete process.env.CODEGRAPH_PARALLEL_RESOLVE_MIN;
   delete process.env.CODEGRAPH_RESOLVE_WORKERS;
+  delete process.env.CODEGRAPH_NO_PARALLEL_RESOLVE;
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -38,6 +39,14 @@ function writeProject(): void {
     'src/App.tsx':
       "import { List } from './List';\n" +
       'export default function App() { return <main><List /><List /></main>; }\n',
+    'src/Widget.tsx':
+      'export class Widget extends Component {\n' +
+      '  update() { this.setState({ ready: true }); }\n' +
+      '  render() { return <div />; }\n' +
+      '}\n',
+    'src/main.tsx':
+      "import { createRoot } from 'react-dom/client';\nimport App from './App';\n" +
+      "createRoot(document.getElementById('root')!).render(<App />);\n",
     'src/handlers.ts':
       'function saveHandler() { return 1; }\n' +
       'function loadHandler() { return 2; }\n' +
@@ -50,10 +59,18 @@ function writeProject(): void {
   }
 }
 
-async function indexAndDump(shards: string): Promise<string> {
-  process.env.CODEGRAPH_SYNTH_SHARDS = shards;
-  process.env.CODEGRAPH_PARALLEL_RESOLVE_MIN = '0';
-  process.env.CODEGRAPH_RESOLVE_WORKERS = '4';
+async function indexAndDump(mode: { shards?: string; sequential?: boolean }): Promise<string> {
+  if (mode.sequential) {
+    process.env.CODEGRAPH_NO_PARALLEL_RESOLVE = '1';
+    delete process.env.CODEGRAPH_PARALLEL_RESOLVE_MIN;
+    delete process.env.CODEGRAPH_RESOLVE_WORKERS;
+    delete process.env.CODEGRAPH_SYNTH_SHARDS;
+  } else {
+    delete process.env.CODEGRAPH_NO_PARALLEL_RESOLVE;
+    process.env.CODEGRAPH_SYNTH_SHARDS = mode.shards ?? '1';
+    process.env.CODEGRAPH_PARALLEL_RESOLVE_MIN = '0';
+    process.env.CODEGRAPH_RESOLVE_WORKERS = '4';
+  }
   const cg = await CodeGraph.init(tmpDir, { index: true });
   await cg.close();
   const db = new DatabaseSync(path.join(tmpDir, '.codegraph', 'codegraph.db'), { readOnly: true });
@@ -68,20 +85,16 @@ async function indexAndDump(shards: string): Promise<string> {
 describe('JSX synthesis sharding', () => {
   it('produces the single-pass edges in the same order', async () => {
     writeProject();
-    const single = await indexAndDump('1');
-    const sharded = await indexAndDump('4');
-    expect(single).toContain('jsx-render');
-    expect(single).toContain('object-registry');
-    if (single !== sharded) {
-      const a = JSON.parse(single) as Array<Record<string, unknown>>;
-      const b = JSON.parse(sharded) as Array<Record<string, unknown>>;
-      for (let i = 0; i < Math.max(a.length, b.length); i++) {
-        if (JSON.stringify(a[i]) !== JSON.stringify(b[i])) {
-          console.log('first diff at', i, 'single=', a[i], 'sharded=', b[i], 'lens', a.length, b.length);
-          break;
-        }
-      }
-    }
-    expect(sharded).toBe(single);
+    // The sequential run is the reference: a shard-slot bug (jsx written to
+    // another pass's index, a dropped gated pass, a doubled pass) changes the
+    // edge table or its order against it, which two sharded runs cannot see.
+    const sequential = await indexAndDump({ sequential: true });
+    const single = await indexAndDump({ shards: '1' });
+    const sharded = await indexAndDump({ shards: '4' });
+    expect(sequential).toContain('jsx-render');
+    expect(sequential).toContain('object-registry');
+    expect(sequential).toContain('react-render');
+    expect(single).toBe(sequential);
+    expect(sharded).toBe(sequential);
   });
 });

@@ -7659,8 +7659,10 @@ async function synthesizeWith(
       : 0;
     const plans = shardCount
       ? shardable
-        .map(([name, include]) => ({ name, include, idx: gatedIn.findIndex((i) => SYNTH_PASSES[i]!.name === name) }))
-        .filter((plan) => plan.idx >= 0)
+        // gatedIn holds SYNTH_PASSES indices; `find` (not findIndex) returns
+        // the pass index the slot/queue/fallback all need.
+        .map(([name, include]) => ({ name, include, idx: gatedIn.find((i) => SYNTH_PASSES[i]!.name === name) }))
+        .filter((plan): plan is { name: string; include: (file: string) => boolean; idx: number } => plan.idx !== undefined)
         .map((plan) => ({ ...plan, starts: jsxShardStarts(queries.getAllFiles(), shardCount, plan.include) }))
       : [];
     const sharded = plans.map((plan) => (async (): Promise<void> => {
@@ -7681,9 +7683,17 @@ async function synthesizeWith(
         }
         passEdges[plan.idx] = edges;
         markPass(`${plan.name} (sharded)`, Date.now() - t0);
-      } catch {
-        // One shard failed: rerun the pass once on the main thread, as the
-        // worker-failure path does for other passes.
+      } catch (err) {
+        // One shard failed. Same policy as the worker-failure path: above the
+        // scale where a main-thread retry is an OOM risk, skip the pass and
+        // keep the index alive; otherwise rerun it once on the main thread.
+        if (graphNodes > MAIN_RETRY_MAX_NODES) {
+          console.error(
+            `[synthesis] sharded pass '${plan.name}' failed at ${graphNodes} nodes — skipped (edges from this pass are absent): ${err instanceof Error ? err.message : String(err)}`
+          );
+          markPass(`${plan.name} (skipped at scale)`, 0);
+          return;
+        }
         await runPassOnMain(plan.idx);
       }
     })());
