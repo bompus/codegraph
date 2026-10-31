@@ -64,9 +64,10 @@ The watcher sync is the one MCP loss. The CLI's one-file sync is faster (above) 
 
 ### Idle memory: which number is which
 
-Three Node figures exist for n8n and they are the same measure — the process tree's RSS at the harness's idle sample, 70 s after the last query — at different heads:
+Four Node figures exist for n8n and they are the same measure — the process tree's RSS at the harness's idle sample, 70 s after the last query — at different heads:
 
-- 2026-10-28, fork `de5a7b80`: 3.58 GiB (the README row before this run).
+- 2026-10-27, fork `bc27fdb4`: 3.58 GiB (the old README row).
+- 2026-10-28, fork `5784e289`: 4.21 GiB (the clean re-measure).
 - 2026-10-30, fork `a9dc5a61`: 19.7 GiB. This was a real regression on that build, not a different metric.
 - 2026-10-31, fork `cf2a37a5`: 2.18 GiB, after #593 shares one native resolver across the importer name-match rescan.
 

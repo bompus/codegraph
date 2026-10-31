@@ -256,7 +256,7 @@ Both builds rebuild the links inferred from events, callbacks and function point
 | Memory at idle | 4.38 GiB | 2.18 GiB |
 | CPU at idle, share of one core | 0.40% | 0.20% |
 
-The idle row is the process tree's RSS at the harness's idle sample, 70 s after the last query. The same measure was 3.58 GiB on the 2026-10-28 build (`de5a7b80`) and 19.7 GiB on the 2026-10-30 build (`a9dc5a61`), which was a real regression; #593 shares one native resolver across the importer name-match rescan and brings it to 2.18 GiB. The “20 GB → 2 GB” statement is the 2026-10-30 to 2026-10-31 change on this harness, not a different definition from the 3.58 GiB row.
+The idle row is the process tree's RSS at the harness's idle sample, 70 s after the last query. The same measure across runs: **3.58 GiB** on 2026-10-27 (`bc27fdb4`, the old README row), **4.21 GiB** on 2026-10-28 (`5784e289`, the clean re-measure), **19.7 GiB** on 2026-10-30 (`a9dc5a61`, a real regression), and **2.18 GiB** now (`cf2a37a5`, #593). The “20 GB → 2 GB” statement is the 2026-10-30 to 2026-10-31 change on this harness, not a different definition from the earlier rows.
 
 **CLI startup** on gin (`hyperfine`, mean of 20 runs), 2026-10-27, fork `bc27fdb4` against upstream `69af19ac`; not re-measured on 2026-10-31:
 
@@ -266,7 +266,7 @@ The idle row is the process tree's RSS at the harness's idle sample, 70 s after 
 | `codegraph status` | 166 ms | 114 ms | 63 ms |
 | `codegraph explore "<query>"` | 220 ms | 117 ms | 71 ms |
 
-**Bun.** Bun was not re-measured in this run. The [2026-10-28 Node+Bun campaign](docs/benchmarks/fork-vs-upstream-node-bun-2026-10-27.md) remains the source: at `1.4.4` the fork's index ran 4–33% faster than Node's, one-file syncs 11–41% faster, and the idle MCP server held 29–62% less memory on Bun.
+**Bun.** Bun was not re-measured in this run. The [2026-10-28 Node+Bun campaign](docs/benchmarks/fork-vs-upstream-node-bun-2026-10-27.md) remains the source: its Bun arms index 4–15% faster than Node on six of seven corpora (CPython is a tie), sync 26–37% faster, and hold 29–30% less MCP idle memory.
 
 Measured separately:
 
