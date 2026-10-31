@@ -2274,7 +2274,7 @@
 {"source":"class:5f90866773ee5ac2d68cfc1b7361dccd","target":"constant:fcb85d08e560bb97a5a04042c6c88b55","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"class:5f90866773ee5ac2d68cfc1b7361dccd","target":"method:f301c9e6fba089a4da4226986340249b","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"class:60ae57e556b2af737e379adeee0a6911","target":"method:a3243a85e8aeb68a950074012a60cea8","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
-{"source":"class:632c1d99492fc1d4f4ba2a65a05a3536","target":"interface:1d6612fe19eaab4aa53a6c2ed8377e97","kind":"implements","metadata":"{\"confidence\":0.5,\"resolvedBy\":\"exact-match\",\"refName\":\"Marker\",\"refKind\":\"extends\"}","line":330,"col":59,"provenance":null}
+{"source":"class:632c1d99492fc1d4f4ba2a65a05a3536","target":"interface:1d6612fe19eaab4aa53a6c2ed8377e97","kind":"implements","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"Marker\",\"refKind\":\"extends\"}","line":330,"col":59,"provenance":null}
 {"source":"class:63dc577067a8afeda1988d7d6845f698","target":"constant:2acd556bccccf58af57893923e9e75be","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"class:63dc577067a8afeda1988d7d6845f698","target":"constant:d511ceb61ad27511c413ca485ac10dc1","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"class:63dc577067a8afeda1988d7d6845f698","target":"method:4a64a3754cd246ad0a17464408bb4625","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
@@ -3908,7 +3908,7 @@
 {"source":"file:torture.tsx","target":"class:0ea6b25874f3f2740efdf3fe3093b554","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:torture.tsx","target":"class:52efc402528050363a013ff2f2887631","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:torture.tsx","target":"class:6de82f58f1030c4395eed748ad033d4a","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
-{"source":"file:torture.tsx","target":"class:7b9fe84bf0a135fd43dd8e0a43329327","kind":"instantiates","metadata":"{\"confidence\":0.5,\"resolvedBy\":\"exact-match\",\"refName\":\"Widget\"}","line":212,"col":0,"provenance":null}
+{"source":"file:torture.tsx","target":"class:7b9fe84bf0a135fd43dd8e0a43329327","kind":"instantiates","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"Widget\"}","line":212,"col":0,"provenance":null}
 {"source":"file:torture.tsx","target":"class:addcf598d6e590538ddf583221f35a77","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:torture.tsx","target":"class:dd58e1794dcef656428d118c68e0a7ee","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:torture.tsx","target":"component:02ae17b393309c81d66efdab6a234114","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
@@ -4217,7 +4217,7 @@
 {"source":"function:d06c2607f3378f3f3037272d30c5d24b","target":"function:dd3ddcfaee0976e540855839ddc8e1b0","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"function:d1b22ce81e4dcd9f8f6bd5f508ed2535","target":"class:54c0d1e485f298b4f9827706f928657f","kind":"references","metadata":"{\"confidence\":0.4,\"resolvedBy\":\"exact-match\",\"refName\":\"WidgetS\"}","line":26,"col":15,"provenance":null}
 {"source":"function:d7da4b402ad97a64a1766fcf09e392e0","target":"constant:84e8ca2c7ea91f1d3a3ed700ab7c9298","kind":"references","metadata":"{\"valueRef\":true}","line":null,"col":null,"provenance":null}
-{"source":"function:da35edf904718ee004d324ee65a7544d","target":"function:89b5279cd19a084e8974e1c0985c27d9","kind":"calls","metadata":"{\"confidence\":0.5,\"resolvedBy\":\"exact-match\",\"refName\":\"fetchUser\"}","line":62,"col":23,"provenance":null}
+{"source":"function:da35edf904718ee004d324ee65a7544d","target":"function:89b5279cd19a084e8974e1c0985c27d9","kind":"calls","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"fetchUser\"}","line":62,"col":23,"provenance":null}
 {"source":"function:da35edf904718ee004d324ee65a7544d","target":"function:a548f12f9120575aa54e8e09ed4bb65f","kind":"calls","metadata":"{\"synthesizedBy\":\"vuex-dispatch\",\"via\":\"SET_USER\",\"registeredAt\":\"torture.js:63\"}","line":63,"col":null,"provenance":"heuristic"}
 {"source":"function:dab52c2b772d941b5ea5314b8ae2a808","target":"function:1ff8eb433358524f81c9fa301bb39b42","kind":"calls","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"inner\"}","line":39,"col":7,"provenance":null}
 {"source":"function:dab52c2b772d941b5ea5314b8ae2a808","target":"function:1ff8eb433358524f81c9fa301bb39b42","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
@@ -4292,8 +4292,8 @@
 {"source":"method:27cb1ff6b9d8b69ea53cdace15ec769c","target":"enum:a58c3a1b619494a715b39e851fd0285e","kind":"references","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"Status\"}","line":70,"col":9,"provenance":null}
 {"source":"method:2a13119ec1710ee8164bbfce63828d72","target":"constant:d8ebf9d5af67de9ccbdd8dd45b103258","kind":"references","metadata":"{\"valueRef\":true}","line":null,"col":null,"provenance":null}
 {"source":"method:2bb282d0e95f9e94a322629fe6ba4641","target":"method:d6d1b0f141d5bfc74b43a2ab89ce76e7","kind":"calls","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"validate\"}","line":77,"col":12,"provenance":null}
-{"source":"method:2cdc6efa220484b8e74b77fd3de860d0","target":"module:7b0b21e64c28c40d1a3a9a73109bc603","kind":"instantiates","metadata":"{\"confidence\":0.5,\"resolvedBy\":\"exact-match\",\"refName\":\"Config\"}","line":63,"col":11,"provenance":null}
-{"source":"method:2cdc6efa220484b8e74b77fd3de860d0","target":"module:7b0b21e64c28c40d1a3a9a73109bc603","kind":"references","metadata":"{\"confidence\":0.5,\"resolvedBy\":\"exact-match\",\"refName\":\"Config\"}","line":62,"col":17,"provenance":null}
+{"source":"method:2cdc6efa220484b8e74b77fd3de860d0","target":"module:7b0b21e64c28c40d1a3a9a73109bc603","kind":"instantiates","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"Config\"}","line":63,"col":11,"provenance":null}
+{"source":"method:2cdc6efa220484b8e74b77fd3de860d0","target":"module:7b0b21e64c28c40d1a3a9a73109bc603","kind":"references","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"Config\"}","line":62,"col":17,"provenance":null}
 {"source":"method:2ced81449f6c49cea1753a5e68ef4fa3","target":"class:54c0d1e485f298b4f9827706f928657f","kind":"instantiates","metadata":"{\"confidence\":0.4,\"resolvedBy\":\"exact-match\",\"refName\":\"WidgetS\"}","line":56,"col":35,"provenance":null}
 {"source":"method:2ced81449f6c49cea1753a5e68ef4fa3","target":"module:3e98a45ef089de69c402c540a05c492e","kind":"references","metadata":"{\"confidence\":0.4,\"resolvedBy\":\"exact-match\",\"refName\":\"WidgetS\"}","line":56,"col":15,"provenance":null}
 {"source":"method:2ced81449f6c49cea1753a5e68ef4fa3","target":"module:3e98a45ef089de69c402c540a05c492e","kind":"references","metadata":"{\"confidence\":0.4,\"resolvedBy\":\"exact-match\",\"refName\":\"WidgetS\"}","line":56,"col":25,"provenance":null}
@@ -4374,7 +4374,7 @@
 {"source":"method:696a13d993cb735ae83777bf41611e4c","target":"method:f0a1e24001d0ab029beab0f42e9803e5","kind":"calls","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"instance-method\",\"refName\":\"Config.builder\"}","line":46,"col":19,"provenance":null}
 {"source":"method:699f626fc6f4bd965e80eb3fb6831ddb","target":"class:679670ecd455feab2a3da4e81ddddb92","kind":"references","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"_ImplT\"}","line":25,"col":60,"provenance":null}
 {"source":"method:6a4e21b6c6d90666a239ba82af310544","target":"function:fd9e1ad6a248dcc467e99c8f7c23127e","kind":"calls","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"curried\"}","line":17,"col":4,"provenance":null}
-{"source":"method:6a4e21b6c6d90666a239ba82af310544","target":"method:89943c9a70f9964cad98386017451644","kind":"calls","metadata":"{\"confidence\":0.5,\"resolvedBy\":\"exact-match\",\"refName\":\"make\"}","line":20,"col":15,"provenance":null}
+{"source":"method:6a4e21b6c6d90666a239ba82af310544","target":"method:89943c9a70f9964cad98386017451644","kind":"calls","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"make\"}","line":20,"col":15,"provenance":null}
 {"source":"method:6d9dc963c222f94eab797e7bbd0151d3","target":"class:4df2c7657f7690146e6546cf5549bca1","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"method:6d9dc963c222f94eab797e7bbd0151d3","target":"module:2e2133568bf7e8660ab1968d0f5da1eb","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"method:6febee4cfe85097558083cae10bd506a","target":"enum:d7032a8032488d6fb29ba59e778694cc","kind":"references","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"StatusT\"}","line":205,"col":9,"provenance":null}

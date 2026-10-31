@@ -2014,8 +2014,13 @@ if inferred.is_none() && r.language == "dart" {
             // `it.ready()` on an unseen `it` is the interface's `ready`). A
             // name the body itself declares — a named lambda's parameter,
             // `v -> v.open()` — is bound with or without a row: its refusal
-            // stays terminal.
-            if hit.is_none() && binding.is_none() && !self.body_binds_receiver(root, r)? {
+            // stays terminal. A C or C++ receiver never takes this fallback:
+            // the fork leaves the call unlinked wherever the receiver's
+            // written type cannot be read, where upstream guesses a callee
+            // from the receiver's name (README, "About this fork").
+            if hit.is_none() && binding.is_none() && !self.body_binds_receiver(root, r)?
+                && !matches!(r.language.as_str(), "c" | "cpp")
+            {
                 return probe!(r, "brc:unbound-recv", self.match_method_call_free(r));
             }
             return Ok(hit);

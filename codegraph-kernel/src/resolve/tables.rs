@@ -442,6 +442,15 @@ pub(super) fn same_language_family(a: &str, b: &str) -> bool {
     matches!(language_family(a), Some(fa) if Some(fa) == language_family(b))
 }
 
+/// sameRankingLanguage (name-matcher.ts): the languages whose files share
+/// one table of names — a C function is called by its bare name from C++
+/// and Objective-C alike, and a `.h` file is C, C++ or Objective-C only as
+/// far as sniffing its text can tell — so name matching ranks them as one
+/// language. Other families keep the language itself.
+pub(super) fn same_ranking_language(a: &str, b: &str) -> bool {
+    a == b || (matches!(a, "c" | "cpp" | "objc") && matches!(b, "c" | "cpp" | "objc"))
+}
+
 pub(super) fn is_known_language_family(lang: &str) -> bool {
     language_family(lang).is_some()
 }
