@@ -242,7 +242,10 @@ impl KernelResolver {
         let own: Vec<Arc<KNode>> = self
             .nodes_by_qualified_name(&format!("{owner_qn}::{name}"))?
             .iter()
-            .filter(|n| n.language == "ruby" && n.kind == "method" && !(production && super::resolver_upstream::test_suite_path(&n.file_path)))
+            // A receiver bound to an instance (`new C().m`, a typed `@x`) can
+            // only reach instance methods: an own class method does not stand
+            // in for one an ancestor declares.
+            .filter(|n| n.language == "ruby" && n.kind == "method" && !(kind == "instance" && n.is_static) && !(production && super::resolver_upstream::test_suite_path(&n.file_path)))
             .cloned()
             .collect();
         if let Some(m) = ruby_methods_of_kind_first(ruby_ordered(own, r), kind).into_iter().next() {
@@ -255,7 +258,7 @@ impl KernelResolver {
             let found: Vec<Arc<KNode>> = self
                 .nodes_by_qualified_name(&format!("{qn}::{name}"))?
                 .iter()
-                .filter(|n| n.language == "ruby" && n.kind == "method" && !(production && super::resolver_upstream::test_suite_path(&n.file_path)))
+                .filter(|n| n.language == "ruby" && n.kind == "method" && !(kind == "instance" && n.is_static) && !(production && super::resolver_upstream::test_suite_path(&n.file_path)))
                 .cloned()
                 .collect();
             if let Some(m) = ruby_methods_of_kind_first(ruby_ordered(found, r), kind).into_iter().next() {
@@ -374,10 +377,10 @@ fn constructed_value(s: &str, from: usize) -> Option<(String, bool)> {
     let tail = &s[i.min(s.len())..];
     let ok = match tail.chars().next() {
         None | Some('\n') | Some(';') | Some('{') => true,
-        _ => re!(r#"^[ \t]+(?:$|\n|;|\{|[\w:@$"'\[])"#).is_match(&tail[..tail.len().min(200)]),
+        _ => re!(r#"^[ \t]+(?:$|\n|;|\{|[\w:@$"'\[])"#).is_match(tail.get(..200).unwrap_or(tail)),
     };
     // A chain may go on at the start of the next line: `Foo.new\n  .tap {…}`.
-    let continued = re!(r"^[ \t]*\n\s*&?\.").is_match(&tail[..tail.len().min(200)]);
+    let continued = re!(r"^[ \t]*\n\s*&?\.").is_match(tail.get(..200).unwrap_or(tail));
     (ok && !continued).then(|| (m[2].to_string(), m.get(1).is_some()))
 }
 

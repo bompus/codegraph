@@ -589,8 +589,11 @@ impl KernelResolver {
                 let text = lines.text();
                 let mut anonymous = false;
                 for &line in marker_lines.iter() {
-                    let head = text.split('\n').nth(line.saturating_sub(1) as usize).unwrap_or("");
-                    if export_default_head_is_anonymous(head) {
+                    // A default's head may span lines (`export default (\n  x\n) => x`):
+                    // upstream's readDefaultExport scans the whole statement, so the
+                    // classifier gets the source from the marker's line to the end.
+                    let head = text.split('\n').skip(line.saturating_sub(1) as usize).collect::<Vec<_>>().join("\n");
+                    if export_default_head_is_anonymous(&head) {
                         anonymous = true;
                     } else {
                         default_expr = true;

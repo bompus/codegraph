@@ -59,6 +59,18 @@ class OtherWriter
     false
   end
 end
+
+class ParentWriter
+  def flush
+    nil
+  end
+end
+
+class ChildWriter < ParentWriter
+  def self.flush
+    nil
+  end
+end
 `,
   'app/billing.rb': `module Billing
   class Card
@@ -119,6 +131,10 @@ end
 
   def outside(env)
     Request.new(env).preferred_type
+  end
+
+  def inherited_flush
+    ChildWriter.new.flush
   end
 end
 `,
@@ -247,6 +263,13 @@ describe('Ruby bang and question methods, and calls on .new (#684)', () => {
     expect(callsAt(graph, 'app/billing.rb', 10)).toEqual(['Billing::Card::charge!:3']);
     // Billing::Ledger has no `charge!`; its superclass Billing::Card does.
     expect(callsAt(graph, 'app/counter.rb', 25)).toEqual(['Billing::Card::charge!:3']);
+  });
+
+  it('links an instance method a superclass declares before a class method its child defines', async () => {
+    const graph = await index();
+    // `ChildWriter.new` is an instance: its own `self.flush` is a class
+    // method, so the call reaches `ParentWriter#flush` instead.
+    expect(callsAt(graph, 'app/counter.rb', 41)).toEqual(['ParentWriter::flush:38']);
   });
 
   it('links nothing for a class the project does not declare', async () => {
