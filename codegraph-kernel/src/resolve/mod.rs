@@ -922,6 +922,14 @@ pub struct KernelResolver {
     /// getRazorUsings memo, by file.
     razor_usings_memo: HashMap<String, Rc<Vec<String>>>,
     rust_crate_root_memo: HashMap<String, Option<String>>,
+    /// rustPathDeclsIn (name-matcher.ts): a file's `#[path]` module declarations, by file.
+    rust_path_decls_memo: HashMap<String, Rc<Vec<rust_modules::rust_paths::RustPathDecl>>>,
+    /// rustPathLoads (name-matcher.ts): each file a `#[path]` loads → its declarations, once.
+    rust_path_loads_memo: Option<Rc<HashMap<String, Vec<rust_modules::rust_paths::RustPathDecl>>>>,
+    /// rustPathLoaders (name-matcher.ts): the declarations loading a file the name rules don't place.
+    rust_path_loaders_memo: HashMap<String, Rc<Vec<rust_modules::rust_paths::RustPathDecl>>>,
+    /// A Rust file's `mod` layout: plain decls, `#[path]` decl names, inline chains, `fn main`.
+    rust_mod_facts_memo: HashMap<String, Option<Rc<rust_modules::rust_paths::RustModFacts>>>,
     /// factory_initializer memo: (file, binding line, root, binding node).
     factory_init_memo: HashMap<(String, i64, String, Option<String>), Rc<method_call::FactoryInit>>,
     /// C/C++ directive summaries and per-root macro timelines (#1838).
@@ -1181,6 +1189,10 @@ impl KernelResolver {
             cobol_copybooks: None,
             razor_usings_memo: HashMap::new(),
             rust_crate_root_memo: HashMap::new(),
+            rust_path_decls_memo: HashMap::new(),
+            rust_path_loads_memo: None,
+            rust_path_loaders_memo: HashMap::new(),
+            rust_mod_facts_memo: HashMap::new(),
             factory_init_memo: HashMap::new(),
             cpp_macros: cpp::MacroCache::default(),
             cpp_namespaces: cpp_namespace::NamespaceCache::default(),

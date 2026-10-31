@@ -199,17 +199,25 @@ pub(super) fn is_bare_rust_name(r: &ResolveRefIn) -> bool {
 /// any form — is named only in its own module and the modules inside it: a `type Result` in
 /// `src/build/patch.rs` is `build::patch`'s, seen in that file and under `src/build/patch/`, never
 /// through `use crate::Result` elsewhere, and no glob passes it on. A `mod.rs`, `lib.rs` or
-/// `main.rs` is the module of its whole directory. The same rule `is_visible_across_files` applies
-/// to the pipeline's pick, here ahead of the ranking, so the crate's own `pub(crate) type Result`
+/// `main.rs` is the module of its whole directory; a file a `#[path]` loads is inside the module
+/// that declares it, wherever it sits. The same rule `is_visible_across_files` applies to the
+/// pipeline's pick, here ahead of the ranking, so the crate's own `pub(crate) type Result`
 /// can win instead.
-fn rust_item_visible_from(candidate: &KNode, r: &ResolveRefIn) -> bool {
-    if candidate.language != "rust"
-        || candidate.visibility.as_deref() != Some("private")
-        || !super::resolver_upstream::RUST_MODULE_ITEM_KINDS.contains(&candidate.kind.as_str())
-    {
-        return true;
+impl KernelResolver {
+    fn rust_item_visible_from(&mut self, candidate: &KNode, r: &ResolveRefIn) -> bool {
+        if candidate.language != "rust"
+            || candidate.visibility.as_deref() != Some("private")
+            || !super::resolver_upstream::RUST_MODULE_ITEM_KINDS.contains(&candidate.kind.as_str())
+        {
+            return true;
+        }
+        candidate.file_path == r.file_path
+            || self.rust_file_under(
+                &r.file_path,
+                &super::names::rust_module_dir(&candidate.file_path),
+                &candidate.file_path,
+            )
     }
-    candidate.file_path == r.file_path || r.file_path.starts_with(&format!("{}/", super::names::rust_module_dir(&candidate.file_path)))
 }
 
 impl KernelResolver {
@@ -269,7 +277,7 @@ impl KernelResolver {
     /// the prelude's unless the file defines it or imports a project item of
     /// that name.
     pub(super) fn is_rust_name_in_scope(&mut self, candidate: &KNode, r: &ResolveRefIn) -> bool {
-        if !rust_item_visible_from(candidate, r) {
+        if !self.rust_item_visible_from(candidate, r) {
             return false;
         }
         if let Some(visible) = self.rust_precise_name_scope(candidate, r) {

@@ -482,7 +482,7 @@ impl KernelResolver {
                 return Ok(true);
             }
             let owner = rust_module_dir(&candidate.file_path);
-            return Ok(r.file_path.starts_with(&format!("{}/", owner)));
+            return Ok(self.rust_file_under(&r.file_path, &owner, &candidate.file_path));
         }
         if private_is_file_local(lang) {
             return Ok(candidate.visibility.as_deref() != Some("private"));
