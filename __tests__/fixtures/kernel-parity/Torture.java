@@ -148,3 +148,12 @@ class MarkdownPaths {
     loadDoc("docs/deep/nested.markdown");
   }
 }
+
+class DottedAnon {
+  Api.Listener listener = new Api.Listener<String>() {
+    public void on() {}
+  };
+  Object plain = new java.util.concurrent.Callable<Integer>() {
+    public Integer call() { return 1; }
+  };
+}

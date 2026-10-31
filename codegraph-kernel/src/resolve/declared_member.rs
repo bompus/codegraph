@@ -85,23 +85,34 @@ impl KernelResolver {
         if !re!(r"^[A-Za-z_]\w*$").is_match(name) { return Ok(None); }
         let nodes = self.nodes_in_file(&r.file_path)?;
         let Some(cls) = nodes.iter().filter(|n| n.language == r.language && class_kind(&n.kind) && n.start_line <= r.line && n.end_line >= r.line).max_by_key(|n| n.start_line) else { return Ok(None) };
-        if !receiver.starts_with("this.") {
-            if let Some(f) = nodes.iter().filter(|n| n.language == r.language && matches!(n.kind.as_str(), "method" | "function") && n.start_line <= r.line && n.end_line >= r.line).max_by_key(|n| n.start_line) {
-                let key=(f.id.clone(),name.to_string(),r.line);
-                if self.member_shadow_memo.get(&key)==Some(&true) {return Ok(None);}
-                if !self.member_shadow_memo.contains_key(&key) {
-                let body = self.declaration_head(f, r.line - f.start_line);
-                let n = regex::escape(name);
-                let shadowed = Self::cached_regex(&format!(r"\b(?:var|val|out\s+[\w.<>?]+|foreach\s*\(\s*[\w.<>?,\s]+?)\s+{n}\b|\bfor\s*\([^;)]*\s{n}\s*:|\b{n}\s*=>|[(,]\s*{n}\s*(?:,[^()]*)?\)\s*=>|\b{n}\s*(?:,[^{{}}]*)?->"))?.is_match(&body);
-                self.member_shadow_memo.insert(key.clone(),shadowed);
-                if shadowed { return Ok(None); }
-                }
-            }
-        }
+        if !receiver.starts_with("this.") && self.body_binds_receiver(name, r)? { return Ok(None); }
         let key=(cls.id.clone(),name.to_string());
         if let Some(hit)=self.declared_member_walks.get(&key) {return Ok(hit.clone());}
-        let result=self.walk_declared_member_receiver(cls,name)?;
+        let mut result=self.walk_declared_member_receiver(cls,name)?;
+        // A Kotlin object expression's code sees the class it is written in; its `this` is the object.
+        let mut inner=cls.clone();
+        while result.is_none() && r.language=="kotlin" && super::names::is_anonymous_class(&inner) && receiver==name {
+            let Some(outer)=nodes.iter().filter(|n| n.language==r.language && class_kind(&n.kind) && n.start_line<inner.start_line && n.end_line>=r.line).max_by_key(|n| n.start_line).cloned() else { break };
+            result=self.walk_declared_member_receiver(&outer,name)?;
+            inner=outer;
+        }
         self.declared_member_walks.insert(key,result.clone());Ok(result)
+    }
+    /// bindsNameItself (name-matcher.ts): the method or function body holding
+    /// the call declares `name` itself — a `var`/`val`, an `out` or loop
+    /// variable, a lambda parameter — so it is bound even when the index
+    /// keeps no row for it (a named lambda parameter has none): a member
+    /// lookup does not type it, and a free name guess must not either.
+    pub(super) fn body_binds_receiver(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
+        let nodes = self.nodes_in_file(&r.file_path)?;
+        let Some(f) = nodes.iter().filter(|n| n.language == r.language && matches!(n.kind.as_str(), "method" | "function") && n.start_line <= r.line && n.end_line >= r.line).max_by_key(|n| n.start_line) else { return Ok(false) };
+        let key=(f.id.clone(),name.to_string(),r.line);
+        if let Some(hit)=self.member_shadow_memo.get(&key){return Ok(*hit);}
+        let body = self.declaration_head(f, r.line - f.start_line);
+        let n = regex::escape(name);
+        let shadowed = Self::cached_regex(&format!(r"\b(?:var|val|out\s+[\w.<>?]+|foreach\s*\(\s*[\w.<>?,\s]+?)\s+{n}\b|\bfor\s*\([^;)]*\s{n}\s*:|\b{n}\s*=>|[(,]\s*{n}\s*(?:,[^()]*)?\)\s*=>|\b{n}\s*(?:,[^{{}}]*)?->"))?.is_match(&body);
+        self.member_shadow_memo.insert(key,shadowed);
+        Ok(shadowed)
     }
     fn walk_declared_member_receiver(&mut self,cls:&KNode,name:&str)->Res<Option<String>> {
         let mut queue = VecDeque::from([(Arc::new(cls.clone()), HashMap::<String, String>::new())]);

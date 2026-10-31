@@ -153,10 +153,10 @@ impl<'t> Walker<'t> {
     }
 
     /// extractInheritance — delegation_specifier: user_type ?? its
-    /// constructor_invocation's user_type → FIRST type_identifier → ONE
-    /// `extends` ref at the typeId (interfaces ride extends too; qualified
-    /// supertypes take the FIRST segment — `com`; `by`-delegation emits
-    /// NOTHING).
+    /// constructor_invocation's user_type → ONE `extends` ref named by the
+    /// user_type's type_identifiers joined with `.` (`Outer.Inner`, type
+    /// arguments left out), at the first one (interfaces ride extends too;
+    /// `by`-delegation emits NOTHING).
     pub(super) fn extract_inheritance(&mut self, node: Node<'t>, class_row: u32) {
         let extends_kind = crate::buffers::EDGE_EXTENDS;
         for i in 0..node.named_child_count() {
@@ -170,23 +170,101 @@ impl<'t> Walker<'t> {
                 .find(|c| c.kind() == "constructor_invocation");
             let target = user_type.or(ctor_inv);
             let Some(target) = target else { continue };
-            let type_id: Node = if target.kind() == "user_type" {
-                named_kids(target)
-                    .find(|c| c.kind() == "type_identifier")
-                    .unwrap_or(target)
+            let type_node: Option<Node> = if target.kind() == "user_type" {
+                Some(target)
             } else {
-                // constructor_invocation → its user_type → first type_identifier
-                let ut = named_kids(target)
-                    .find(|c| c.kind() == "user_type");
-                match ut {
-                    Some(ut) => named_kids(ut)
-                        .find(|c| c.kind() == "type_identifier")
-                        .unwrap_or(ut),
-                    None => target,
-                }
+                named_kids(target).find(|c| c.kind() == "user_type")
             };
-            let name = self.text(type_id).to_string();
+            let ids: Vec<Node> = match type_node {
+                Some(t) => named_kids(t).filter(|c| c.kind() == "type_identifier").collect(),
+                None => Vec::new(),
+            };
+            let type_id: Node = ids.first().copied().or(type_node).unwrap_or(target);
+            let name = if ids.is_empty() {
+                self.text(type_id).to_string()
+            } else {
+                ids.iter().map(|c| self.text(*c)).collect::<Vec<_>>().join(".")
+            };
             self.push_ref_at(class_row, &name, extends_kind, type_id);
         }
+    }
+
+    /// extractKotlinObjectLiteral — `object : Api.Listener { … }`: an anonymous
+    /// class. Headers (each delegation_specifier) are walked first by the
+    /// CURRENT walker in the enclosing scope (`body_walker` picks the body
+    /// walker); an `instantiates` ref from the stack top to the primary
+    /// supertype as written; a class `<Short$anon@line>`; `extends` refs
+    /// (dotted path) from it, at each path's first type_identifier; its
+    /// class_body children through visit_node. False (nothing done) without a
+    /// class_body.
+    pub(super) fn extract_object_literal(&mut self, node: Node<'t>, body_walker: bool) -> bool {
+        stack_guard!();
+        let Some(body) = named_kids(node).find(|c| c.kind() == "class_body") else {
+            return false;
+        };
+        let specs: Vec<Node<'t>> = named_kids(node).filter(|c| c.kind() == "delegation_specifier").collect();
+        // (name, first type_identifier, built by a constructor_invocation)
+        let mut supertypes: Vec<(String, Node<'t>, bool)> = Vec::new();
+        for spec in &specs {
+            let holder = named_kids(*spec)
+                .find(|c| c.kind() == "constructor_invocation" || c.kind() == "explicit_delegation");
+            let from = holder.unwrap_or(*spec);
+            let user_type = named_kids(from).find(|c| c.kind() == "user_type");
+            let ids: Vec<Node<'t>> = match user_type {
+                Some(t) => named_kids(t).filter(|c| c.kind() == "type_identifier").collect(),
+                None => Vec::new(),
+            };
+            if let Some(first) = ids.first() {
+                let name = ids.iter().map(|c| self.text(*c)).collect::<Vec<_>>().join(".");
+                let built = holder.map(|h| h.kind() == "constructor_invocation").unwrap_or(false);
+                supertypes.push((name, *first, built));
+            }
+        }
+        for spec in &specs {
+            if body_walker {
+                self.visit_for_calls_and_structure(*spec);
+            } else {
+                self.visit_node(*spec);
+            }
+        }
+        // The class it builds, else its first supertype: the object's name and,
+        // as written, what the code around instantiates.
+        let primary = supertypes.iter().find(|s| s.2).or(supertypes.first());
+        let short_name = match primary {
+            Some((name, _, _)) => match name.rfind('.') {
+                Some(dot) => name[dot + 1..].to_string(),
+                None => name.clone(),
+            },
+            None => "Object".to_string(),
+        };
+        if let Some((written, at, _)) = primary {
+            if !self.stack.is_empty() {
+                let owner = self.top_row();
+                let at = *at;
+                let written = written.clone();
+                self.push_ref_at(owner, &written, crate::buffers::EDGE_INSTANTIATES, at);
+            }
+        }
+        let anon_name = format!("<{short_name}$anon@{}>", node.start_position().row + 1);
+        let Some(row) = self.create_node("class", &anon_name, node, Extra::default()) else {
+            for c in named_kids(body) {
+                if body_walker {
+                    self.visit_for_calls_and_structure(c);
+                } else {
+                    self.visit_node(c);
+                }
+            }
+            return true;
+        };
+        for (name, at, _) in &supertypes {
+            let at = *at;
+            self.push_ref_at(row, name, crate::buffers::EDGE_EXTENDS, at);
+        }
+        self.stack.push(Scope { row, kind: "class", name: anon_name });
+        for c in named_kids(body) {
+            self.visit_node(c);
+        }
+        self.stack.pop();
+        true
     }
 }

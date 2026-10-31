@@ -4,6 +4,23 @@ use super::*;
 use super::js_objects_upstream::CollapsedCall;
 use super::name_scope::{can_name_in_type_position, is_bare_rust_name};
 
+/// A qualified name through an anonymous class: the declaration holding it, then `::<T$anon@line>`.
+fn anon_member_qn() -> Rc<regex::Regex> {
+    re!(r"^(.+?)::<[^<>:]*\$anon@(\d+)>(?:::|$)")
+}
+/// Declarations an anonymous class can be written in.
+const ANON_HOLDER_KINDS: [&str; 6] = ["function", "method", "constant", "field", "variable", "property"];
+
+/// An anonymous class — Java's `new T() { … }`, Kotlin's `object : T { … }` — named `<T$anon@line>`.
+pub(super) fn is_anonymous_class(n: &KNode) -> bool {
+    n.name.starts_with('<') && n.name.contains("$anon@")
+}
+
+/// A member of an anonymous class: its qualified name passes through `<T$anon@line>`.
+pub(super) fn is_anonymous_member(n: &KNode) -> bool {
+    n.qualified_name.contains("$anon@") && anon_member_qn().is_match(&n.qualified_name)
+}
+
 /// The most a PHP `$this`/`self`/`parent` call settled on a repository trait
 /// no repository class uses may claim: a guess, not a proven link.
 const PHP_UNSEEN_ANCESTOR_CONFIDENCE: f64 = 0.5;
@@ -154,6 +171,33 @@ impl KernelResolver {
     /// (`case class B()` in a test method), or a method of such a type —
     /// declared inside a function is reachable only from inside it.
     pub(super) fn is_lexically_reachable(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        // An anonymous class's member — Java's `new Listener() { … }`, Kotlin's
+        // `object : Listener { … }` — is named only inside the declaration
+        // holding the class: a bare `block()` elsewhere is never the
+        // `override val block` of an object a private property holds. Its
+        // overrides are reached through the type it implements.
+        if candidate.qualified_name.contains("$anon@") {
+            if let Some(caps) = anon_member_qn().captures(&candidate.qualified_name) {
+                if r.file_path != candidate.file_path { return Ok(false); }
+                // The holder is the declaration of that name around the class's
+                // own line (overloads share the name).
+                let at: i64 = caps[2].parse().unwrap_or(0);
+                let mut holders: Vec<Arc<KNode>> = self.nodes_by_qualified_name(&caps[1])?.iter()
+                    .filter(|n| n.file_path == candidate.file_path && n.start_line <= at && n.end_line.max(n.start_line) >= at)
+                    .cloned().collect();
+                // A Kotlin extension function is named by its receiver
+                // (`Call::asObservable`), not by the path its object's members
+                // carry (`pkg::asObservable`): then the innermost declaration
+                // around the class's line holds it.
+                if holders.is_empty() {
+                    let innermost = self.nodes_in_file(&candidate.file_path)?.iter()
+                        .filter(|n| ANON_HOLDER_KINDS.contains(&n.kind.as_str()) && n.start_line <= at && n.end_line.max(n.start_line) >= at && !n.qualified_name.contains("$anon@"))
+                        .max_by_key(|n| n.start_line).cloned();
+                    if let Some(innermost) = innermost { holders = vec![innermost]; }
+                }
+                return Ok(holders.is_empty() || holders.iter().any(|n| r.line >= n.start_line && r.line <= n.end_line.max(n.start_line)));
+            }
+        }
         // Same reference_name for every candidate in a ref's loop — one-entry
         // memo instead of the thread-local re! per candidate.
         let bare = match &self.bare_name_memo {
@@ -986,7 +1030,10 @@ impl KernelResolver {
         }
         let mut candidates = kept;
         prefer_adjacent_implementations(&mut candidates, r);
-        candidates.retain(|n| !is_inheritance_ref(&r.reference_kind) || is_supertype_target(n));
+        // So does a Kotlin object expression's `instantiates` (Kotlin's only):
+        // okhttp's `object : CookieJar { … }` is no `OverrideParam.CookieJar` entry.
+        let supertype_only = is_inheritance_ref(&r.reference_kind) || (r.language == "kotlin" && r.reference_kind == "instantiates");
+        candidates.retain(|n| !supertype_only || is_supertype_target(n));
         candidates.retain(|n| r.reference_kind != "imports" || is_importable_kind(&n.kind));
         {
             let mut kept: Vec<Arc<KNode>> = Vec::with_capacity(candidates.len());

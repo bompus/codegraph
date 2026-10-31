@@ -563,10 +563,15 @@ impl<'t> Walker<'t> {
             self.extract_call(node);
         } else if kind == "infix_expression" {
             self.extract_infix_call(node);
+        } else if kind == "object_literal" {
+            // `object : Api.Listener { … }` — an anonymous class.
+            if self.extract_object_literal(node, false) {
+                skip_children = true;
+            }
         }
         // companion_object, anonymous_initializer, secondary_constructor,
-        // getter/setter siblings, file_annotation, object_literal, if/when at
-        // top level: no branch — recursed (calls attribute to the stack top).
+        // getter/setter siblings, file_annotation, if/when at top level: no
+        // branch — recursed (calls attribute to the stack top).
 
         if !skip_children {
             for c in named_kids(node) {
@@ -596,6 +601,12 @@ impl<'t> Walker<'t> {
         // (INSTANTIATION_KINDS has no kotlin members; extractBareCall absent.)
 
         self.extract_static_member_ref(node);
+
+        // `object : Api.Listener { … }` in a body or an initializer — an
+        // anonymous class; its header is this body's code.
+        if kind == "object_literal" && self.extract_object_literal(node, true) {
+            return;
+        }
 
         if kind == "function_declaration" {
             let name = self.extract_name(node);

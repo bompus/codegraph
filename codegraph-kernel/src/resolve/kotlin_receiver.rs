@@ -318,7 +318,9 @@ impl KernelResolver {
             return match node.named_child(0) {Some(inner)=>self.kotlin_expression_type(inner,source,r,implicit,depth+1),None=>Ok(None)};
         }
         if node.kind()=="this_expression" {
-            let enclosing=self.nodes_in_file(&site.file_path)?.iter().filter(|n|super::call_shape::type_kind(&n.kind) && n.start_line<=site.line && n.end_line>=site.line).min_by_key(|n|n.end_line-n.start_line).cloned();
+            // `this@Outer` names the enclosing type labelled `Outer`; a bare `this` the innermost one.
+            let label=text(node,source).split_once('@').map(|(_,label)|label.trim().to_string());
+            let enclosing=self.nodes_in_file(&site.file_path)?.iter().filter(|n|super::call_shape::type_kind(&n.kind) && n.start_line<=site.line && n.end_line>=site.line && label.as_ref().is_none_or(|label|&n.name==label)).min_by_key(|n|n.end_line-n.start_line).cloned();
             let Some(owner)=enclosing else {return Ok(None)};
             return Ok(Some(KotlinReceiverHit{ty:owner.name.clone(),site:site.clone().at(&owner),heuristic:false}));
         }
