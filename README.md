@@ -80,7 +80,7 @@ Session search uses `.codegraph/sessions-v2.db`. The first session search import
 
 ### What the fork adds
 
-Compared with upstream `main` at `60b0d7a9` (after v1.6.2). Each item here and in the dispatch and framework lists below was checked against upstream's tree at that commit.
+Compared with upstream `main` at `cd04b21a` (after v1.6.2), re-checked against that tree on 2026-10-31. Each item here and in the dispatch and framework lists below was checked against upstream's tree at that commit.
 
 | Feature | Upstream | Fork | What it does |
 |---|:-:|:-:|---|
@@ -105,9 +105,9 @@ Compared with upstream `main` at `60b0d7a9` (after v1.6.2). Each item here and i
 
 | | Upstream | Fork |
 |---|---|---|
-| Parser | Native kernel for 20 languages, with a WebAssembly fallback for the rest and for files the kernel cannot parse | Native kernel only: every language is parsed in Rust. The WebAssembly parser is removed (a platform without a prebuilt kernel needs a Rust toolchain) |
+| Parser | Native Rust kernel for extraction of 20 languages, with a WebAssembly fallback for the rest and for files the kernel cannot parse | Native Rust kernel only: the same 20 languages are extracted in Rust by default, the other languages parse on the kernel's native tree, and the WebAssembly parser is removed (a platform without a prebuilt kernel needs a Rust toolchain). Reference resolution also runs in the kernel |
 | Files with syntax errors | Handed to the fallback parser | Extracted from the native parser's error recovery |
-| Name resolution | In TypeScript, by import tracing and name matching over the source text | In the native kernel for every language, reading what each file actually binds (declarations, parameters, imports) for TypeScript/JavaScript, ArkTS, Python, Go, Java, Kotlin, PHP, C, C++ and Rust |
+| Name resolution | In TypeScript, by import tracing and name matching over the source text | In the native kernel: import tracing and name matching for every language, with binding-based resolution (declarations, parameters, imports) for TypeScript/JavaScript, ArkTS, Python, Go, Java, Kotlin, PHP, C, C++ and Rust |
 | Markdown (`.md`, `.mdx`) | — | Indexed |
 | Node.js 25 and newer, Bun | Refused | Allowed from Node.js 22.13 and Bun 1.4.0, the first releases with an unflagged `node:sqlite`; Node 26.10.0 and Bun 1.4.2 passed the full suite at `48903f5` ([Measured results](#measured-results)) |
 
