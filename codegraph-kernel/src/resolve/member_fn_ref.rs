@@ -1079,7 +1079,9 @@ mod tests {
 /// The class names a module-level tuple variable writes: `bases = (Left, Right)`
 /// for a `class Adapter(*bases)` header. Empty for any other shape.
 fn python_unpacked_bases(lines: &[String], variable: &str, before: usize) -> Vec<String> {
-    let Ok(pattern) = regex::Regex::new(&format!(r"(?m)^{}\s*=\s*\(([^)]*)\)", regex::escape(variable.trim()))) else {
+    // Cached: the variable name is the only pattern component that varies,
+    // and this runs for every class header.
+    let Ok(pattern) = KernelResolver::cached_regex(&format!(r"(?m)^{}\s*=\s*\(([^)]*)\)", regex::escape(variable.trim()))) else {
         return Vec::new();
     };
     let text = lines.join("\n");
