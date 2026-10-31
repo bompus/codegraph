@@ -2786,7 +2786,27 @@ function skipSpace(code: string, at: number, step: 1 | -1): number {
  * `const { t } = useI18n()` is that function more often than not — but a
  * tag's is a component the props or a library hand in, which is no node here.
  */
-async function reactJsxChildEdges(ctx: ResolutionContext, onYield: MaybeYield, shard?: { index: number; count: number }): Promise<Edge[]> {
+/** Start indices for `count` byte-balanced JSX-pass shards. The pass reads and
+ *  scans each candidate file, so file size is the cost proxy; a giant file
+ *  still owns its shard, but the rest split evenly. */
+function jsxShardStarts(files: { path: string; size: number }[], count: number): number[] {
+  const candidates = files.filter((f) => !NON_JSX_EXT_RE.test(f.path));
+  const total = candidates.reduce((sum, f) => sum + Math.max(1, f.size), 0);
+  const starts: number[] = [];
+  let acc = 0;
+  let next = 1;
+  for (let i = 0; i < candidates.length && next < count; i++) {
+    acc += Math.max(1, candidates[i]!.size);
+    if (acc >= (total * next) / count) {
+      starts.push(i + 1);
+      next++;
+    }
+  }
+  while (starts.length < count - 1) starts.push(candidates.length);
+  return starts;
+}
+
+async function reactJsxChildEdges(ctx: ResolutionContext, onYield: MaybeYield, shard?: { index: number; count: number; from?: number; to?: number }): Promise<Edge[]> {
   let scannedFiles = 0;
   const edges: Edge[] = [];
   const seen = new Set<string>();
@@ -2809,8 +2829,10 @@ async function reactJsxChildEdges(ctx: ResolutionContext, onYield: MaybeYield, s
   // Shard by contiguous file ranges so concatenating the shards in index
   // order reproduces the single-pass file order (edge order included).
   const allFiles = ctx.getAllFiles().filter((f) => !NON_JSX_EXT_RE.test(f));
-  const from = shard ? Math.floor((allFiles.length * shard.index) / shard.count) : 0;
-  const to = shard ? Math.floor((allFiles.length * (shard.index + 1)) / shard.count) : allFiles.length;
+  // Byte-balanced boundaries arrive as candidate indices (the main thread
+  // computed them from the same ordered list); equal-count is the fallback.
+  const from = shard ? (shard.from ?? Math.floor((allFiles.length * shard.index) / shard.count)) : 0;
+  const to = shard ? (shard.to ?? Math.floor((allFiles.length * (shard.index + 1)) / shard.count)) : allFiles.length;
   for (const file of allFiles.slice(from, to)) {
     if ((++scannedFiles & 15) === 0) await onYield();
     if ((++scanned & 255) === 0) await onYield(); // #1091: yield mid-scan on huge graphs
@@ -7162,7 +7184,7 @@ export interface SynthPassDef {
     ctx: ResolutionContext,
     yieldToLoop: MaybeYield,
     subProgress?: (fraction: number) => void,
-    shard?: { index: number; count: number }
+    shard?: { index: number; count: number; from?: number; to?: number }
   ) => Promise<Edge[]>;
 }
 
@@ -7429,7 +7451,7 @@ export async function synthesizeCallbackEdges(
   // A live resolver pool to fan the independent passes across (structural type
   // so this file never imports the pool — resolver-worker imports THIS file).
   // Null/omitted → the sequential path, byte-identical to the pool path.
-  pool?: { runSynthPass(name: string, shard?: { index: number; count: number }): Promise<{ edges: Edge[]; ms: number; skips?: Array<[string, string, string]> }>; readonly size?: number } | null,
+  pool?: { runSynthPass(name: string, shard?: { index: number; count: number; from?: number; to?: number }): Promise<{ edges: Edge[]; ms: number; skips?: Array<[string, string, string]> }>; readonly size?: number } | null,
   // WAL-valve writer backstop (WalCheckpointValve.backpressure), called at
   // pool-idle points in the edge-insert loops below — the passes themselves
   // only read; every write in this function happens with the pool idle.
@@ -7454,7 +7476,7 @@ async function synthesizeWith(
   // A live resolver pool to fan the independent passes across (structural type
   // so this file never imports the pool — resolver-worker imports THIS file).
   // Null/omitted → the sequential path, byte-identical to the pool path.
-  pool?: { runSynthPass(name: string, shard?: { index: number; count: number }): Promise<{ edges: Edge[]; ms: number; skips?: Array<[string, string, string]> }>; readonly size?: number } | null,
+  pool?: { runSynthPass(name: string, shard?: { index: number; count: number; from?: number; to?: number }): Promise<{ edges: Edge[]; ms: number; skips?: Array<[string, string, string]> }>; readonly size?: number } | null,
   // WAL-valve writer backstop (WalCheckpointValve.backpressure), called at
   // pool-idle points in the edge-insert loops below — the passes themselves
   // only read; every write in this function happens with the pool idle.
@@ -7626,13 +7648,22 @@ async function synthesizeWith(
     // across the pool; shard order preserves the single-pass file order, so
     // edge order is unchanged. The other passes keep the lane scheduler.
     const jsxIdx = gatedIn.findIndex((i) => SYNTH_PASSES[i]!.name === 'jsxEdges');
-    const jsxShards = jsxIdx >= 0 && (pool.size ?? 0) >= 2 ? Math.min(pool.size!, 8) : 0;
+    const forcedShards = Number(process.env.CODEGRAPH_SYNTH_SHARDS ?? 0);
+    const jsxShards = jsxIdx >= 0 && (pool.size ?? 0) >= 2
+      ? (Number.isFinite(forcedShards) && forcedShards >= 1 ? Math.min(forcedShards, 16) : Math.min(pool.size!, 8))
+      : 0;
     const shardedJsx = (async (): Promise<void> => {
       if (!jsxShards || jsxIdx < 0) return;
       const t0 = Date.now();
       try {
+        const starts = jsxShardStarts(queries.getAllFiles(), jsxShards);
         const parts = await Promise.all(
-          Array.from({ length: jsxShards }, (_, k) => pool.runSynthPass('jsxEdges', { index: k, count: jsxShards }))
+          Array.from({ length: jsxShards }, (_, k) => pool.runSynthPass('jsxEdges', {
+            index: k,
+            count: jsxShards,
+            from: k === 0 ? undefined : starts[k - 1],
+            to: k === jsxShards - 1 ? undefined : starts[k],
+          }))
         );
         const edges: Edge[] = [];
         for (const part of parts) {
