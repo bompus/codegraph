@@ -4,7 +4,7 @@
 <rect width="1000" height="780" fill="#0d1117"/>
 <style>text{font-family:Inter,Segoe UI,system-ui,sans-serif;fill:#e6edf3}.title{font-size:26px;font-weight:700}.sub{font-size:14px;fill:#9da7b3}.corpus{font-size:15px;font-weight:600}.val{font-size:14px;font-weight:700}.axis{font-size:12px;fill:#8b949e}.good{fill:#3fb950}.bad{fill:#f85149}.tie{fill:#8b949e}</style>
 <text x="46" y="56" class="title">Fork vs upstream on Node — seven corpora, 2026-10-31</text>
-<text x="46" y="82" class="sub">Upstream cd04b21a · fork cf2a37a5 · Node 24.22.2 · Node-only run</text>
+<text x="46" y="82" class="sub">Upstream cd04b21a · fork c63e3d7c · Node 24.22.2 · Node-only run</text>
 <text x="46" y="104" class="sub">Index: median of 2 runs, fork / upstream (lower is better). Sync: median of 4 runs, upstream / fork (higher is better).</text>
 <text x="46" y="140" style="font-size:17px;font-weight:700">Full index</text>
 <line x1="46.0" y1="180" x2="46.0" y2="602" stroke="#30363d" stroke-width="1"/>
@@ -18,26 +18,26 @@
 <line x1="437.8" y1="180" x2="437.8" y2="602" stroke="#30363d" stroke-width="1"/>
 <text x="437.8" y="174" class="axis" text-anchor="middle">1.5×</text>
 <text x="46" y="200" class="corpus">gin (Go)</text>
-<rect x="241.9" y="188" width="23.3" height="18" rx="3" class="tie"/>
-<text x="271.2" y="200" class="val tie" text-anchor="start">1.06×</text>
+<rect x="241.9" y="188" width="31.2" height="18" rx="3" class="tie"/>
+<text x="279.2" y="200" class="val tie" text-anchor="start">1.08×</text>
 <text x="46" y="258" class="corpus">Alamofire (Swift)</text>
-<rect x="216.6" y="246" width="25.3" height="18" rx="3" class="tie"/>
-<text x="210.6" y="258" class="val tie" text-anchor="end">0.94×</text>
+<rect x="224.4" y="246" width="17.5" height="18" rx="3" class="tie"/>
+<text x="218.4" y="258" class="val tie" text-anchor="end">0.96×</text>
 <text x="46" y="316" class="corpus">pretix (Python)</text>
-<rect x="230.0" y="304" width="11.9" height="18" rx="3" class="tie"/>
-<text x="224.0" y="316" class="val tie" text-anchor="end">0.97×</text>
+<rect x="197.1" y="304" width="44.8" height="18" rx="3" class="tie"/>
+<text x="191.1" y="316" class="val tie" text-anchor="end">0.89×</text>
 <text x="46" y="374" class="corpus">CPython (C/Py)</text>
-<rect x="115.6" y="362" width="126.3" height="18" rx="3" class="tie"/>
-<text x="109.6" y="374" class="val tie" text-anchor="end">0.68×</text>
+<rect x="79.0" y="362" width="163.0" height="18" rx="3" class="tie"/>
+<text x="73.0" y="374" class="val tie" text-anchor="end">0.58×</text>
 <text x="46" y="432" class="corpus">discourse (Ruby)</text>
-<rect x="241.9" y="420" width="13.1" height="18" rx="3" class="tie"/>
-<text x="261.1" y="432" class="val tie" text-anchor="start">1.03×</text>
+<rect x="222.4" y="420" width="19.5" height="18" rx="3" class="tie"/>
+<text x="216.4" y="432" class="val tie" text-anchor="end">0.95×</text>
 <text x="46" y="490" class="corpus">supabase (TS)</text>
-<rect x="241.9" y="478" width="142.7" height="18" rx="3" class="tie"/>
-<text x="390.6" y="490" class="val tie" text-anchor="start">1.36×</text>
+<rect x="241.9" y="478" width="41.7" height="18" rx="3" class="tie"/>
+<text x="289.6" y="490" class="val tie" text-anchor="start">1.11×</text>
 <text x="46" y="548" class="corpus">n8n (Vue/TS)</text>
-<rect x="238.2" y="536" width="3.7" height="18" rx="3" class="tie"/>
-<text x="232.2" y="548" class="val tie" text-anchor="end">0.99×</text>
+<rect x="146.3" y="536" width="95.6" height="18" rx="3" class="tie"/>
+<text x="140.3" y="548" class="val tie" text-anchor="end">0.76×</text>
 <text x="523.0" y="140" style="font-size:17px;font-weight:700">One-file sync</text>
 <line x1="523.0" y1="180" x2="523.0" y2="602" stroke="#30363d" stroke-width="1"/>
 <text x="523.0" y="174" class="axis" text-anchor="middle">0.5×</text>
@@ -55,24 +55,24 @@
 <rect x="609.2" y="188" width="40.2" height="18" rx="3" class="good"/>
 <text x="655.4" y="200" class="val good" text-anchor="start">1.23×</text>
 <text x="523.0" y="258" class="corpus">Alamofire (Swift)</text>
-<rect x="609.2" y="246" width="71.3" height="18" rx="3" class="good"/>
-<text x="686.5" y="258" class="val good" text-anchor="start">1.41×</text>
+<rect x="609.2" y="246" width="67.7" height="18" rx="3" class="good"/>
+<text x="682.9" y="258" class="val good" text-anchor="start">1.39×</text>
 <text x="523.0" y="316" class="corpus">pretix (Python)</text>
-<rect x="609.2" y="304" width="112.4" height="18" rx="3" class="good"/>
-<text x="727.6" y="316" class="val good" text-anchor="start">1.65×</text>
+<rect x="609.2" y="304" width="106.2" height="18" rx="3" class="good"/>
+<text x="721.4" y="316" class="val good" text-anchor="start">1.62×</text>
 <text x="523.0" y="374" class="corpus">CPython (C/Py)</text>
-<rect x="609.2" y="362" width="177.4" height="18" rx="3" class="good"/>
-<text x="792.6" y="374" class="val good" text-anchor="start">2.03×</text>
+<rect x="609.2" y="362" width="180.5" height="18" rx="3" class="good"/>
+<text x="795.7" y="374" class="val good" text-anchor="start">2.05×</text>
 <text x="523.0" y="432" class="corpus">discourse (Ruby)</text>
-<rect x="609.2" y="420" width="6.9" height="18" rx="3" class="good"/>
-<text x="622.1" y="432" class="val good" text-anchor="start">1.04×</text>
+<rect x="609.2" y="420" width="13.2" height="18" rx="3" class="good"/>
+<text x="628.4" y="432" class="val good" text-anchor="start">1.08×</text>
 <text x="523.0" y="490" class="corpus">supabase (TS)</text>
-<rect x="609.2" y="478" width="199.0" height="18" rx="3" class="good"/>
-<text x="814.2" y="490" class="val good" text-anchor="start">2.15×</text>
+<rect x="609.2" y="478" width="202.4" height="18" rx="3" class="good"/>
+<text x="817.6" y="490" class="val good" text-anchor="start">2.17×</text>
 <text x="523.0" y="548" class="corpus">n8n (Vue/TS)</text>
-<rect x="609.2" y="536" width="291.1" height="18" rx="3" class="good"/>
-<text x="906.3" y="548" class="val good" text-anchor="start">2.69×</text>
+<rect x="609.2" y="536" width="291.0" height="18" rx="3" class="good"/>
+<text x="906.2" y="548" class="val good" text-anchor="start">2.69×</text>
 <text x="46" y="708" class="axis">Exact ratios; the tables mark which gaps clear the larger arm's run-to-run spread.</text>
-<text x="46" y="726" class="axis">Method, spreads, graph sizes, admission receipts: docs/benchmarks/fork-vs-upstream-2026-10-31.md</text>
+<text x="46" y="726" class="axis">Method, spreads, graph sizes, admission receipts: docs/benchmarks/fork-vs-upstream-2026-10-31b.md</text>
 <text x="46" y="762" class="axis">CodeGraph fork · bompus/codegraph · measured under the host benchmark lock</text>
 </svg>

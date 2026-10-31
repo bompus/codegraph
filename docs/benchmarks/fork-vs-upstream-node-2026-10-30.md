@@ -40,6 +40,8 @@ The morning campaign at `bench-2026-10-30` measured the same corpus state and th
 
 This is not attributed: the candidate deltas are #590's smooth worker sizing, #591's main-thread prerequisite phase and single snapshot, or an interaction with the host load. Before the fork's index results are used to decide whether to keep maintaining it, bisect n8n between `afcdb6b6`, #590's merge `abc462ea`, and #591's head.
 
+**Attributed 2026-10-31.** The bisect found #591 (`05077514`): on the same host and corpus state, supabase moved from 17.27/17.46 s at `216093df` (pre-#590) to 21.84/22.51 s, and n8n from 54.46/57.22 s to 70.34/70.70 s, while n8n's index CPU fell from ~630% to ~460%. #590 alone was inside the pre-#590 spread. The prerequisite batches ran on one main-thread kernel instead of the pool; the fix restores the two-phase pool. The post-fix re-measurement is [fork-vs-upstream-2026-10-31b.md](fork-vs-upstream-2026-10-31b.md).
+
 ## MCP
 
 The MCP arm (`codegraph serve --mcp`, eight concurrent explores, watcher sync, idle RSS/CPU after the 60 s retire window) was run after this document's index/sync section; its numbers are recorded in `mcp.jsonl` next to the raw TSV.

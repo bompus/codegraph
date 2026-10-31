@@ -1,5 +1,7 @@
 # Fork against upstream on Node, 2026-10-31
 
+> **Superseded for index, sync and MCP by [fork-vs-upstream-2026-10-31b.md](fork-vs-upstream-2026-10-31b.md)**, measured after the #591 prerequisite-pool fix. This page records the pre-fix run and the regression it exposed.
+
 A Node-only comparison at the reconciled fork head against upstream `main` at the fork's catch-up target. This supersedes the 2026-10-27/28 Node+Bun campaign and the 2026-10-30 Node re-measurement for the figures it covers; those documents keep their original dates and commits.
 
 - Upstream: `cd04b21a` (`fix(python): a base's type argument is no supertype…`).
@@ -26,9 +28,9 @@ Two earlier attempts in this window were discarded: the admission script compare
 
 Peak-memory change, fork against upstream: gin +64%, Alamofire +40%, pretix +28%, CPython −13%, discourse −13%, supabase +11%, n8n −30%. The fork's larger graphs on gin, Alamofire and supabase are part of the memory and time difference; pretix and CPython are within 1% on nodes.
 
-### Fork-internal index regression (unattributed)
+### Fork-internal index regression (bisected to #591; fixed)
 
-The fork's own index is slower than its 2026-10-28 build at identical graph sizes for supabase (15.6 s → 21.55 s, +38%, 152,274 nodes both runs) and n8n (49.4 s → 70.44 s, +43%, 328,519 nodes both runs). Other fork index times also rose against that table on the same corpora: CPython 25.5 → 31.38 s, pretix 7.48 → 9.13 s, discourse 13.2 → 15.71 s; Alamofire (1.19 → 1.16 s) and gin (1.02 → 0.89 s) improved. The cause is not attributed. The [2026-10-30 re-measurement](fork-vs-upstream-node-2026-10-30.md) required a bisect before the index results are used to decide fork maintenance, and none is recorded. The supabase graph's 33% more nodes is a graph-size caveat, not an explanation of the fork-internal slowdown.
+The fork's own index was slower at identical graph sizes. The regression is #591 (`05077514`): a matched-host bisect (same corpus state, fresh index per run) measured supabase at 17.27/17.46 s on `216093df` (pre-#590) against 21.84/22.51 s on `05077514`, and n8n at 54.46/57.22 s against 70.34/70.70 s, with n8n's index CPU falling from ~630% to ~460%. #590 alone (`abc462ea`) was inside the pre-#590 spread. The 2026-10-30 re-measurement's line, "bisect before the index results are used to decide fork maintenance", is answered: #591 moved the prerequisite batches to the main-thread kernel, serializing them; `c63e3d7c` restores the two-phase pool. The comparison against the 2026-10-28 build looks larger (supabase 15.6 → 21.55 s, n8n 49.4 → 70.44 s) because those campaigns ran on different days; the matched-host bisect is the attribution. The [re-measurement after the fix](fork-vs-upstream-2026-10-31b.md) puts supabase at 17.37 s and n8n at 53.95 s.
 
 ## One-file sync
 
@@ -55,9 +57,9 @@ The fork syncs faster on all seven corpora; the smallest gap, discourse, is smal
 | Explore, warm median | 243 ms | 136 ms | 1.79x faster |
 | Explore, p90 | 286 ms | 177 ms | 1.62x faster |
 | 8 explores at once | 2.41 s | 1.87 s | 1.28x faster |
-| Memory while busy (process tree) | 3.81 GiB | 3.00 GiB | 21% lower |
+| Memory while busy (process tree) | 3.72 GiB | 2.93 GiB | 21% lower |
 | Edited file re-indexed by the watcher | 689 ms | 779 ms | **13% slower** |
-| Memory at idle (process tree, 70 s after last query) | 4.38 GiB | 2.18 GiB | 50% lower |
+| Memory at idle (process tree, 70 s after last query) | 4.27 GiB | 2.13 GiB | 50% lower |
 | CPU at idle, share of one core | 0.40% | 0.20% | lower |
 
 The watcher sync is the one MCP loss. The CLI's one-file sync is faster (above) because it resolves in the foreground; the daemon's watcher also runs the deferred synthesized-edge refresh, and that pass is heavier in the fork.
@@ -69,9 +71,9 @@ Four Node figures exist for n8n and they are the same measure — the process tr
 - 2026-10-27, fork `bc27fdb4`: 3.58 GiB (the old README row).
 - 2026-10-28, fork `5784e289`: 4.21 GiB (the clean re-measure).
 - 2026-10-30, fork `a9dc5a61`: 19.7 GiB. This was a real regression on that build, not a different metric.
-- 2026-10-31, fork `cf2a37a5`: 2.18 GiB, after #593 shares one native resolver across the importer name-match rescan.
+- 2026-10-31, fork `cf2a37a5`: 2.13 GiB, after #593 shares one native resolver across the importer name-match rescan.
 
-The earlier "20 GB → 2 GB" statement is the 2026-10-30 to 2026-10-31 change on this harness. It is not comparable to a JS-heap-only figure, and the 2026-10-28 3.58 GiB row should not be read as contradicting it.
+The earlier "20 GB → 2 GB" statement is the 2026-10-30 to 2026-10-31 change on this harness. It is not comparable to a JS-heap-only figure, and the 2026-10-27 3.58 GiB row should not be read as contradicting it.
 
 ## What was not measured
 
