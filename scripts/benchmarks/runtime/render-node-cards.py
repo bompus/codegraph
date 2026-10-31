@@ -107,7 +107,7 @@ def panel(x0, title, kind):
 panel(pad, 'Full index', 'index')
 panel(pad * 2 + panel_w, 'One-file sync', 'sync')
 svg.append(f'<text x="{pad}" y="{H - 72}" class="axis">Exact ratios; the tables mark which gaps clear the larger arm\'s run-to-run spread.</text>')
-svg.append(f'<text x="{pad}" y="{H - 54}" class="axis">Method, spreads, graph sizes, admission receipts: docs/benchmarks/fork-vs-upstream-2026-10-31.md</text>')
+svg.append(f'<text x="{pad}" y="{H - 54}" class="axis">Method, spreads, graph sizes, admission receipts: docs/benchmarks/fork-vs-upstream-2026-10-31b.md</text>')
 svg.append(f'<text x="{pad}" y="{H - 18}" class="axis">CodeGraph fork · bompus/codegraph · measured under the host benchmark lock</text>')
 svg.append('</svg>')
 open(args.out, 'w').write('\n'.join(svg))
