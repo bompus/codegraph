@@ -155,6 +155,7 @@ export interface NearDuplicateDeps {
 export function refreshNearDuplicates(deps: NearDuplicateDeps): { signed: number; pairs: number | null; rescored: number } {
   const { queries } = deps;
   const excluded = (p: string) => isTestFile(p) || VENDORED.test(p) || (deps.isExcluded?.(p) ?? false);
+  const tSign = Date.now();
   // Group stale bodies by file so each file is read once.
   const stale = new Map<string, Array<{ id: string; name: string; startLine: number; endLine: number; updatedAt: number }>>();
   const drop: string[] = [];
@@ -186,7 +187,10 @@ export function refreshNearDuplicates(deps: NearDuplicateDeps): { signed: number
   queries.upsertMinhash(rows);
   queries.deleteMinhash(drop);
   if (rows.length === 0 && drop.length === 0 && !deps.force) return { signed: 0, pairs: null, rescored: 0 };
+  const signMs = Date.now() - tSign;
+  const tPair = Date.now();
   const { kept, rescored } = pairNearDuplicates(deps, freshSets);
+  if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] nearDup sub: sign=${signMs}ms pairs=${Date.now() - tPair}ms (${rows.length} signed)`);
   return { signed: rows.length, pairs: kept, rescored };
 }
 
