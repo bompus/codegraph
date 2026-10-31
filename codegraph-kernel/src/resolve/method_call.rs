@@ -705,6 +705,14 @@ impl KernelResolver {
             return Ok(None);
         }
         if r.language == "cpp" && self.cpp_external_receiver(&object_or_class, r)? { return Ok(None); }
+        // A Java call on a value a type holds in a static field,
+        // `Consts.HELPER.go()`: typed by the field's declaration, or no edge
+        // for a library type's field.
+        if r.language == "java" && dotted {
+            if let Some(hit) = self.match_java_static_field_call(&object_or_class, &method_name, r)? {
+                return Ok(hit);
+            }
+        }
         if matches!(r.language.as_str(), "java" | "kotlin") {
             if let Some(hit) = self.enum_constant_call(&object_or_class, &method_name, r)? { return Ok(Some(hit)); }
         }
@@ -1076,6 +1084,14 @@ if inferred.is_none() && r.language == "dart" {
             McShape::Parsed { receiver, method, inferable, dotted } => (receiver, method, inferable, dotted),
             McShape::Done(res) => return Ok(res),
         };
+        // A Java call on a value a type holds in a static field,
+        // `Consts.HELPER.go()`: typed by the field's declaration, or no edge
+        // for a library type's field.
+        if r.language == "java" && dotted {
+            if let Some(hit) = self.match_java_static_field_call(&object_or_class, &method_name, r)? {
+                return Ok(hit);
+            }
+        }
         if matches!(r.language.as_str(), "java" | "kotlin") {
             if let Some(hit) = self.enum_constant_call(&object_or_class, &method_name, r)? { return Ok(Some(hit)); }
         }
@@ -1613,6 +1629,205 @@ if inferred.is_none() && r.language == "dart" {
     fn is_import_bound_receiver(&mut self, receiver: &str, r: &ResolveRefIn) -> Res<bool> {
         let root = receiver.split('.').next().unwrap_or("");
         Ok(!root.is_empty() && self.import_mappings(&r.file_path)?.iter().any(|i| i.local_name == root))
+    }
+
+    /// A Java call on a value a type holds in a static field,
+    /// `Consts.HELPER.go()` — name-matcher.ts matchJavaStaticFieldCall.
+    /// `Ok(None)` punts to the strategies below (a local or a nested type's
+    /// member call); `Ok(Some(None))` is terminal — a field of a library
+    /// type links nothing. The field is the owner's own or one it inherits,
+    /// and the call goes to the method of the type the field's declaration
+    /// gives the value, read in the field's own file.
+    pub(super) fn match_java_static_field_call(
+        &mut self,
+        receiver: &str,
+        method: &str,
+        r: &ResolveRefIn,
+    ) -> Res<Option<Option<KCand>>> {
+        let Some(m) = re!(r"^((?:[a-z_$][\w$]*\.)*(?:[A-Z][\w$]*\.)*[A-Z][\w$]*)\.([A-Za-z_$][\w$]*)$").captures(receiver) else {
+            return Ok(None);
+        };
+        let (owner_written, field_name) = (m[1].to_string(), m[2].to_string());
+        let head = owner_written.split('.').next().unwrap_or("");
+        // A local or a field of that name holds a value, not a type.
+        if head.starts_with(|c: char| c.is_ascii_uppercase())
+            && (self.infer_local_receiver_type(head, r, false)?.is_some()
+                || self.infer_java_field_receiver_type(head, r)?.is_some())
+        {
+            return Ok(None);
+        }
+        let owner = match self.resolve_bound_type(&owner_written, r, 0)? {
+            Some(o) => o,
+            None => {
+                // jvmTypeDecls: the family types the written name pins — a
+                // Kotlin object a Java file names (its INSTANCE/Companion).
+                let Some(name) = java_type_name(&owner_written)
+                    .map(|n| n.rsplit('.').next().unwrap_or(&n).to_string())
+                else {
+                    return Ok(None);
+                };
+                let tail = name.rsplit("::").next().unwrap_or(&name);
+                let owners: Vec<Arc<KNode>> = self.nodes_by_name(tail)?.iter().filter(|n| {
+                    same_language_family(&n.language, "java") && JVM_DECLARED_TYPE_KINDS.contains(&n.kind.as_str())
+                        && (n.qualified_name == name || n.qualified_name.ends_with(&format!("::{name}")))
+                }).cloned().collect();
+                match owners.as_slice() {
+                    [only] => only.clone(),
+                    _ => match owners.iter().find(|d| d.file_path == r.file_path) {
+                        Some(d) => d.clone(),
+                        None if owners.is_empty() => {
+                            // No project type of the root name: a library
+                            // owner links nothing.
+                            let library = !self.nodes_by_name(head)?.iter().any(|n| {
+                                same_language_family(&n.language, "java") && JVM_DECLARED_TYPE_KINDS.contains(&n.kind.as_str())
+                            });
+                            return Ok(if library { Some(None) } else { None });
+                        }
+                        None => return Ok(None),
+                    },
+                }
+            }
+        };
+        let found = |n: Option<Arc<KNode>>| {
+            n.map(|node| KCand { node, confidence: 0.9, resolved_by: "instance-method" })
+        };
+        // A Kotlin object's INSTANCE or Companion, as Java writes them, is
+        // the object itself.
+        if owner.language == "kotlin" && (field_name == "INSTANCE" || field_name == "Companion") {
+            let hit = self.java_static_field_method_of(&owner.qualified_name, method, &owner.file_path)?;
+            return Ok(Some(found(hit)));
+        }
+        // `Outer.Inner.m()` is a static call on a nested type, not a field.
+        if self.nodes_by_qualified_name(&format!("{}::{field_name}", owner.qualified_name))?
+            .iter().any(|n| JVM_DECLARED_TYPE_KINDS.contains(&n.kind.as_str()))
+        {
+            return Ok(None);
+        }
+        let Some(field) = self.java_static_field(&owner, &field_name)? else {
+            return Ok(None);
+        };
+        if field.language != "java" {
+            return Ok(None);
+        }
+        if field.kind == "enum_member" {
+            // A constant's own body overrides first (`GREEN { String hex() }`), then the enum's.
+            let enum_qn = &field.qualified_name[..field.qualified_name.rfind("::").unwrap_or(0)];
+            if let Some(hit) = self
+                .java_static_field_method_of(&field.qualified_name, method, &field.file_path)?
+                .or(self.java_static_field_method_of(enum_qn, method, &field.file_path)?)
+            {
+                return Ok(Some(Some(KCand { node: hit, confidence: 0.9, resolved_by: "instance-method" })));
+            }
+            let enum_decl = self.nodes_by_qualified_name(enum_qn)?.iter()
+                .find(|n| n.file_path == field.file_path && JVM_DECLARED_TYPE_KINDS.contains(&n.kind.as_str())).cloned();
+            return Ok(Some(match enum_decl {
+                Some(decl) => self.java_method_on_type(&decl, method, r)?,
+                None => None,
+            }));
+        }
+        // A method of an anonymous class the field is initialized with
+        // (a CREATOR's createFromParcel).
+        for anon in self.nodes_in_file(&field.file_path)?.iter().filter(|n| {
+            n.kind == "class"
+                && n.qualified_name.starts_with(&format!("{}::<", field.qualified_name))
+                && n.name.contains("$anon@")
+        }) {
+            if let Some(hit) = self.java_static_field_method_of(&anon.qualified_name, method, &field.file_path)? {
+                return Ok(Some(Some(KCand { node: hit, confidence: 0.9, resolved_by: "instance-method" })));
+            }
+        }
+        let site = r.clone().at(&field);
+        // A `new X(…)` initializer builds X, the declared type's subtype at most.
+        if let Some(built) = self.java_field_initializer_type(&field) {
+            if let Some(decl) = self.resolve_bound_type(&built, &site, 0)? {
+                if let Some(hit) = self.java_method_on_type(&decl, method, &site)? {
+                    return Ok(Some(Some(hit)));
+                }
+            }
+        }
+        let Some(declared) = java_field_signature_type(&field).map(|n| n.replace("::", ".")) else {
+            return Ok(Some(None));
+        };
+        Ok(Some(match self.resolve_bound_type(&declared, &site, 0)? {
+            Some(d) => self.java_method_on_type(&d, method, &site)?,
+            None => None,
+        }))
+    }
+
+    /// The static field `name` of Java type `owner`, its own or one it
+    /// inherits (an interface's constant, an enum's constant), five levels
+    /// up — the resolved supertype edges walk the types it extends or
+    /// implements.
+    fn java_static_field(&mut self, owner: &KNode, name: &str) -> Res<Option<Arc<KNode>>> {
+        let mut seen: HashSet<String> = HashSet::from([owner.id.clone()]);
+        let mut frontier: Vec<Arc<KNode>> = vec![Arc::new(owner.clone())];
+        for _ in 0..5 {
+            let mut next = Vec::new();
+            for ty in &frontier {
+                if let Some(own) = self
+                    .nodes_by_qualified_name(&format!("{}::{name}", ty.qualified_name))?
+                    .iter()
+                    .find(|n| {
+                        n.file_path == ty.file_path
+                            && matches!(n.kind.as_str(), "field" | "constant" | "enum_member")
+                    })
+                {
+                    return Ok(Some(own.clone()));
+                }
+                for decl in self.supertype_nodes(&ty.id)? {
+                    if seen.insert(decl.id.clone()) {
+                        next.push(decl);
+                    }
+                }
+            }
+            if next.is_empty() {
+                return Ok(None);
+            }
+            frontier = next;
+        }
+        Ok(None)
+    }
+
+    /// `type_qn`'s own `method` in `file` (name-matcher.ts's methodOf).
+    fn java_static_field_method_of(&mut self, type_qn: &str, method: &str, file: &str) -> Res<Option<Arc<KNode>>> {
+        Ok(self
+            .nodes_by_qualified_name(&format!("{type_qn}::{method}"))?
+            .iter()
+            .find(|n| n.kind == "method" && n.file_path == file)
+            .cloned())
+    }
+
+    /// A method on a Java type the project declares — resolveOnJavaType:
+    /// the declaration's own method first, then the class-chain walk with
+    /// its file pinned. A Scala or Kotlin declaration is not followed.
+    fn java_method_on_type(&mut self, decl: &KNode, method: &str, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        if let Some(own) = self.java_static_field_method_of(&decl.qualified_name, method, &decl.file_path)? {
+            return Ok(Some(KCand { node: own, confidence: 0.9, resolved_by: "instance-method" }));
+        }
+        if decl.language != "java" {
+            return Ok(None);
+        }
+        let segs: Vec<&str> = decl.qualified_name.split("::").collect();
+        let has_pkg = segs.len() > 1 && segs[0].starts_with(|c: char| c.is_ascii_lowercase());
+        let chain = segs[usize::from(has_pkg)..].join("::");
+        let fqn = decl.qualified_name.replace("::", ".");
+        self.resolve_method_on_type(&chain, method, r, 0.9, "instance-method", Some(&fqn))
+    }
+
+    /// The class a field's `new X(…)` initializer builds — written with
+    /// dots or not, generics stripped (name-matcher.ts's built regex).
+    fn java_field_initializer_type(&mut self, field: &KNode) -> Option<String> {
+        let lines = self.read_file(&field.file_path)?;
+        let start = (field.start_line - 1).max(0) as usize;
+        let end = (field.end_line.max(field.start_line)) as usize;
+        let decl_text = lines.get(start..end.min(lines.len()))?.join("\n");
+        let m = Regex::new(&format!(
+            r"\b{}\s*=\s*new\s+((?:[\w$]+\s*\.\s*)*[\w$]+)\s*(?:<[^()]*>)?\s*\(",
+            regex::escape(&field.name)
+        ))
+        .ok()?
+        .captures(&decl_text)?;
+        java_type_name(&m[1].replace(char::is_whitespace, "")).map(|n| n.replace("::", "."))
     }
 
     /// Java/Kotlin field receiver inference — non-exclusive: `Some` settles
@@ -2280,6 +2495,51 @@ fn new_receiver_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^new ([\w$.]+)\(\)\.([\w$]+)$").unwrap())
 }
+
+/// javaTypeName (name-matcher.ts): a Java type as written (`Foo`,
+/// `java.util.List<Foo>`, `Map.Entry<K,V>`, `Foo[]`), generics, arrays and
+/// whitespace dropped, the class chain `::`-joined and a written package
+/// kept dotted in front (`pkg.Outer::Inner`). Null for a primitive.
+fn java_type_name(raw: &str) -> Option<String> {
+    let mut t = raw.to_string();
+    loop {
+        let stripped = re!(r"<[^<>]*>").replace_all(&t, "").into_owned();
+        if stripped == t {
+            break;
+        }
+        t = stripped;
+    }
+    let t = re!(r"\[\s*\]").replace_all(&t, "").into_owned();
+    let t = t.strip_suffix("...").unwrap_or(&t).to_string();
+    let t: String = t.chars().filter(|c| !c.is_whitespace()).collect();
+    let segments: Vec<&str> = t.split('.').filter(|s| !s.is_empty()).collect();
+    let mut first = segments.len();
+    while first > 0 && re!(r"^[A-Z][\w$]*$").is_match(segments[first - 1]) {
+        first -= 1;
+    }
+    let chain = segments[first..].join("::");
+    if chain.is_empty() || NON_TYPE_RECEIVER_TOKENS.contains(chain.as_str()) {
+        return None;
+    }
+    let pkg = segments[..first].join(".");
+    Some(if pkg.is_empty() { chain } else { format!("{pkg}.{chain}") })
+}
+
+/// fieldSignatureType (name-matcher.ts), Java branch: the declared type a
+/// field's signature writes (`"<Type> name"`), in java_type_name's form —
+/// `pkg.Type::Inner` — or null for a primitive or missing signature.
+fn java_field_signature_type(field: &KNode) -> Option<String> {
+    let sig = field.signature.as_deref()?;
+    let type_raw = sig[..sig.rfind(&field.name)?].trim();
+    if type_raw.is_empty() {
+        return None;
+    }
+    java_type_name(type_raw)
+}
+
+/// JVM_DECLARED_TYPE_KINDS (name-matcher.ts): the kinds a Java/Kotlin/Scala
+/// type declaration has.
+const JVM_DECLARED_TYPE_KINDS: [&str; 5] = ["class", "interface", "enum", "struct", "trait"];
 
 impl KernelResolver {
     /// matchNewReceiverCall — the class a `new C().m` ref constructs, as the
