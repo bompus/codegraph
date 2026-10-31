@@ -75,6 +75,11 @@ const FLUTTER_SETSTATE_RE = /\bsetState\s*\(/; // Flutter: setState((){…}) / t
 const JS_FAMILY = ['typescript', 'javascript', 'tsx', 'jsx'];
 /** The languages that can write JSX: not TypeScript's `.ts` files. */
 const JSX_FAMILY = ['tsx', 'jsx', 'javascript'];
+
+/** Files the JSX pass can skip before reading (docs, data, other languages).
+ *  Also the shard partition: the pass's cost lives in the JS/TS files, so
+ *  splitting by all files would leave one shard with most of the JSX work. */
+const NON_JSX_EXT_RE = /\.(?:md|markdown|mdx|json|jsonc|json5|ya?ml|toml|ini|css|scss|sass|less|styl|html?|xhtml|xml|svg|txt|rst|adoc|py|pyi|c|h|cc|cpp|cxx|hpp|hh|go|rs|java|kt|kts|rb|php|cs|swift|scala|m|mm|sql|sh|bash|zsh|fish|ps1|lua|pl|r|dart|ex|exs|erl|hrl|clj|cljs|elm|cshtml|razor)$/i;
 // A tag's name ends at whitespace, `/` or `>`, or at the `<` of the type
 // arguments a generic component's tag passes: `<PaginatedList<Document>
 // items={…} />` renders PaginatedList. The lookahead leaves that `<` to open
@@ -2803,7 +2808,7 @@ async function reactJsxChildEdges(ctx: ResolutionContext, onYield: MaybeYield, s
   let scanned = 0;
   // Shard by contiguous file ranges so concatenating the shards in index
   // order reproduces the single-pass file order (edge order included).
-  const allFiles = ctx.getAllFiles();
+  const allFiles = ctx.getAllFiles().filter((f) => !NON_JSX_EXT_RE.test(f));
   const from = shard ? Math.floor((allFiles.length * shard.index) / shard.count) : 0;
   const to = shard ? Math.floor((allFiles.length * (shard.index + 1)) / shard.count) : allFiles.length;
   for (const file of allFiles.slice(from, to)) {
