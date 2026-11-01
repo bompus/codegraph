@@ -55,11 +55,16 @@ const CLOSE_TIMEOUT_MS = 5000;
 // A page smaller than targetChunks*CHUNK_SIZE is split finer so a configured
 // small page (CODEGRAPH_RESOLVE_BATCH=500) still fans out across the pool.
 const CHUNK_SIZE = 500;
+/** The pre-500 measured chunk size. A page that cannot fill the pool with
+ *  500-ref chunks splits down toward this floor; below 4×250 it splits finer
+ *  so tiny pages still fan out. */
+const MIN_CHUNK_SIZE = 250;
 
 /** Refs per worker message for a page and pool size: 500 for large pages,
- *  finer when the page would otherwise leave most workers idle. */
+ *  finer when 500 would leave workers idle (a 3,000-ref page on 12 workers
+ *  gets 250-ref chunks, not six 500s). */
 export function resolveChunkSize(refs: number, workers: number): number {
-  const targetChunks = Math.max(1, Math.min(workers, 4));
+  const targetChunks = Math.max(1, Math.min(workers, Math.max(4, Math.ceil(refs / MIN_CHUNK_SIZE))));
   return Math.min(CHUNK_SIZE, Math.max(1, Math.ceil(refs / targetChunks)));
 }
 

@@ -144,6 +144,9 @@ describe('resolveChunkSize', () => {
   it('keeps 500-ref chunks for large pages and splits small pages across workers', () => {
     // Two 40k pages at a time, 12 workers: the measured 500-ref chunk.
     expect(resolveChunkSize(40_000, 12)).toBe(500);
+    // A 3,000-ref prerequisite page on 12 workers: 250-ref chunks fill the
+    // pool instead of six 500s leaving half the workers idle.
+    expect(resolveChunkSize(3_000, 12)).toBe(250);
     // CODEGRAPH_RESOLVE_BATCH=500 with four workers: four chunks, not one.
     expect(resolveChunkSize(500, 4)).toBe(125);
     // Two workers: two chunks.
