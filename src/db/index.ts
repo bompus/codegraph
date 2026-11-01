@@ -349,7 +349,7 @@ export class DatabaseConnection {
    * (small runs) are left with a complete schema; the batched resolver's
    * beginBulkEdgeLoad simply re-drops them (DROP IF EXISTS — idempotent).
    */
-  async endBulkParseLoad(): Promise<void> {
+  async endBulkParseLoad(deferEdgeIndexes = false): Promise<void> {
     const schemaPath = path.join(__dirname, 'schema.sql');
     const schema = fs.readFileSync(schemaPath, 'utf-8');
     for (const idx of DatabaseConnection.BULK_PARSE_INDEX_NAMES) {
@@ -358,7 +358,10 @@ export class DatabaseConnection {
       this.db.exec(m[0]);
       await new Promise((resolve) => setImmediate(resolve));
     }
-    await this.endBulkEdgeLoad();
+    // A full index that will run the resolver's own bulk-edge window re-drops
+    // these immediately; rebuilding them here is wasted. The resolver's
+    // endBulkEdgeLoad rebuilds them after resolution.
+    if (!deferEdgeIndexes) await this.endBulkEdgeLoad();
   }
 
   /**
@@ -508,6 +511,15 @@ export class DatabaseConnection {
   /** Whether {@link open} left dropped secondary indexes for {@link recoverIndexesOffThread}. */
   hasDeferredIndexRecovery(): boolean {
     return this.deferredIndexDdls.length > 0;
+  }
+
+  /** Register the bulk indexes a failed window left missing so the live
+   *  connection's off-thread recoverer rebuilds them (30s busy timeout on its
+   *  own connection) instead of waiting for the next open. */
+  deferIndexRecovery(): void {
+    if (this.deferredIndexDdls.length === 0) {
+      this.deferredIndexDdls = this.missingBulkSecondaryIndexDdls();
+    }
   }
 
   /**
