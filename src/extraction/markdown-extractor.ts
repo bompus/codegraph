@@ -24,19 +24,18 @@ export interface MarkdownExtractorContext {
   /**
    * Basenames of every file the index contains. Markdown path mentions and
    * links resolve through the file-path arm, which looks candidates up by
-   * basename; a relative file-shaped target whose basename is absent cannot
-   * resolve, so it creates no import node and no reference. Omitted by
-   * callers without an index (unit tests, single-file tooling), which keeps
-   * the old permissive behaviour.
+   * basename; a target whose basename is absent cannot resolve to a file.
+   * Omitted by callers without an index (unit tests, single-file tooling),
+   * which keeps the old permissive behaviour.
    */
   knownFileNames?: ReadonlySet<string>;
   /**
-   * Drop a relative, file-shaped target whose basename no indexed file has.
-   * Set only for a full project index: an incremental sync re-extracts one
-   * file at a time, and a target added later must still resolve from the
-   * parked reference (#1240), so sync keeps every target. Root-absolute and
-   * extensionless targets stay too — they can name routes, modules or table
-   * rows, which the resolver matches by name without a file node.
+   * Skip the per-link import node for a target whose basename no indexed file
+   * has. Set only for a full project index. The reference is always kept: the
+   * resolver still tries the target's route/module/symbol arms and sync can
+   * retry a failed reference when a file appears later (#1240). The link node
+   * is decoration (a search child and a `contains` edge), so dropping it
+   * loses no edge. Without this flag every target gets its node, as before.
    */
   pruneMissingTargets?: boolean;
 }
@@ -60,12 +59,11 @@ export class MarkdownExtractor {
   private knownFileNames?: ReadonlySet<string>;
   private pruneMissingTargets: boolean;
   /**
-   * Every normalized target in encounter order, including ones pruned from
-   * the graph. `collectKeyReferences` builds the file's searchable digest from
-   * this list, so a link to an unindexed asset still makes its file findable
-   * even though no import node or reference is created for it.
+   * Targets whose import node was skipped. Their references are still stored;
+   * this list feeds a separate, larger `links:` part of the file digest so a
+   * link beyond the display digest's 12-item budget still stays searchable.
    */
-  private digestReferences: string[] = [];
+  private prunedTargets: string[] = [];
 
   constructor(filePath: string, source: string, context: MarkdownExtractorContext = {}) {
     this.filePath = normalizeRelativePath(filePath);
@@ -446,11 +444,7 @@ export class MarkdownExtractor {
     if (scriptPath) {
       const normalizedTarget = this.normalizeReference(scriptPath);
       if (normalizedTarget) {
-        if (this.isResolvableTarget(normalizedTarget, scriptPath)) {
-          this.addReference(nodeId, normalizedTarget, 'calls', line, column);
-        } else {
-          this.digestReferences.push(normalizedTarget);
-        }
+        this.addReference(nodeId, normalizedTarget, 'calls', line, column);
       }
     }
   }
@@ -465,33 +459,33 @@ export class MarkdownExtractor {
 
       const normalizedTarget = this.normalizeReference(target);
       if (!normalizedTarget) continue;
-      if (!this.isResolvableTarget(normalizedTarget, target)) {
-        this.digestReferences.push(normalizedTarget);
-        continue;
-      }
 
       const column = match.index;
-      const label = stripInlineMarkdown(match[1] || target) || target;
-      const displayName = path.posix.basename(stripAnchor(normalizedTarget)) || label;
-      const nodeId = generateNodeId(this.filePath, 'import', `${normalizedTarget}:${lineNumber}:${column}`, lineNumber);
-      const node: Node = {
-        id: nodeId,
-        kind: 'import',
-        name: displayName,
-        qualifiedName: `${this.filePath}::link:${normalizedTarget}:${lineNumber}:${column}`,
-        filePath: this.filePath,
-        language: 'markdown',
-        signature: match[0],
-        docstring: label,
-        startLine: lineNumber,
-        endLine: lineNumber,
-        startColumn: column,
-        endColumn: column + match[0].length,
-        updatedAt: Date.now(),
-      };
+      if (this.shouldCreateLinkNode(normalizedTarget)) {
+        const label = stripInlineMarkdown(match[1] || target) || target;
+        const displayName = path.posix.basename(stripAnchor(normalizedTarget)) || label;
+        const nodeId = generateNodeId(this.filePath, 'import', `${normalizedTarget}:${lineNumber}:${column}`, lineNumber);
+        const node: Node = {
+          id: nodeId,
+          kind: 'import',
+          name: displayName,
+          qualifiedName: `${this.filePath}::link:${normalizedTarget}:${lineNumber}:${column}`,
+          filePath: this.filePath,
+          language: 'markdown',
+          signature: match[0],
+          docstring: label,
+          startLine: lineNumber,
+          endLine: lineNumber,
+          startColumn: column,
+          endColumn: column + match[0].length,
+          updatedAt: Date.now(),
+        };
 
-      this.nodes.push(node);
-      this.edges.push({ source: owner.id, target: nodeId, kind: 'contains', provenance: 'heuristic' });
+        this.nodes.push(node);
+        this.edges.push({ source: owner.id, target: nodeId, kind: 'contains', provenance: 'heuristic' });
+      } else {
+        this.prunedTargets.push(normalizedTarget);
+      }
       this.addReference(owner.id, normalizedTarget, 'imports', lineNumber, column);
     }
   }
@@ -506,29 +500,29 @@ export class MarkdownExtractor {
       if (line.slice(match.index + raw.length, match.index + raw.length + 2) === '::') continue;
       const normalizedTarget = this.normalizeReference(raw);
       if (!normalizedTarget) continue;
-      if (!this.isResolvableTarget(normalizedTarget, raw)) {
-        this.digestReferences.push(normalizedTarget);
-        continue;
+
+      if (this.shouldCreateLinkNode(normalizedTarget)) {
+        const nodeId = generateNodeId(this.filePath, 'import', `${normalizedTarget}:${lineNumber}:${match.index}`, lineNumber);
+        const node: Node = {
+          id: nodeId,
+          kind: 'import',
+          name: path.posix.basename(stripAnchor(normalizedTarget)) || normalizedTarget,
+          qualifiedName: `${this.filePath}::path:${normalizedTarget}:${lineNumber}:${match.index}`,
+          filePath: this.filePath,
+          language: 'markdown',
+          signature: raw,
+          startLine: lineNumber,
+          endLine: lineNumber,
+          startColumn: match.index,
+          endColumn: match.index + raw.length,
+          updatedAt: Date.now(),
+        };
+
+        this.nodes.push(node);
+        this.edges.push({ source: owner.id, target: nodeId, kind: 'contains', provenance: 'heuristic' });
+      } else {
+        this.prunedTargets.push(normalizedTarget);
       }
-
-      const nodeId = generateNodeId(this.filePath, 'import', `${normalizedTarget}:${lineNumber}:${match.index}`, lineNumber);
-      const node: Node = {
-        id: nodeId,
-        kind: 'import',
-        name: path.posix.basename(stripAnchor(normalizedTarget)) || normalizedTarget,
-        qualifiedName: `${this.filePath}::path:${normalizedTarget}:${lineNumber}:${match.index}`,
-        filePath: this.filePath,
-        language: 'markdown',
-        signature: raw,
-        startLine: lineNumber,
-        endLine: lineNumber,
-        startColumn: match.index,
-        endColumn: match.index + raw.length,
-        updatedAt: Date.now(),
-      };
-
-      this.nodes.push(node);
-      this.edges.push({ source: owner.id, target: nodeId, kind: 'contains', provenance: 'heuristic' });
       this.addReference(owner.id, normalizedTarget, 'references', lineNumber, match.index);
     }
   }
@@ -545,12 +539,10 @@ export class MarkdownExtractor {
       for (const symbol of symbols) {
         const normalizedTarget = this.normalizeReference(`${filePart}::${symbol}`);
         if (!normalizedTarget) continue;
-        if (!this.isResolvableTarget(normalizedTarget, filePart)) {
-          this.digestReferences.push(normalizedTarget);
-          continue;
-        }
+        const createNode = createImportNode && this.shouldCreateLinkNode(normalizedTarget);
+        if (createImportNode && !createNode) this.prunedTargets.push(normalizedTarget);
 
-        if (createImportNode) {
+        if (createNode) {
           const nodeId = generateNodeId(this.filePath, 'import', `${normalizedTarget}:${lineNumber}:${match.index}`, lineNumber);
           const node: Node = {
             id: nodeId,
@@ -604,10 +596,6 @@ export class MarkdownExtractor {
       if (text.slice(match.index + raw.length, match.index + raw.length + 2) === '::') continue;
       const normalizedTarget = this.normalizeReference(raw);
       if (!normalizedTarget) continue;
-      if (!this.isResolvableTarget(normalizedTarget, raw)) {
-        this.digestReferences.push(normalizedTarget);
-        continue;
-      }
       this.addReference(owner.id, normalizedTarget, 'references', lineNumber, match.index);
     }
   }
@@ -642,10 +630,6 @@ export class MarkdownExtractor {
     const key = `${fromNodeId}:${referenceKind}:${referenceName}:${line}:${column}`;
     if (this.referenceKeys.has(key)) return;
     this.referenceKeys.add(key);
-    // The digest keeps the base list's order: accepted references arrive here
-    // exactly as they did before the pruning pass; skipped ones are pushed at
-    // their extraction site, just before this call would have run.
-    this.digestReferences.push(referenceName);
     this.unresolvedReferences.push({
       fromNodeId,
       referenceName,
@@ -679,32 +663,34 @@ export class MarkdownExtractor {
   }
 
   /**
-   * Whether a normalized reference target can resolve, for the pruning pass a
-   * full index runs. The resolver's file-path arm collects candidates by
-   * basename, so a relative file-shaped path whose basename has no file node
-   * cannot resolve; symbol (`::`) and anchor (`#`) suffixes do not change
-   * that. A pure in-page anchor names this file, which is always present.
-   *
-   * Everything else stays. A root-absolute target (`/api/users/`, `/pricing`)
-   * can be a route; an extensionless path (`docs/guides/auth`) can be a route
-   * or directory; a bare name (`Next.js`, `config.toml`) can be a module or
-   * table row. The resolver's name arms match those without a file node.
-   * Without a known-file set, or outside a full index, the check is skipped.
+   * Whether a target should get its own import node on a full index. The
+   * resolver's file-path arm collects candidates by basename, so a target
+   * whose basename no file node has cannot resolve to a file. Its reference
+   * is still recorded (the resolver's route/module/symbol arms may match it,
+   * and sync can retry it when a file appears), but the link node only added a
+   * search child and a `contains` edge. Without a known-file set, or outside a
+   * full index, every target keeps its node.
    */
-  private isResolvableTarget(normalizedTarget: string, rawTarget: string): boolean {
+  private shouldCreateLinkNode(normalizedTarget: string): boolean {
     if (!this.pruneMissingTargets || !this.knownFileNames) return true;
-    // Root-absolute links are routes or absolute file paths, never a relative
-    // project file the basename check can settle.
-    if (rawTarget.startsWith('/')) return true;
     const [pathAndSymbol] = splitAnchor(normalizedTarget);
     const [pathPart] = splitFileSymbol(pathAndSymbol);
     if (!pathPart || pathPart === this.filePath) return true;
-    if (!pathPart.includes('/')) return true;
-    const name = path.posix.basename(pathPart);
-    // No file extension: a route, a directory link, or a file the resolver's
-    // name arms may still match.
-    if (!/\.[A-Za-z0-9]+$/.test(name)) return true;
-    return this.knownFileNames.has(name);
+    return this.knownFileNames.has(path.posix.basename(pathPart));
+  }
+
+  /** Pruned link targets for the file digest's separate `links:` part. */
+  private summarizePrunedTargets(): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const target of this.prunedTargets) {
+      const display = compactRefDisplay(target);
+      if (!display || seen.has(display)) continue;
+      seen.add(display);
+      out.push(display);
+      if (out.length >= 64) break;
+    }
+    return out;
   }
 
   private buildDocstring(startLine: number, endLine: number): string | undefined {
@@ -744,9 +730,15 @@ export class MarkdownExtractor {
   private finalizeFileDigest(fileNode: Node): void {
     const intro = this.buildIntro();
     const refs = this.collectKeyReferences();
+    const links = this.summarizePrunedTargets();
     const parts: string[] = [];
     if (intro) parts.push(intro);
     if (refs.length > 0) parts.push(`refs: ${refs.join(', ')}`);
+    if (links.length > 0) {
+      let text = links.join(', ');
+      if (text.length > 800) text = `${text.slice(0, 797).trimEnd()}...`;
+      parts.push(`links: ${text}`);
+    }
     const digest = parts.join('  ·  ').trim();
     fileNode.docstring = digest || this.buildDocstring(1, Math.min(this.lines.length, 40));
   }
@@ -791,7 +783,8 @@ export class MarkdownExtractor {
     const seen = new Set<string>();
     const out: string[] = [];
     let budget = maxChars;
-    for (const referenceName of this.digestReferences) {
+    for (const ref of this.unresolvedReferences) {
+      const referenceName = ref.referenceName;
       const [pathSym] = splitAnchor(referenceName);
       const [pathPart] = splitFileSymbol(pathSym);
       if (!pathPart || pathPart === this.filePath) continue; // pure/self anchor

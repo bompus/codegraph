@@ -131,6 +131,45 @@ node scripts/release.mjs
     }
   });
 
+  it('resolves a full-index Markdown link after sync adds its target', async () => {
+    fs.mkdirSync(path.join(tempDir, 'docs'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tempDir, 'README.md'),
+      `# Guide
+
+## Links
+
+See [Setup](docs/setup.md#install).
+`
+    );
+
+    const cg = await CodeGraph.init(tempDir);
+    try {
+      await cg.indexAll();
+      // The target is absent: the reference is kept (parked as failed), but no
+      // edge exists yet.
+      expect(cg.getNodesInFile('docs/setup.md')).toEqual([]);
+      const linksHeading = cg
+        .getNodesInFile('README.md')
+        .find((n) => n.kind === 'module' && n.name === 'Links')!;
+      expect(
+        cg.getOutgoingEdges(linksHeading.id)
+          .filter((e) => e.kind === 'imports')
+          .map((e) => cg.getNode(e.target)?.qualifiedName)
+      ).not.toContain('docs/setup.md#install');
+
+      fs.writeFileSync(path.join(tempDir, 'docs', 'setup.md'), '# Install\n\nInstall it.\n');
+      await cg.sync();
+
+      const install = cg
+        .getNodesInFile('docs/setup.md')
+        .find((n) => n.kind === 'module' && n.name === 'Install')!;
+      expect(cg.getIncomingEdges(install.id, ['imports']).some((e) => e.source === linksHeading.id)).toBe(true);
+    } finally {
+      cg.destroy();
+    }
+  });
+
   it('indexes Markdown template tables and resolves file-symbol references to implementation functions', async () => {
     fs.mkdirSync(path.join(tempDir, 'phases'), { recursive: true });
     fs.mkdirSync(path.join(tempDir, 'scripts'), { recursive: true });

@@ -1,12 +1,11 @@
 /**
- * Markdown path mentions are only resolvable through the file-path arm, which
- * collects candidates by basename. A relative file-shaped target whose
- * basename no indexed file has therefore cannot resolve. On a full index the
- * extractor skips those targets, while keeping everything the resolver can
- * still match: routes (root-absolute or extensionless), modules and table
- * rows named without a file, symbols inside a live file, and in-page anchors.
- * Incremental sync keeps every target so one added later can still resolve
- * from the parked reference.
+ * A Markdown path target whose basename no indexed file has cannot resolve to
+ * a file through the resolver's file-path arm. Its reference is still kept —
+ * the resolver's route/module/symbol arms may match it, and sync can retry it
+ * when a file appears later (#1240) — but its own import node only added a
+ * search child and a `contains` edge. A full index skips that node; sync keeps
+ * every node. Pruned targets stay in a separate, larger `links:` part of the
+ * file digest so a link beyond the 12-item display digest is still searchable.
  */
 import { describe, it, expect } from 'vitest';
 import { extractFromSource } from '../src/extraction/tree-sitter';
@@ -35,6 +34,19 @@ const SOURCE = [
   '- [pricing](/pricing)',
   '- [users route](/api/users/)',
   '- [guide route](../guides/auth)',
+  '- [dotted route](api/users.json)',
+  '- [one](../src/one.ts)',
+  '- [two](../src/two.ts)',
+  '- [three](../src/three.ts)',
+  '- [four](../src/four.ts)',
+  '- [five](../src/five.ts)',
+  '- [six](../src/six.ts)',
+  '- [seven](../src/seven.ts)',
+  '- [eight](../src/eight.ts)',
+  '- [nine](../src/nine.ts)',
+  '- [ten](../src/ten.ts)',
+  '- [eleven](../src/eleven.ts)',
+  '- [twelve](../src/twelve.ts)',
   '- [diagram](../assets/releaseblueprint.svg)',
   '- [this section](#links)',
   '',
@@ -61,8 +73,8 @@ function importTargets(withContext?: MarkdownExtractorContext): string[] {
     .map((node) => node.qualifiedName);
 }
 
-describe('Markdown path-existence check', () => {
-  it('keeps every path target when no context is supplied', () => {
+describe('Markdown link-node pruning', () => {
+  it('keeps every reference and link node without a context', () => {
     const names = refs();
     expect(names).toContain('src/widget.ts');
     expect(names).toContain('src/missing.ts');
@@ -70,44 +82,40 @@ describe('Markdown path-existence check', () => {
     expect(importTargets().some((qn) => qn.includes('missing.ts'))).toBe(true);
   });
 
-  it('drops relative file-shaped targets no indexed file can satisfy', () => {
+  it('keeps the reference but skips the link node on a full index', () => {
     const names = refs(FULL_INDEX);
-    expect(names).not.toContain('src/missing.ts');
-    expect(names).not.toContain('docs/scripts/run.sh');
-    expect(names).not.toContain('docs/scripts/missing.sh');
-    expect(names.some((name) => name.startsWith('src/missing.ts::'))).toBe(false);
-    expect(importTargets(FULL_INDEX).some((qn) => qn.includes('missing.ts'))).toBe(false);
-  });
-
-  it('keeps sync references so a target added later can resolve', () => {
-    const names = refs(SYNC);
+    // The reference survives so routes, modules and later syncs can match it.
     expect(names).toContain('src/missing.ts');
     expect(names).toContain('docs/scripts/run.sh');
+    expect(names).toContain('docs/scripts/missing.sh');
+    // The dead target's import node does not exist.
+    expect(importTargets(FULL_INDEX).some((qn) => qn.includes('missing.ts'))).toBe(false);
+    // A target whose basename is known keeps its node.
+    expect(importTargets(FULL_INDEX).some((qn) => qn.includes('src/widget.ts'))).toBe(true);
+  });
+
+  it('keeps every link node on an incremental sync', () => {
     expect(importTargets(SYNC).some((qn) => qn.includes('missing.ts'))).toBe(true);
   });
 
-  it('keeps routes and targets the resolver reaches by basename, symbol, anchor or command', () => {
+  it('keeps routes and targets the resolver reaches by name', () => {
     const names = refs(FULL_INDEX);
-    // A live basename at another path still resolves through the suffix and
-    // basename arms, so it must survive.
     expect(names).toContain('apps/widget.ts#usage');
     expect(names).toContain('docs/scripts/widget.ts');
-    // Root-absolute and extensionless links can name routes, modules or table
-    // rows; the file-path arm is not their only route to a match.
     expect(names).toContain('pricing');
     expect(names).toContain('api/users/');
     expect(names).toContain('guides/auth');
-    // A symbol inside a live file.
+    // A relative route with a dotted final segment is kept for name matching.
+    expect(names).toContain('docs/api/users.json');
     expect(names).toContain('docs/src/widget.ts::createWidget');
-    // A pure in-page anchor names this file.
     expect(names).toContain('docs/guide.md#links');
-    // A script the fence runs.
     expect(names).toContain('docs/scripts/exists.sh');
   });
 
-  it('keeps a pruned target in the file digest for search', () => {
-    const result = extract(FULL_INDEX);
-    const fileNode = result.nodes.find((node) => node.kind === 'file');
+  it('keeps a pruned target searchable beyond the display digest budget', () => {
+    const fileNode = extract(FULL_INDEX).nodes.find((node) => node.kind === 'file');
+    // The target is the 13th link, past the 12-item `refs:` budget.
+    expect(fileNode?.docstring).toContain('links:');
     expect(fileNode?.docstring).toContain('releaseblueprint.svg');
   });
 });
