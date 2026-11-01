@@ -204,7 +204,7 @@ Upstream `main` at `cd04b21a` against the fork at `8313e9a0`, Node.js 24.22.2 on
 
 *2026-11-01 Node run, fork `8313e9a0` against upstream `cd04b21a`. Ratios are exact; the tables mark which gaps clear the run-to-run spread.*
 
-The fork's one-file sync is faster on six of seven corpora: 22% (gin) to 163% (n8n), or 1.22× to 2.63×; discourse is 3% slower. Full indexing: CPython is 1.79× faster (25.84 s against 46.36 s), n8n 1.43× faster (50.16 s against 71.75 s), discourse 8% faster, Alamofire 5% faster and pretix 1% faster; gin and supabase are no clear change. Supabase is 1.9% slower inside a 2.1% fork spread, on a graph with 18.5% more nodes and 6.7% more edges. The speed costs memory on the smaller corpora — index peaks +49% on gin, +34% on Alamofire and +16% on pretix — while it is lower on CPython (−20%), discourse (−8%), supabase (−1%) and n8n (−29%). MCP on n8n (2026-10-31, not re-run): warm explore 1.75× faster, the eight-explore wave 1.26× faster and `initialize` 1.79× faster, with busy memory 21% lower and idle memory 51% lower; the watcher's one-file re-index is the one loss, 9% slower (766 ms against 702 ms).
+The fork's one-file sync is faster on six of seven corpora: 22% (gin) to 163% (n8n), or 1.22× to 2.63×; discourse is 3% slower. Full indexing: CPython is 1.79× faster (25.84 s against 46.36 s), n8n 1.43× faster (50.16 s against 71.75 s), discourse 8% faster, Alamofire 5% faster and pretix 1% faster; gin and supabase are no clear change. Supabase is 1.9% slower inside a 2.1% fork spread, on a graph with 18.5% more nodes and 6.7% more edges. The speed costs memory on the smaller corpora — index peaks +49% on gin, +34% on Alamofire and +16% on pretix — while it is lower on CPython (−20%), discourse (−8%), supabase (−1%) and n8n (−29%). MCP on n8n: warm explore 1.72× faster, the eight-explore wave 1.27× faster and `initialize` 1.94× faster, with busy memory 19% lower and idle memory 52% lower; the watcher's one-file re-index is the one loss, 12% slower (754 ms against 676 ms).
 
 The [2026-10-28 Node+Bun campaign](docs/benchmarks/fork-vs-upstream-node-bun-2026-10-27.md), the [2026-10-30 Node re-measurement](docs/benchmarks/fork-vs-upstream-node-2026-10-30.md), the [first 2026-10-31 run](docs/benchmarks/fork-vs-upstream-2026-10-31.md) and the [second 2026-10-31 run](docs/benchmarks/fork-vs-upstream-2026-10-31b.md) are superseded by this run and kept with their original dates and commits.
 
@@ -242,21 +242,21 @@ Six of seven clear their run-to-run spread and are faster; discourse is 3% slowe
 
 Both builds rebuild the links inferred from events, callbacks and function pointers after a sync, so a sync ends with the graph a full index would build ([colbymchenry/codegraph#1988](https://github.com/colbymchenry/codegraph/issues/1988)). Upstream reruns every inference pass inside each sync that touches an inferred link; the fork reruns the same passes a full index runs once edits pause. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns the fork's rebuild off, trading it for stale inferred links.
 
-**MCP server** on n8n (`codegraph serve --mcp`; memory and CPU summed over the server and the daemon), Node, 2026-10-31 (not re-run on 2026-11-01; its process-tree harness is outside the Hyperfine campaign and the Markdown work changes index nodes, not the query path):
+**MCP server** on n8n (`codegraph serve --mcp`; memory and CPU summed over the server and the daemon), Node, 2026-11-01. This table uses the existing process-tree harness (`scripts/benchmarks/runtime/mcp-bench.mjs`), not Hyperfine; the required runners cannot measure per-query MCP latency, concurrent explores, process-tree memory/CPU or the watcher sync. It is a separate measurement from the Hyperfine index/sync figures:
 
 | | Upstream | Fork |
 |---|---:|---:|
-| `initialize` answered | 115 ms | 64 ms |
-| Start to first explore answer | 2.91 s | 2.70 s |
-| Explore, warm median | 240 ms | 138 ms |
-| Explore, p90 | 282 ms | 178 ms |
-| 8 explores at once | 2.38 s | 1.88 s |
-| Memory while busy | 3.81 GiB | 3.02 GiB |
-| Edited file re-indexed by the watcher | 702 ms | 766 ms |
-| Memory at idle | 4.46 GiB | 2.19 GiB |
-| CPU at idle, share of one core | 0.40% | 0.20% |
+| `initialize` answered | 120 ms | 62 ms |
+| Start to first explore answer | 2.85 s | 2.75 s |
+| Explore, warm median | 244 ms | 142 ms |
+| Explore, p90 | 286 ms | 186 ms |
+| 8 explores at once | 2.40 s | 1.89 s |
+| Memory while busy | 3.66 GiB | 2.97 GiB |
+| Edited file re-indexed by the watcher | 676 ms | 754 ms |
+| Memory at idle | 4.31 GiB | 2.08 GiB |
+| CPU at idle, share of one core | 0.38% | 0.19% |
 
-The idle row is the process tree's RSS at the harness's idle sample, 70 s after the last query. The same measure across runs: **3.58 GiB** on 2026-10-27 (`bc27fdb4`, the old README row), **4.21 GiB** on 2026-10-28 (`5784e289`, the clean re-measure), **19.7 GiB** on 2026-10-30 (`a9dc5a61`, a real regression), **2.13 GiB** in the first 2026-10-31 run (`cf2a37a5`, #593) and **2.19 GiB** at the 2026-10-31 run (`c63e3d7c`). The “20 GB → 2 GB” statement is the 2026-10-30 to 2026-10-31 change on this harness, not a different definition from the earlier rows.
+The idle row is the process tree's RSS at the harness's idle sample, 70 s after the last query. The same measure across runs: **3.58 GiB** on 2026-10-27 (`bc27fdb4`, the old README row), **4.21 GiB** on 2026-10-28 (`5784e289`, the clean re-measure), **19.7 GiB** on 2026-10-30 (`a9dc5a61`, a real regression), **2.13 GiB** in the first 2026-10-31 run (`cf2a37a5`, #593), **2.19 GiB** at the 2026-10-31 run (`c63e3d7c`) and **2.08 GiB** on 2026-11-01 (`8313e9a0`). The “20 GB → 2 GB” statement is the 2026-10-30 to 2026-10-31 change on this harness, not a different definition from the earlier rows.
 
 **CLI startup** on gin (`hyperfine`, mean of 20 runs), 2026-10-27, fork `bc27fdb4` against upstream `69af19ac`; not re-measured on 2026-11-01:
 

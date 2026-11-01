@@ -44,5 +44,5 @@ The fork syncs faster on six of seven corpora. Discourse is 3% slower, the one s
 ## Notes
 
 - **Runner change.** This is the first campaign timed with Hyperfine 2.0.0 end to end. Every arm was re-run; the 2026-10-31 figures are not directly comparable and should not be mixed with these.
-- **MCP not re-run.** The MCP table in the README is still the 2026-10-31 measurement (its harness is a process-tree observer, not one of the three required runners). The Markdown node-model work changes index-time nodes, not the MCP query path, so it is left dated and unchanged until the MCP harness is re-admitted.
+- **MCP.** The n8n MCP table was re-run on 2026-11-01 with the existing process-tree harness (`scripts/benchmarks/runtime/mcp-bench.mjs`), not Hyperfine: warm explore 142 ms against 244 ms, the eight-explore wave 1.89 s against 2.40 s, `initialize` 62 ms against 120 ms, and idle memory 2.08 GiB against 4.31 GiB. The watcher sync is 754 ms against 676 ms (12% slower). Keep this table separate from the Hyperfine index/sync figures, as the README does.
 - **Raw evidence.** `~/cg-scratch/bench-2026-11-01/`: `*-index.json` / `*-sync.json`, `graph.tsv`, `*-index.txt` / `*-sync.txt`, and `admission-*.json`.
