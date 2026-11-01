@@ -7389,9 +7389,10 @@ export const SYNTH_PASSES: SynthPassDef[] = [
  * order after these. A wrong hint costs wall time, never edges.
  */
 const SYNTH_PASS_COST_HINT: Readonly<Record<string, number>> = {
-  cFnPtrEdges: 100, registryEdges: 60, tierEdges: 55, jsxEdges: 25, rnEventEdgesList: 24,
-  ifaceEdges: 18, flutterEdges: 16, cppEdges: 15, emitterEdges: 12, fieldEdges: 11,
-  mybatisEdges: 10, vuexEdges: 8, closureCollEdges: 6, piniaEdges: 5, renderEdges: 4,
+  cFnPtrEdges: 100, registryEdges: 60, tierEdges: 55, piniaEdges: 50, vueEdges: 40,
+  ngrxEdges: 35, windowMessageEdges: 30, vuexEdges: 30, emitterEdges: 30, jsxEdges: 25,
+  rnEventEdgesList: 24, ifaceEdges: 18, flutterEdges: 16, cppEdges: 15, fieldEdges: 11,
+  mybatisEdges: 10, closureCollEdges: 6, renderEdges: 4,
 };
 function synthPassCostHint(name: string): number {
   return SYNTH_PASS_COST_HINT[name] ?? 0;
