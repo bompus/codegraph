@@ -58,7 +58,7 @@ import type { FileWatcher, WatchOptions, PendingFile } from './sync';
 import { EXTRACTION_VERSION } from './extraction/extraction-version';
 import { isGeneratedFile } from './extraction/generated-detection';
 import { hasGrammarLoadFailure, isFileLevelOnlyLanguage } from './extraction/grammars';
-import { refreshNearDuplicates } from './graph/near-duplicates';
+import { refreshNearDuplicates, type NearDupSigner } from './graph/near-duplicates';
 import { getCodeGraphDir } from './directory';
 import { deriveProjectNameTokens } from './search/query-utils';
 import { findSeedSource, copySeedIndex, type SeedSource } from './sync/worktree-seed';
@@ -189,6 +189,8 @@ export class CodeGraph {
   // method call away from the constructor body.
   private lazyOrchestrator?: ExtractionOrchestrator;
   private lazyResolver?: ReferenceResolver;
+  /** Set by the resolver's post-synthesis near-dup hook so indexAll does not repeat it. */
+  private nearDuplicatesRan = false;
   private get orchestrator(): ExtractionOrchestrator {
     return (this.lazyOrchestrator ??= new (extraction().ExtractionOrchestrator)(this.projectRoot, this.queries));
   }
@@ -655,6 +657,10 @@ export class CodeGraph {
         return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
       }
       const startedAt = Date.now();
+      // Each full index owns its near-duplicate pass: the post-synthesis hook
+      // sets this, and a later index on the same instance must run it again
+      // even when that hook did not (no refs, no pool, resolver skipped).
+      this.nearDuplicatesRan = false;
       // Defer WAL auto-checkpointing for the whole bulk run (#1231): the
       // default 1000-page interval re-writes hot pages into the main DB file
       // over and over — ~95% of all disk I/O during a bulk index, and a
@@ -827,7 +833,8 @@ export class CodeGraph {
                 total: totalPasses,
               });
             },
-            walValve
+            walValve,
+            true
           );
           if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] resolution: ${Date.now() - tResolve}ms`);
 
@@ -850,7 +857,7 @@ export class CodeGraph {
           await this.resolver.resolveDeferredThisMemberRefs();
           if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] deferredThisMember: ${Date.now() - tDeferred}ms`);
         }
-        if (result.success) this.refreshNearDuplicates();
+        if (result.success && !this.nearDuplicatesRan) await this.refreshNearDuplicates();
 
         // Refresh planner stats + checkpoint the WAL after bulk writes.
         // Off-thread (worker connection): on a multi-GB index this is minutes
@@ -1859,7 +1866,7 @@ export class CodeGraph {
           throw new Error('Reconciliation did not complete synthesized-edge refresh.');
         }
         if (filesChanged || result.filesRemoved > 0) {
-          this.refreshNearDuplicates(result.changedFilePaths, result.filesRemoved > 0);
+          await this.refreshNearDuplicates(result.changedFilePaths, result.filesRemoved > 0);
         }
 
         // Refresh planner stats + checkpoint the WAL after bulk writes.
@@ -2255,13 +2262,13 @@ export class CodeGraph {
    * Only changed bodies are re-signed, so a sync that touched no function costs
    * one query. Never fails an index: the pairs are an annotation.
    */
-  private refreshNearDuplicates(changedFiles?: readonly string[], force = false): void {
+  private async refreshNearDuplicates(changedFiles?: readonly string[], force = false, sign?: NearDupSigner): Promise<void> {
     const t = Date.now();
     try {
       const deprioritized = this.queries.getDeprioritizedPathMatcher();
       // The index's content-based generated flag, not just the path check.
       const generated = this.queries.generatedPredicateFor(this.queries.getAllFiles().map((f) => f.path));
-      const r = refreshNearDuplicates({
+      const r = await refreshNearDuplicates({
         queries: this.queries,
         readFile: (p) => {
           try { return fs.readFileSync(path.join(this.projectRoot, p), 'utf-8'); } catch { return null; }
@@ -2269,6 +2276,7 @@ export class CodeGraph {
         isExcluded: (p) => generated(p) || isGeneratedFile(p) || (deprioritized?.(p) ?? false),
         changedFiles,
         force,
+        sign,
       });
       if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] nearDuplicates: ${Date.now() - t}ms (${r.signed} signed, ${r.rescored} pairs re-scored, ${r.pairs ?? 'unchanged'} pairs)`);
     } catch (error) {
@@ -2288,10 +2296,22 @@ export class CodeGraph {
     // kernel conn is live on the db (the rusqlite build's wal-index locks
     // can't see node:sqlite's — an off-thread checkpoint could rewrite the
     // -shm header under a writer commit). Structural so tests can fake it.
-    walValve?: { stop(): void; start(): void; drain(): Promise<void>; backpressure(): Promise<void> | null } | null
+    walValve?: { stop(): void; start(): void; drain(): Promise<void>; backpressure(): Promise<void> | null } | null,
+    /** Run the near-duplicate refresh inside the resolver's pool lifetime. */
+    withNearDuplicates = false
   ): Promise<ResolutionResult> {
     return this.resolver.resolveAndPersistBatched(onProgress, undefined, onSynthesisProgress, {
       dbPath: this.db.getPath(),
+      nearDuplicates: withNearDuplicates
+        ? (pool) => {
+            const sign: NearDupSigner | undefined = pool
+              ? (bodies) => pool.signNearDuplicates(bodies, this.projectRoot)
+              : undefined;
+            return this.refreshNearDuplicates(undefined, false, sign).finally(() => {
+              this.nearDuplicatesRan = true;
+            });
+          }
+        : undefined,
       // Bulk-edge-load hooks: on big runs the resolver drops the non-unique
       // edge indexes for the batch loop and recreates them before synthesis
       // (which reads kind-keyed). Concurrent readers (a daemon serving this

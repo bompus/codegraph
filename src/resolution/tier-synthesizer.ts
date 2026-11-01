@@ -1324,6 +1324,7 @@ export async function crossTierEdges(ctx: ResolutionContext, onYield: MaybeYield
   const cache = new Map<string, FileFacts | null>();
 
   let scanned = 0;
+  const tCollect = Date.now();
   for (const file of ctx.getAllFiles()) {
     if (!JS_FILE.test(file) || isTestPath(file) || isGeneratedFile(file)) continue;
     if ((++scanned & 63) === 0) await onYield();
@@ -1354,6 +1355,8 @@ export async function crossTierEdges(ctx: ResolutionContext, onYield: MaybeYield
     }
   }
 
+  const collectMs = Date.now() - tCollect;
+  const tMatch = Date.now();
   const edges: Edge[] = [];
   const seen = new Set<string>();
   for (const site of httpSites) {
@@ -1392,5 +1395,6 @@ export async function crossTierEdges(ctx: ResolutionContext, onYield: MaybeYield
   await onYield();
   pairQueue(producers, consumers, edges, seen);
   pairEvents(dispatches, handlers, edges, seen);
+  if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] tierEdges sub: collect=${collectMs}ms match=${Date.now() - tMatch}ms`);
   return edges;
 }

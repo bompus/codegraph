@@ -128,10 +128,32 @@ function asSignature(bytes: Uint8Array): Uint32Array {
   return new Uint32Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
 }
 
+/** One body a sharded signer computes a signature for. */
+export interface NearDupBody {
+  id: string;
+  name: string;
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  updatedAt: number;
+}
+
+/** A signed body: the MinHash bytes plus its shingle set (empty when unreadable). */
+export interface NearDupSignature {
+  id: string;
+  sig: Uint8Array;
+  set: Uint32Array;
+}
+
+/** Off-thread signer for a batch of bodies (the resolver pool in a full index). */
+export type NearDupSigner = (bodies: NearDupBody[]) => Promise<NearDupSignature[]>;
+
 export interface NearDuplicateDeps {
   queries: QueryBuilder;
   /** The file's text, or null when it cannot be read. */
   readFile(filePath: string): string | null;
+  /** When set, compute the signatures off-thread instead of reading files here. */
+  sign?: NearDupSigner;
   /** Generated or configured-away files, left out like tests and vendored code. */
   isExcluded?(filePath: string): boolean;
   /**
@@ -152,7 +174,7 @@ export interface NearDuplicateDeps {
  * the pairs. Returns how many signatures were written and pairs stored
  * (`pairs` is null when nothing changed and the stored pairs stand).
  */
-export function refreshNearDuplicates(deps: NearDuplicateDeps): { signed: number; pairs: number | null; rescored: number } {
+export async function refreshNearDuplicates(deps: NearDuplicateDeps): Promise<{ signed: number; pairs: number | null; rescored: number }> {
   const { queries } = deps;
   const excluded = (p: string) => isTestFile(p) || VENDORED.test(p) || (deps.isExcluded?.(p) ?? false);
   const tSign = Date.now();
@@ -172,14 +194,47 @@ export function refreshNearDuplicates(deps: NearDuplicateDeps): { signed: number
   const rows: Array<{ nodeId: string; nodeUpdatedAt: number; sig: Uint8Array }> = [];
   // The shingle sets just computed, keyed by node id: scoring reuses them
   // instead of re-tokenizing every body that lands in a candidate pair.
-  const freshSets = new Map<string, Set<number>>();
-  for (const [filePath, bodies] of stale) {
-    const lines = deps.readFile(filePath)?.split(/\r?\n/);
-    for (const b of bodies) {
-      const set = lines ? shingles(lines.slice(b.startLine - 1, b.endLine).join('\n'), b.name) : null;
-      const sig = set ? signatureFromSet(set) : null;
-      if (set) freshSets.set(b.id, set);
-      rows.push({ nodeId: b.id, nodeUpdatedAt: b.updatedAt, sig: sig ? new Uint8Array(sig.buffer) : new Uint8Array(0) });
+  // The in-process path stores Sets; the off-thread signer stores its
+  // transferred Uint32Arrays and the pair pass builds a Set only for a body
+  // that actually lands in a candidate pair (36k Sets was most of the handoff).
+  const freshSets = new Map<string, Set<number> | Uint32Array>();
+  let signedOffThread = false;
+  if (deps.sign) {
+    // The bodies are grouped by file for the in-process path; the signer takes
+    // them as one batch and the worker/pool groups what it can.
+    const bodies: NearDupBody[] = [];
+    for (const [filePath, list] of stale) {
+      for (const b of list) {
+        bodies.push({ id: b.id, name: b.name, filePath, startLine: b.startLine, endLine: b.endLine, updatedAt: b.updatedAt });
+      }
+    }
+    try {
+      const signed = bodies.length > 0 ? await deps.sign(bodies) : [];
+      const byId = new Map(bodies.map((b) => [b.id, b]));
+      for (const s of signed) {
+        const b = byId.get(s.id);
+        if (!b) continue;
+        if (s.set.length > 0) freshSets.set(b.id, s.set);
+        rows.push({ nodeId: b.id, nodeUpdatedAt: b.updatedAt, sig: s.sig.length > 0 ? s.sig : new Uint8Array(0) });
+      }
+      signedOffThread = true;
+    } catch (err) {
+      // A worker/pool failure must not leave the signatures stale: sign the
+      // same bodies in-process below, exactly as a run without a pool does.
+      if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
+        console.error(`[synth-timing] nearDup signer failed, signing in-process: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+  if (!signedOffThread) {
+    for (const [filePath, bodies] of stale) {
+      const lines = deps.readFile(filePath)?.split(/\r?\n/);
+      for (const b of bodies) {
+        const set = lines ? shingles(lines.slice(b.startLine - 1, b.endLine).join('\n'), b.name) : null;
+        const sig = set ? signatureFromSet(set) : null;
+        if (set) freshSets.set(b.id, set);
+        rows.push({ nodeId: b.id, nodeUpdatedAt: b.updatedAt, sig: sig ? new Uint8Array(sig.buffer) : new Uint8Array(0) });
+      }
     }
   }
   // A re-signed body's cached pair scores are stale; a dropped body's are moot.
@@ -229,7 +284,7 @@ export function forEachBandBucket(
 }
 
 /** LSH over the stored signatures, one band at a time so memory stays linear in the bodies. */
-function pairNearDuplicates(deps: NearDuplicateDeps, freshSets?: ReadonlyMap<string, Set<number>>): { kept: number; rescored: number } {
+function pairNearDuplicates(deps: NearDuplicateDeps, freshSets?: ReadonlyMap<string, Set<number> | Uint32Array>): { kept: number; rescored: number } {
   const { queries } = deps;
   // Every signature in one scan (rowid order), then each band's buckets from
   // the bytes in memory: sixteen SQL scans with a per-row substr and base64
@@ -271,7 +326,8 @@ function pairNearDuplicates(deps: NearDuplicateDeps, freshSets?: ReadonlyMap<str
       const node = queries.getNodeById(row.nodeId);
       // A set signed this refresh is already in memory; only unchanged bodies
       // pay the tokenize pass.
-      const cached = node ? freshSets?.get(node.id) : undefined;
+      const cachedRaw = node ? freshSets?.get(node.id) : undefined;
+      const cached = cachedRaw instanceof Set ? cachedRaw : cachedRaw ? new Set(cachedRaw) : undefined;
       const text = !cached && node ? lines(node.filePath)?.slice(node.startLine - 1, node.endLine).join('\n') : undefined;
       hit = { nodeId: row.nodeId, sig: asSignature(row.sig), set: cached ?? (text ? shingles(text, node!.name) : null) };
       sigs.set(rowid, hit);
