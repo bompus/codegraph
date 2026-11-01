@@ -10,7 +10,7 @@ import { referenceNameTail, MEMBER_TAIL_SQL, MODULE_PARKED_SQL } from './referen
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 23;
+export const CURRENT_SCHEMA_VERSION = 24;
 
 /**
  * Migration definition
@@ -445,6 +445,46 @@ CREATE TABLE synth_skips (
         CREATE TABLE IF NOT EXISTS synthesis_inputs (
           file_path TEXT PRIMARY KEY REFERENCES files(path) ON DELETE CASCADE
         );
+      `);
+    },
+  },
+  {
+    version: 24,
+    description:
+      'Add nodes.search_text and index it in nodes_fts for folded Markdown search text',
+    up: (db) => {
+      // The column holds text the full-text index matches without showing it
+      // in the node preview (Markdown rows/items/commands past the docstring
+      // cap). DDL only: a re-index fills it. Keep in lockstep with schema.sql.
+      // Migration-only test databases can omit the base schema; nothing to do.
+      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='nodes'").get()) return;
+      if (!db.prepare("SELECT 1 FROM pragma_table_info('nodes') WHERE name = 'search_text'").get()) {
+        db.exec('ALTER TABLE nodes ADD COLUMN search_text TEXT');
+      }
+      db.exec(`
+        DROP TRIGGER IF EXISTS nodes_ai;
+        DROP TRIGGER IF EXISTS nodes_ad;
+        DROP TRIGGER IF EXISTS nodes_au;
+        DROP TABLE IF EXISTS nodes_fts;
+        CREATE VIRTUAL TABLE nodes_fts USING fts5(
+          id, name, qualified_name, docstring, signature, search_text,
+          content='nodes', content_rowid='rowid'
+        );
+        CREATE TRIGGER nodes_ai AFTER INSERT ON nodes BEGIN
+          INSERT INTO nodes_fts(rowid, id, name, qualified_name, docstring, signature, search_text)
+          VALUES (NEW.rowid, NEW.id, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature, NEW.search_text);
+        END;
+        CREATE TRIGGER nodes_ad AFTER DELETE ON nodes BEGIN
+          INSERT INTO nodes_fts(nodes_fts, rowid, id, name, qualified_name, docstring, signature, search_text)
+          VALUES ('delete', OLD.rowid, OLD.id, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature, OLD.search_text);
+        END;
+        CREATE TRIGGER nodes_au AFTER UPDATE ON nodes BEGIN
+          INSERT INTO nodes_fts(nodes_fts, rowid, id, name, qualified_name, docstring, signature, search_text)
+          VALUES ('delete', OLD.rowid, OLD.id, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature, OLD.search_text);
+          INSERT INTO nodes_fts(rowid, id, name, qualified_name, docstring, signature, search_text)
+          VALUES (NEW.rowid, NEW.id, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature, NEW.search_text);
+        END;
+        INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild');
       `);
     },
   },

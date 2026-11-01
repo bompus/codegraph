@@ -144,6 +144,7 @@ interface NodeRow {
   end_column: number;
   docstring: string | null;
   signature: string | null;
+  search_text: string | null;
   visibility: string | null;
   is_exported: number;
   is_async: number;
@@ -250,6 +251,7 @@ function rowToNode(row: NodeRow): Node {
     endColumn: row.end_column,
     docstring: row.docstring ?? undefined,
     signature: row.signature ?? undefined,
+    searchText: row.search_text ?? undefined,
     visibility: row.visibility as Node['visibility'],
     isExported: row.is_exported === 1,
     isAsync: row.is_async === 1,
@@ -657,13 +659,13 @@ export class QueryBuilder {
         INSERT OR REPLACE INTO nodes (
           id, kind, name, qualified_name, file_path, language,
           start_line, end_line, start_column, end_column,
-          docstring, signature, visibility,
+          docstring, signature, search_text, visibility,
           is_exported, is_async, is_static, is_abstract,
           decorators, type_parameters, return_type, updated_at
         ) VALUES (
           @id, @kind, @name, @qualifiedName, @filePath, @language,
           @startLine, @endLine, @startColumn, @endColumn,
-          @docstring, @signature, @visibility,
+          @docstring, @signature, @searchText, @visibility,
           @isExported, @isAsync, @isStatic, @isAbstract,
           @decorators, @typeParameters, @returnType, @updatedAt
         )
@@ -701,6 +703,7 @@ export class QueryBuilder {
       endColumn: node.endColumn ?? 0,
       docstring: node.docstring ?? null,
       signature: node.signature ?? null,
+      searchText: node.searchText ?? null,
       visibility: node.visibility ?? null,
       isExported: node.isExported ? 1 : 0,
       isAsync: node.isAsync ? 1 : 0,
@@ -899,6 +902,7 @@ export class QueryBuilder {
           node.endColumn ?? 0,
           node.docstring ?? null,
           node.signature ?? null,
+          node.searchText ?? null,
           node.visibility ?? null,
           node.isExported ? 1 : 0,
           node.isAsync ? 1 : 0,
@@ -917,11 +921,11 @@ export class QueryBuilder {
         `INSERT OR REPLACE INTO nodes (
           id, kind, name, qualified_name, file_path, language,
           start_line, end_line, start_column, end_column,
-          docstring, signature, visibility,
+          docstring, signature, search_text, visibility,
           is_exported, is_async, is_static, is_abstract,
           decorators, type_parameters, return_type, updated_at
         ) VALUES `,
-        '(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        '(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
         rows
       );
       this.runBatched(
@@ -1018,6 +1022,7 @@ export class QueryBuilder {
           end_column = @endColumn,
           docstring = @docstring,
           signature = @signature,
+          search_text = @searchText,
           visibility = @visibility,
           is_exported = @isExported,
           is_async = @isAsync,
@@ -2259,7 +2264,7 @@ export class QueryBuilder {
     let sql = `
       SELECT nodes.*, ranked.score
       FROM (
-        SELECT nodes_fts.rowid AS rid, bm25(nodes_fts, 0, 20, 5, 1, 2) as score
+        SELECT nodes_fts.rowid AS rid, bm25(nodes_fts, 0, 20, 5, 1, 2, 1) as score
         FROM nodes_fts
         JOIN nodes ON nodes.rowid = nodes_fts.rowid
         WHERE nodes_fts MATCH ?

@@ -64,6 +64,15 @@ export class MarkdownExtractor {
    * link beyond the display digest's 12-item budget still stays searchable.
    */
   private prunedTargets: string[] = [];
+  /** Commands seen per owning section/file, for the searchable summary. */
+  private ownerCommands = new Map<string, string[]>();
+  /**
+   * Text of every folded table row, list item and command, with its owner.
+   * The section preview is capped at 600 characters, so a late row or the 9th
+   * command would otherwise lose the searchability its old node had; the file
+   * digest carries the text its owner preview does not already contain.
+   */
+  private foldedText: Array<{ ownerId: string; text: string }> = [];
 
   constructor(filePath: string, source: string, context: MarkdownExtractorContext = {}) {
     this.filePath = normalizeRelativePath(filePath);
@@ -80,7 +89,9 @@ export class MarkdownExtractor {
       this.extractHeadings(fileNode);
       this.extractStructuredBlocks(fileNode);
       this.extractLinksAndCommands(fileNode);
+      this.applyCommandSummaries(fileNode);
       this.finalizeFileDigest(fileNode);
+      this.applySearchText(fileNode);
     } catch (error) {
       this.errors.push({
         message: `Markdown extraction error: ${error instanceof Error ? error.message : String(error)}`,
@@ -302,6 +313,10 @@ export class MarkdownExtractor {
 
       const headers = parseTableCells(line);
       if (headers.length < 2) continue;
+      // The header row is search text too: a table past the section preview
+      // must keep its column names (a header such as RollbackWindow) findable.
+      const headerOwner = this.findOwnerForLine(i + 1) ?? fileNode;
+      this.foldedText.push({ ownerId: headerOwner.id, text: headers.join(' | ') });
 
       let rowIndex = i + 2;
       while (rowIndex < this.lines.length && isTableRowLine(this.lines[rowIndex]!)) {
@@ -309,7 +324,7 @@ export class MarkdownExtractor {
         const cells = parseTableCells(rowLine);
         const lineNumber = rowIndex + 1;
         if (shouldIndexTableRow(headers, cells)) {
-          this.createTableRowNode(headers, cells, rowLine, lineNumber, fileNode);
+          this.addTableRowReferences(cells, rowLine, lineNumber, fileNode);
         }
         rowIndex++;
       }
@@ -347,63 +362,26 @@ export class MarkdownExtractor {
 
       const lineNumber = i + 1;
       const owner = this.findOwnerForLine(lineNumber) ?? fileNode;
-      const name = stableIdentifier(text) ?? truncateForName(text, 80);
-      const nodeId = generateNodeId(this.filePath, 'constant', `list:${lineNumber}:${name}`, lineNumber);
-      const node: Node = {
-        id: nodeId,
-        kind: 'constant',
-        name,
-        qualifiedName: `${this.filePath}::list-item:${slugifyHeading(name)}:${lineNumber}`,
-        filePath: this.filePath,
-        language: 'markdown',
-        signature: `list item: ${truncateForSignature(text, 180)}`,
-        docstring: text,
-        startLine: lineNumber,
-        endLine: lineNumber,
-        startColumn: Math.max(0, line.indexOf(match[1]!)),
-        endColumn: line.length,
-        updatedAt: Date.now(),
-      };
-
-      this.nodes.push(node);
-      this.edges.push({ source: owner.id, target: nodeId, kind: 'contains', provenance: 'heuristic' });
-      this.extractStructuredReferences(text, lineNumber, node);
+      // The section docstring already carries the item text; its separate
+      // `text:` digest part keeps a late item searchable.
+      this.foldedText.push({ ownerId: owner.id, text });
+      this.extractStructuredReferences(text, lineNumber, owner);
     }
   }
 
-  private createTableRowNode(
-    headers: string[],
+  private addTableRowReferences(
     cells: string[],
     rowLine: string,
     lineNumber: number,
     fileNode: Node
   ): void {
     const owner = this.findOwnerForLine(lineNumber) ?? fileNode;
+    // The row text is already part of the section docstring; its separate
+    // `text:` digest part keeps a late row searchable.
     const rowText = cells.join(' | ');
-    const name = stableIdentifier(rowText) ?? truncateForName(firstNonEmptyCell(cells) || `row ${lineNumber}`, 80);
-    const signature = summarizeTableRow(headers, cells);
-    const nodeId = generateNodeId(this.filePath, 'constant', `table:${lineNumber}:${name}`, lineNumber);
-    const node: Node = {
-      id: nodeId,
-      kind: 'constant',
-      name,
-      qualifiedName: `${this.filePath}::table-row:${slugifyHeading(name)}:${lineNumber}`,
-      filePath: this.filePath,
-      language: 'markdown',
-      signature,
-      docstring: signature,
-      startLine: lineNumber,
-      endLine: lineNumber,
-      startColumn: Math.max(0, rowLine.indexOf(firstNonEmptyCell(cells) || '|')),
-      endColumn: rowLine.length,
-      updatedAt: Date.now(),
-    };
-
-    this.nodes.push(node);
-    this.edges.push({ source: owner.id, target: nodeId, kind: 'contains', provenance: 'heuristic' });
-
-    this.extractStructuredReferences(rowText, lineNumber, node);
-    this.extractCommandsFromStructuredCells(cells, rowLine, lineNumber, node);
+    this.foldedText.push({ ownerId: owner.id, text: rowText });
+    this.extractStructuredReferences(rowText, lineNumber, owner);
+    this.extractCommandsFromStructuredCells(cells, rowLine, lineNumber, owner);
   }
 
   private extractCommandsFromStructuredCells(cells: string[], rowLine: string, lineNumber: number, owner: Node): void {
@@ -415,37 +393,46 @@ export class MarkdownExtractor {
         const command = extractCommandFromText(candidate);
         if (!command) continue;
         const column = Math.max(0, rowLine.indexOf(candidate));
-        this.createCommandNode(command, lineNumber, column, owner);
+        this.addCommand(command, lineNumber, column, owner);
       }
     }
   }
 
-  private createCommandNode(command: string, line: number, column: number, owner: Node): void {
-    const nodeId = generateNodeId(this.filePath, 'function', `command:${line}:${column}:${command}`, line);
-    const node: Node = {
-      id: nodeId,
-      kind: 'function',
-      name: commandName(command),
-      qualifiedName: `${this.filePath}::command:${line}:${column}:${command}`,
-      filePath: this.filePath,
-      language: 'markdown',
-      signature: command,
-      startLine: line,
-      endLine: line,
-      startColumn: column,
-      endColumn: column + command.length,
-      updatedAt: Date.now(),
-    };
-
-    this.nodes.push(node);
-    this.edges.push({ source: owner.id, target: nodeId, kind: 'contains', provenance: 'heuristic' });
+  /**
+   * Record a command on its owning section instead of minting a node for it.
+   * The command text joins the owner's searchable summary; a script the
+   * command runs keeps its `calls` reference, now from the section.
+   */
+  private addCommand(command: string, line: number, column: number, owner: Node): void {
+    // Every recognized command stays in the file's search text; the section
+    // summary below is the bounded display form.
+    this.foldedText.push({ ownerId: owner.id, text: command });
+    const commands = this.ownerCommands.get(owner.id) ?? [];
+    if (commands.length < MAX_COMMANDS_PER_OWNER && !commands.includes(command)) {
+      commands.push(command);
+      this.ownerCommands.set(owner.id, commands);
+    }
 
     const scriptPath = extractScriptPath(command);
-    if (scriptPath) {
-      const normalizedTarget = this.normalizeReference(scriptPath);
-      if (normalizedTarget) {
-        this.addReference(nodeId, normalizedTarget, 'calls', line, column);
-      }
+    if (!scriptPath) return;
+    const normalizedTarget = this.normalizeReference(scriptPath);
+    if (!normalizedTarget) return;
+    this.addReference(owner.id, normalizedTarget, 'calls', line, column);
+  }
+
+  /**
+   * Append the per-owner command summary to each section's docstring. Heading
+   * docstrings are capped, so a command past the cap would otherwise stop
+   * being searchable once its node is gone.
+   */
+  private applyCommandSummaries(fileNode: Node): void {
+    const headingNodes = new Map(this.headings.map((heading) => [heading.id, heading.node]));
+    for (const [ownerId, commands] of this.ownerCommands) {
+      if (ownerId === fileNode.id || commands.length === 0) continue;
+      const owner = headingNodes.get(ownerId);
+      if (!owner) continue;
+      const summary = summarizeCommands(commands);
+      owner.docstring = owner.docstring ? `${owner.docstring}  ·  commands: ${summary}` : `commands: ${summary}`;
     }
   }
 
@@ -570,14 +557,25 @@ export class MarkdownExtractor {
 
   private extractCommandsFromFence(fence: FenceState, fileNode: Node): void {
     if (!isShellLikeFence(fence.language)) return;
+    // An unlabeled fence is as often output, a tree or a JSON snippet as a
+    // command block. Only take a line that looks like a command from one;
+    // a labeled shell fence keeps every line it has.
+    const labeled = fence.language !== '';
 
     for (const entry of fence.lines) {
+      const owner = this.findOwnerForLine(entry.line) ?? fileNode;
+      // Every non-empty fence line keeps its search text, whether or not it is
+      // a command: output and unusual commands were searchable as nodes before
+      // the fold. Only recognized commands also join the summary and refs.
+      const raw = entry.text.trim();
+      if (raw) this.foldedText.push({ ownerId: owner.id, text: raw });
+
       const command = normalizeCommandLine(entry.text);
       if (!command) continue;
+      if (!labeled && !looksLikeCommandLine(entry.text, command)) continue;
 
-      const owner = this.findOwnerForLine(entry.line) ?? fileNode;
       const column = Math.max(0, entry.text.indexOf(command.split(/\s+/)[0]!));
-      this.createCommandNode(command, entry.line, column, owner);
+      this.addCommand(command, entry.line, column, owner);
     }
   }
 
@@ -679,6 +677,41 @@ export class MarkdownExtractor {
     return this.knownFileNames.has(path.posix.basename(pathPart));
   }
 
+  /**
+   * Give each section (and the file node) its own `searchText`: the folded
+   * rows, list items and fence lines its 600-character docstring preview did
+   * not already include. Every owner keeps all of its text — there is no
+   * file-wide truncation — and the separate column is indexed without being
+   * displayed, so a search hit still lands on the section that owns the line.
+   */
+  private applySearchText(fileNode: Node): void {
+    const owners = new Map<string, Node>([
+      [fileNode.id, fileNode],
+      ...this.headings.map((heading) => [heading.id, heading.node] as const),
+    ]);
+    const byOwner = new Map<string, string[]>();
+    for (const { ownerId, text: raw } of this.foldedText) {
+      const owner = owners.get(ownerId);
+      if (!owner) continue;
+      const text = stripInlineMarkdown(raw).replace(/\s+/g, ' ').trim();
+      if (!text) continue;
+      // Only text the owner's preview or command summary already carries is
+      // skipped, on token boundaries so `CG-713` is not mistaken for a
+      // substring of `XCG-713`.
+      if (containsEntry(owner.docstring ?? '', text)) continue;
+      const list = byOwner.get(ownerId) ?? [];
+      list.push(text);
+      byOwner.set(ownerId, list);
+    }
+    for (const [ownerId, texts] of byOwner) {
+      const owner = owners.get(ownerId);
+      if (!owner) continue;
+      const seen = new Set<string>();
+      const unique = texts.filter((text) => (seen.has(text) ? false : (seen.add(text), true)));
+      if (unique.length > 0) owner.searchText = unique.join(' · ');
+    }
+  }
+
   /** Pruned link targets for the file digest's separate `links:` part. */
   private summarizePrunedTargets(): string[] {
     const seen = new Set<string>();
@@ -731,6 +764,7 @@ export class MarkdownExtractor {
     const intro = this.buildIntro();
     const refs = this.collectKeyReferences();
     const links = this.summarizePrunedTargets();
+    const commands = this.ownerCommands.get(fileNode.id) ?? [];
     const parts: string[] = [];
     if (intro) parts.push(intro);
     if (refs.length > 0) parts.push(`refs: ${refs.join(', ')}`);
@@ -739,6 +773,7 @@ export class MarkdownExtractor {
       if (text.length > 800) text = `${text.slice(0, 797).trimEnd()}...`;
       parts.push(`links: ${text}`);
     }
+    if (commands.length > 0) parts.push(`commands: ${summarizeCommands(commands)}`);
     const digest = parts.join('  ·  ').trim();
     fileNode.docstring = digest || this.buildDocstring(1, Math.min(this.lines.length, 40));
   }
@@ -898,6 +933,17 @@ function decodePath(value: string): string {
   }
 }
 
+/**
+ * Whether `haystack` contains `needle` on token boundaries. Markdown folding
+ * uses this to decide a row/list item is already in its section preview; a
+ * plain substring test would treat `CG-713` as present inside `XCG-713`.
+ */
+function containsEntry(haystack: string, needle: string): boolean {
+  if (!haystack || !needle) return false;
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^\\w-])${escaped}([^\\w-]|$)`).test(haystack);
+}
+
 function isShellLikeFence(language: string): boolean {
   return [
     '',
@@ -914,6 +960,61 @@ function isShellLikeFence(language: string): boolean {
     'cmd',
     'bat',
   ].includes(language);
+}
+
+/** Commands kept per owning section/file (the searchable command summary). */
+const MAX_COMMANDS_PER_OWNER = 8;
+/** Cap on the `commands: ...` summary appended to a docstring. */
+const MAX_COMMAND_SUMMARY_CHARS = 240;
+
+/**
+ * Command heads that make a line in an UNLABELED fence a command rather than
+ * output, a tree or a JSON fragment. A labeled shell fence keeps every line.
+ * The list is deliberately broad (coreutils plus the common toolchains); an
+ * unusual head still stays in the section text, just not in its command
+ * summary.
+ */
+const COMMAND_HEADS = new Set([
+  'adb', 'apt', 'apt-get', 'aws', 'az', 'bandit', 'bash', 'biome', 'black', 'brew',
+  'bun', 'bundle', 'cargo', 'cat', 'cc', 'chmod', 'chown', 'clang', 'cmake', 'cmd',
+  'code', 'command', 'conda', 'corepack', 'coverage', 'cp', 'crontab', 'curl',
+  'dart', 'deno', 'df', 'dnf', 'docker', 'docker-compose', 'dotnet', 'dropdb', 'du',
+  'eas', 'env', 'eslint', 'eval', 'exec', 'expo', 'find', 'firebase', 'flake8',
+  'fly', 'flyctl', 'fnm', 'free', 'g++', 'gcc', 'gcloud', 'gem', 'git', 'gh',
+  'go', 'gofmt', 'goimports', 'gradle', 'grep', 'gunzip', 'gzip', 'head', 'helm',
+  'htop', 'http', 'http-server', 'isort', 'java', 'javac', 'jest', 'jq', 'kubectl',
+  'kind', 'kill', 'less', 'lerna', 'ln', 'make', 'mkdir', 'minikube', 'mongosh',
+  'more', 'mount', 'mv', 'mvn', 'mysql', 'mypy', 'netlify', 'ninja', 'node', 'nohup',
+  'npm', 'npx', 'nvm', 'nx', 'open', 'openssl', 'pip', 'pip3', 'pipenv', 'pkill',
+  'pnpm', 'pod', 'podman', 'poetry', 'powershell', 'prettier', 'prisma', 'ps',
+  'psql', 'pulumi', 'pwsh', 'py', 'pytest', 'python', 'python3', 'rails', 'rake',
+  'rg', 'rm', 'rmdir', 'rsync',
+  'ruby', 'ruff', 'rustc', 'scp', 'sed', 'serve', 'service', 'sh', 'snap', 'source',
+  'sqlite3', 'ssh', 'ssh-keygen', 'sst', 'start', 'stripe', 'sudo', 'supabase',
+  'swift', 'systemctl', 'tail', 'tar', 'terraform', 'time', 'top', 'touch', 'tox',
+  'tsc', 'tsx', 'ts-node', 'turbo', 'type', 'umount', 'unzip', 'uv', 'vercel',
+  'vite', 'vitest', 'watch', 'wget', 'whereis', 'which', 'wrangler', 'xargs',
+  'xcrun', 'xcodebuild', 'yarn', 'yq', 'zsh', 'zip',
+]);
+
+/**
+ * Whether a line in an unlabeled fence is a command. Prompts, relative
+ * executables, `sudo`-style wrappers, shell assignments and known command
+ * heads qualify; output lines, trees and JSON do not.
+ */
+function looksLikeCommandLine(raw: string, command: string): boolean {
+  if (/^\s*(?:\$|>|PS>|PS\s+[A-Z]:\\[^>]*>)\s/i.test(raw)) return true;
+  const first = command.split(/\s+/)[0] ?? '';
+  if (first.startsWith('./') || first.startsWith('/')) return true;
+  if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(first)) return true;
+  return COMMAND_HEADS.has(first.toLowerCase());
+}
+
+function summarizeCommands(commands: string[]): string {
+  const text = commands.join(', ');
+  return text.length > MAX_COMMAND_SUMMARY_CHARS
+    ? `${text.slice(0, MAX_COMMAND_SUMMARY_CHARS - 3).trimEnd()}...`
+    : text;
 }
 
 function isTableHeaderLine(line: string): boolean {
@@ -978,31 +1079,6 @@ function stableIdentifier(text: string): string | null {
   return matches?.[0] ?? null;
 }
 
-function firstNonEmptyCell(cells: string[]): string | null {
-  for (const cell of cells) {
-    const stripped = stripInlineMarkdown(cell);
-    if (stripped) return stripped;
-  }
-  return null;
-}
-
-function summarizeTableRow(headers: string[], cells: string[]): string {
-  const parts: string[] = [];
-  for (let i = 0; i < Math.min(headers.length, cells.length); i++) {
-    const header = stripInlineMarkdown(headers[i] ?? '');
-    const value = stripInlineMarkdown(cells[i] ?? '');
-    if (!header || !value) continue;
-    parts.push(`${header}: ${value}`);
-  }
-  return `table row: ${truncateForSignature(parts.join('; '), 240)}`;
-}
-
-function truncateForName(text: string, max: number): string {
-  const stripped = stripInlineMarkdown(text).replace(/\s+/g, ' ').trim();
-  if (stripped.length <= max) return stripped;
-  return stripped.slice(0, max - 1).trimEnd();
-}
-
 function truncateForSignature(text: string, max: number): string {
   const stripped = stripInlineMarkdown(text).replace(/\s+/g, ' ').trim();
   if (stripped.length <= max) return stripped;
@@ -1054,16 +1130,6 @@ function normalizeCommandLine(line: string): string | null {
 
   if (!withoutPrompt || /^(cd|echo|export|set)\b/.test(withoutPrompt)) return null;
   return withoutPrompt;
-}
-
-function commandName(command: string): string {
-  const npm = /^(?:npm|pnpm|yarn)\s+(?:run\s+)?([\w:.-]+)/.exec(command);
-  if (npm) return `${command.split(/\s+/)[0]} ${npm[1]}`;
-
-  const script = extractScriptPath(command);
-  if (script) return path.posix.basename(script.replace(/\\/g, '/'));
-
-  return command.split(/\s+/).slice(0, 3).join(' ');
 }
 
 function extractScriptPath(command: string): string | null {

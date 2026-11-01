@@ -43,7 +43,7 @@ A COBOL copybook named in an explore query prioritizes its indexed source and li
 | R | `.R`, `.r` | Full support (functions, S4/R5/R6 classes with methods, `library`/`require` imports, `source()` file references, call edges) |
 | Luau | `.luau` | Full support (Lua, plus typed signatures, `type` aliases, Roblox `require`) |
 | CFML | `.cfc`, `.cfm`, `.cfs` | Full support (tag-based `<cfcomponent>`/`<cfinterface>`/`<cffunction>` and bare-script `component { ... }` styles, `extends`/`implements`, embedded `<cfscript>`, calls written in tags such as `<cfset>`, `<cfif>`, `<cfloop condition>` and `#…#` expressions) |
-| Markdown | `.md`, `.mdx`, `.markdown` | Documentation structure (headings, sections, local links, selected table rows/list items, shell command references) |
+| Markdown | `.md`, `.mdx`, `.markdown` | Documentation structure (headings, sections and local links as nodes; tables, commands and list items as searchable section text) |
 
 Vue, Svelte and Astro files have one file node containing their component. Top-level script members belong to that component, while nested symbols retain their own parents. Vue `<script setup>`, Svelte instance scripts and Astro frontmatter assign top-level execution, including constant initializers, to the component. Imports, module-level execution and Astro browser scripts remain with the file. Svelte recognizes both `context="module"` and `<script module>`.
 

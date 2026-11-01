@@ -32,7 +32,8 @@ const db = new DatabaseSync(dbPath, { readOnly: true });
 
 function dump(title, sql) {
   const rows = db.prepare(sql).all();
-  const lines = rows.map((r) => JSON.stringify(r, (key, value) => key === 'failure_reason' && value == null ? undefined : value)).sort();
+  const lines = rows.map((r) => JSON.stringify(r, (key, value) =>
+    (key === 'failure_reason' || key === 'search_text') && value == null ? undefined : value)).sort();
   process.stdout.write(`== ${title} (${lines.length})\n`);
   for (const l of lines) process.stdout.write(l + '\n');
 }
@@ -40,7 +41,7 @@ function dump(title, sql) {
 dump(
   'nodes',
   `SELECT id, kind, name, qualified_name, file_path, language, start_line, end_line,
-          start_column, end_column, docstring, signature, visibility, is_exported,
+          start_column, end_column, docstring, signature, search_text, visibility, is_exported,
           is_async, is_static, is_abstract, decorators, type_parameters, return_type
    FROM nodes`
 );
