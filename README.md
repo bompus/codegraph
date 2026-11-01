@@ -84,6 +84,7 @@ Compared with upstream `main` at `cd04b21a` (after v1.6.2), re-checked against t
 
 | Feature | Upstream | Fork | What it does |
 |---|:-:|:-:|---|
+| Compact explore (`codegraph_explore` map default) | — | ✓ | Explore returns a compact map by default — matching symbols, `file:line`, the flow and blast radius, without source bodies — and lists `codegraph_node` as the body follow-up; `mode: "snippets"` adds each file's first lines, and `mode: "source"` restores the previous verbatim output. Per call, `CODEGRAPH_EXPLORE_MODE`, or `codegraph.json` `explore.mode` overrides it. A 3-turn A/B on 2026-11-01 cut retrieval residual 29–37% against source mode on gin and n8n. |
 | Session search (`codegraph sessions`, `codegraph_sessions`) | — | ✓ | Searches this project's earlier Claude Code, Codex, Cursor/T3, OpenCode, AGY, Devin and Grok transcripts and its git commit messages, so an agent can find what a past session decided. `codegraph_explore` also names the sessions that mentioned the symbols it returns. `"sessions": false` in `codegraph.json` turns it off. Experimental: `projects` / `--project` searches up to five projects' histories in one call. |
 | Markdown indexing | — | ✓ | Headings, sections and local links become graph nodes, with tables, commands and list items kept in the section's searchable text; a documentation question gets the matching section. Explicit code-file pins remain eligible in mixed documentation/code requests. |
 | Missing names reported | Reports them | Reports them, and proves absence | Upstream's note says a requested name is not in the index and the defining file may be unindexed. The fork keeps that note and additionally lists a name only when a bounded (300 ms) scan of every hand-written source file — plus file stems and bindings — completes without finding it as any word, so a listed name is absent from the project outright, not just unindexed. An incomplete scan lists nothing rather than guess. |
@@ -713,7 +714,7 @@ npm install -g @colbymchenry/codegraph
 }
 ```
 
-`alwaysLoad` loads all tools exposed by this server at session start, avoiding a tool-search step. In this fork that includes `codegraph_explore` and `codegraph_sessions`. See [Claude Code's MCP documentation](https://code.claude.com/docs/en/mcp#exempt-a-server-from-deferral).
+`alwaysLoad` loads all tools exposed by this server at session start, avoiding a tool-search step. In this fork that includes `codegraph_explore` and `codegraph_sessions`, plus `codegraph_node` when explore serves the compact map. See [Claude Code's MCP documentation](https://code.claude.com/docs/en/mcp#exempt-a-server-from-deferral).
 
 **Add to `~/.claude/settings.json` (optional, for auto-allow):**
 ```json
@@ -726,7 +727,7 @@ npm install -g @colbymchenry/codegraph
 }
 ```
 
-<sub>One wildcard auto-approves every CodeGraph tool — `codegraph_explore` is the only one listed by default, but if you re-enable others via `CODEGRAPH_MCP_TOOLS` they're already permitted, no prompt.</sub>
+<sub>One wildcard auto-approves every CodeGraph tool — `codegraph_explore` and `codegraph_sessions` are always listed, and map mode adds `codegraph_node`; if you re-enable others via `CODEGRAPH_MCP_TOOLS` they're already permitted, no prompt.</sub>
 
 </details>
 
@@ -736,7 +737,7 @@ npm install -g @colbymchenry/codegraph
 CodeGraph's MCP server delivers its usage guidance to your agent **automatically**, in the MCP `initialize` response. In short, it tells the agent to:
 
 - **Answer structural questions directly with CodeGraph** — it *is* the pre-built index, so a grep/read loop just repeats work it already did. Treat the returned source as already read.
-- **Reach for `codegraph_explore` for almost anything** — "how does X work", a flow/"how does X reach Y", or surveying an area. One call returns the relevant symbols' verbatim source grouped by file, the call paths between them (dynamic-dispatch hops included), and a blast-radius summary. Name a file or symbol in the query to read its current line-numbered source.
+- **Reach for `codegraph_explore` for almost anything** — "how does X work", a flow/"how does X reach Y", or surveying an area. By default it returns a compact map: the matching symbols with their files and lines, the call paths between them (dynamic-dispatch hops included), and a blast-radius summary, without source bodies. Fetch one symbol's body with `codegraph_node` (`includeCode: true`), or pass `mode: "source"` for the full verbatim source.
 - **Trust the results — don't re-verify with grep**, and check the staleness banner after edits.
 - Works **per project**: query any project that has a `.codegraph/` index by passing `projectPath` — so a monorepo where only some services are indexed, or a second repo, works in one session. A path with no index returns clean guidance to use built-in tools; indexing stays your decision.
 
@@ -793,7 +794,7 @@ codegraph status [path]           # Show statistics
 codegraph ui [path]               # Browser viewer (alias: web; --port, --no-open); not released yet, needs CODEGRAPH_UI=1
 codegraph unlock [path]           # Remove a stale lock file that's blocking indexing
 codegraph query <search>          # Search symbols (--kind, --limit, --json)
-codegraph explore <query>         # Relevant symbols' source + call paths in one shot (same output as the codegraph_explore MCP tool)
+codegraph explore <query>         # Compact map by default (--mode map|snippets|source; same output as codegraph_explore)
 codegraph context <task...>       # Context for a task: relevant symbols, relationships and code (--format markdown|json, --max-nodes, --no-code)
 codegraph sessions <words...>     # Search Claude Code, Codex, Cursor/T3, OpenCode, AGY, Devin, and Grok transcripts and commit messages for this project (--role, --since <days>, --until <date>, --session, --any, --full, --context <n>, --project <path...> (experimental), --json; same output as codegraph_sessions)
 codegraph node <symbol|file>      # One symbol's source + callers, or read a file with line numbers (same output as codegraph_node)
@@ -841,14 +842,15 @@ fi
 
 ## MCP Tools
 
-When running as an MCP server, CodeGraph exposes **one tool for code** — `codegraph_explore` — and one for the project's own history — `codegraph_sessions`. Measured agent behavior showed that one strong code tool steers agents better than a menu of narrower ones — fewer mis-picks, and it saves context every session:
+When running as an MCP server, CodeGraph exposes **one code entry point** — `codegraph_explore` — plus `codegraph_node` as its body follow-up in map mode, and `codegraph_sessions` for the project's own history. Measured agent behavior showed that one strong entry point steers agents better than a menu of narrower tools — fewer mis-picks, and it saves context every session:
 
 | Tool | Purpose |
 |------|---------|
-| `codegraph_explore` | Answer almost any question in one call — "how does X work", a flow ("how does X reach Y"), or surveying an area — returning the relevant symbols' verbatim source grouped by file, plus the call paths between them and a blast-radius summary. Surfaces dynamic-dispatch hops (callbacks, React re-render, interface→impl) grep can't follow. Name a file or symbol in the query to read its current line-numbered source, the same shape the Read tool gives you. |
+| `codegraph_explore` | Answer almost any question from a compact map by default — "how does X work", a flow ("how does X reach Y"), or surveying an area — returning the matching symbols with `file:line`, the call paths between them, and a blast-radius summary. Surfaces dynamic-dispatch hops (callbacks, React re-render, interface→impl) grep can't follow. `mode: "snippets"` adds each file's first lines; `mode: "source"` returns the verbatim, line-numbered source in Read's shape. |
+| `codegraph_node` | One symbol's definition, signature and verbatim source (`includeCode: true`), or a whole file in Read's shape; listed beside explore when it serves the compact map. |
 | `codegraph_sessions` | Search this project's Claude Code, Codex, Cursor/T3, OpenCode, AGY, Devin, and Grok transcripts and its last 2000 git commit messages, including active sessions: prompts, replies, and compaction summaries, excluding tool traffic. Uses stemmed, BM25-ranked full-text search, stored locally in `.codegraph/sessions-v2.db` and refreshed for changed files on each call. Each hit includes its session (`claude:`, `codex:`, `cursor:`, `opencode:`, `agy:`, `devin:`, `grok:`, or `git:`), role, time, transcript path, and matching passage; `full` returns each hit's whole stored passage instead of the snippet, up to 16,000 bytes in all, and later hits keep their snippet; `context` (0-5, implies `full`) adds that many neighbouring passages either side of each hit from the same transcript, spending the same budget after the hits themselves; `projects` (experimental, up to five paths) searches those projects' session histories in one call, interleaving hits by each project's own ranking and naming each hit's project. Passages come back as stored, credentials included. Common words are dropped, and when too few passages hold every remaining word, passages holding some of them follow, marked. Harness-injected text (skill bodies, system reminders) is not indexed. Set `"sessions": false` in `codegraph.json` to opt out; `CODEGRAPH_SESSIONS_DIR` selects another Claude-format transcript directory exclusively. |
 
-The other tools (`codegraph_node`, `codegraph_search`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, `codegraph_files`, `codegraph_status`) stay fully functional but **unlisted by default** — everything they return already arrives inline on `codegraph_explore` (its blast-radius section, the relationship map, a symbol's body as its callee list). Re-enable any of them for the MCP surface with the `CODEGRAPH_MCP_TOOLS` environment variable (e.g. `CODEGRAPH_MCP_TOOLS=explore,node,search,callers`), or use their CLI equivalents (`codegraph node` / `query` / `callers` / `callees` / `impact` / `files` / `status`).
+The other tools (`codegraph_search`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, `codegraph_files`, `codegraph_status`) stay fully functional but **unlisted by default** — everything they return already arrives inline on `codegraph_explore` (its blast-radius section, the relationship map, a symbol's body as its callee list). `codegraph_node` is the exception: map mode lists it as the body follow-up. Re-enable any of them for the MCP surface with the `CODEGRAPH_MCP_TOOLS` environment variable (e.g. `CODEGRAPH_MCP_TOOLS=explore,node,search,callers`), or use their CLI equivalents (`codegraph node` / `query` / `callers` / `callees` / `impact` / `files` / `status`).
 
 Even when the server's own root has no `.codegraph/` index, the tools stay available: pass `projectPath` to query any indexed project — a sub-service in a monorepo, or a second repo — in the same session. A path that has no index returns clean guidance to use built-in tools instead, so nothing fails loudly, and indexing stays your decision. A project opened this way is watched and kept in sync while the session uses it, and released after 10 minutes without a query (`CODEGRAPH_PROJECT_IDLE_TIMEOUT_MS`; `0` keeps it open).
 

@@ -159,7 +159,7 @@ describe('compactExploreText promises', () => {
 
 describe('resolveExploreMode', () => {
   it('falls back to the product default and reads codegraph.json', () => {
-    expect(resolveExploreMode(undefined, tmpDir, {})).toBe('source');
+    expect(resolveExploreMode(undefined, tmpDir, {})).toBe('map');
     fs.writeFileSync(path.join(tmpDir, 'codegraph.json'), JSON.stringify({ explore: { mode: 'snippets' } }));
     expect(resolveExploreMode(undefined, tmpDir, {})).toBe('snippets');
   });
@@ -182,21 +182,21 @@ describe('the default surface follows the explore mode', () => {
 
   const listed = () => new ToolHandler(null).getTools().map((t) => t.name).sort();
 
-  it('keeps node off the source-mode surface (the product default)', () => {
+  it('serves node beside explore on the product default', () => {
     delete process.env[ENV];
-    expect(listed()).toEqual(['codegraph_explore', 'codegraph_sessions']);
-    delete process.env.CODEGRAPH_MCP_TOOLS;
-    expect(getStaticTools().map((t) => t.name)).not.toContain('codegraph_node');
-  });
-
-  it('serves node beside explore in map and snippets mode', () => {
-    process.env[ENV] = 'map';
     expect(listed()).toEqual(['codegraph_explore', 'codegraph_node', 'codegraph_sessions']);
-    process.env[ENV] = 'snippets';
-    expect(listed()).toContain('codegraph_node');
+    delete process.env.CODEGRAPH_MCP_TOOLS;
     // The pre-project proxy surface must agree, or the agent sees node listed
     // and then cannot find it after the project opens.
     expect(getStaticTools().map((t) => t.name)).toContain('codegraph_node');
+  });
+
+  it('keeps node off the source-mode surface', () => {
+    process.env[ENV] = 'source';
+    expect(listed()).toEqual(['codegraph_explore', 'codegraph_sessions']);
+    expect(getStaticTools().map((t) => t.name)).not.toContain('codegraph_node');
+    process.env[ENV] = 'snippets';
+    expect(listed()).toContain('codegraph_node');
   });
 
   it('lets an explicit allowlist replace the mode-derived surface', () => {

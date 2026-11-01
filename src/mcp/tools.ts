@@ -472,8 +472,13 @@ export function getExploreOutputBudget(fileCount: number): ExploreOutputBudget {
 /** The output shape of `codegraph_explore`. */
 export type ExploreMode = 'map' | 'snippets' | 'source';
 export const EXPLORE_MODES: readonly ExploreMode[] = ['map', 'snippets', 'source'];
-/** The product default until the compact A/B decides otherwise (one flip point). */
-export const DEFAULT_EXPLORE_MODE: ExploreMode = 'source';
+/**
+ * The product default (one flip point). The 2026-11-01 three-turn A/B measured
+ * map below source on both corpora (gin 8,369 vs 13,327 residual tokens; n8n
+ * 20,430 vs 28,806), so a session starts with the map and fetches bodies with
+ * codegraph_node or mode: "source" only when it needs them.
+ */
+export const DEFAULT_EXPLORE_MODE: ExploreMode = 'map';
 const EXPLORE_MAP_MAX_CHARS = 4000;
 const EXPLORE_SNIPPETS_MAX_CHARS = 8000;
 const EXPLORE_SNIPPET_LINES = 12;

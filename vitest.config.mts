@@ -40,6 +40,12 @@ export default defineConfig({
        */
       CODEGRAPH_TELEMETRY: '0',
       /**
+       * The product default is the compact map. Most suites were written
+       * against the source rendering, so pin them to it; the map default has
+       * its own tests in __tests__/explore-compact.test.ts.
+       */
+      CODEGRAPH_EXPLORE_MODE: 'source',
+      /**
        * Every spawned MCP server, daemons included, would otherwise ask GitHub
        * for the latest release, because the sandboxed home has no cached
        * answer. In one local Windows run that open connection kept a test
