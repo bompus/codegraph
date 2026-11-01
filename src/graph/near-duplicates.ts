@@ -198,6 +198,7 @@ export async function refreshNearDuplicates(deps: NearDuplicateDeps): Promise<{ 
   // transferred Uint32Arrays and the pair pass builds a Set only for a body
   // that actually lands in a candidate pair (36k Sets was most of the handoff).
   const freshSets = new Map<string, Set<number> | Uint32Array>();
+  let signedOffThread = false;
   if (deps.sign) {
     // The bodies are grouped by file for the in-process path; the signer takes
     // them as one batch and the worker/pool groups what it can.
@@ -207,15 +208,25 @@ export async function refreshNearDuplicates(deps: NearDuplicateDeps): Promise<{ 
         bodies.push({ id: b.id, name: b.name, filePath, startLine: b.startLine, endLine: b.endLine, updatedAt: b.updatedAt });
       }
     }
-    const signed = bodies.length > 0 ? await deps.sign(bodies) : [];
-    const byId = new Map(bodies.map((b) => [b.id, b]));
-    for (const s of signed) {
-      const b = byId.get(s.id);
-      if (!b) continue;
-      if (s.set.length > 0) freshSets.set(b.id, s.set);
-      rows.push({ nodeId: b.id, nodeUpdatedAt: b.updatedAt, sig: s.sig.length > 0 ? s.sig : new Uint8Array(0) });
+    try {
+      const signed = bodies.length > 0 ? await deps.sign(bodies) : [];
+      const byId = new Map(bodies.map((b) => [b.id, b]));
+      for (const s of signed) {
+        const b = byId.get(s.id);
+        if (!b) continue;
+        if (s.set.length > 0) freshSets.set(b.id, s.set);
+        rows.push({ nodeId: b.id, nodeUpdatedAt: b.updatedAt, sig: s.sig.length > 0 ? s.sig : new Uint8Array(0) });
+      }
+      signedOffThread = true;
+    } catch (err) {
+      // A worker/pool failure must not leave the signatures stale: sign the
+      // same bodies in-process below, exactly as a run without a pool does.
+      if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
+        console.error(`[synth-timing] nearDup signer failed, signing in-process: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
-  } else {
+  }
+  if (!signedOffThread) {
     for (const [filePath, bodies] of stale) {
       const lines = deps.readFile(filePath)?.split(/\r?\n/);
       for (const b of bodies) {

@@ -200,6 +200,13 @@ describe('near-duplicates in the index', () => {
     const viaSigner = await refreshNearDuplicates({ ...deps, sign });
     expect(viaSigner.signed).toBeGreaterThan(0);
     expect(snapshot()).toEqual(before);
+
+    // A worker/pool rejection falls back to the in-process loop; the rows and
+    // pairs must be the same, not stale or empty.
+    db.prepare("UPDATE nodes SET updated_at = updated_at + 1 WHERE kind = 'function'").run();
+    const viaFallback = await refreshNearDuplicates({ ...deps, sign: async () => { throw new Error('pool down'); } });
+    expect(viaFallback.signed).toBeGreaterThan(0);
+    expect(snapshot()).toEqual(before);
   });
 
   it('a git-scoped sync that edits and removes files stores the same pairs as a fresh index', async () => {
