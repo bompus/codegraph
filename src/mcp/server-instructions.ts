@@ -33,29 +33,33 @@ fewer tokens and round-trips than reading files yourself.
 
 ## The code tool: codegraph_explore — use it instead of reading files
 
-For code there is one tool, \`codegraph_explore\`, and it is Read-equivalent. It
-takes either a natural-language question or a bag of symbol/file names and
-returns the **verbatim, line-numbered source** of the relevant symbols
-grouped by file — the same \`<n>\\t<line>\` shape \`Read\` gives you, safe to
-\`Edit\` from — PLUS the call path among them (including dynamic-dispatch hops
-like callbacks, React re-render, and JSX children that grep can't follow) and
-a blast-radius summary of what depends on them.
+For code there is one tool, \`codegraph_explore\`. By default it returns a
+compact **map** of the relevant symbols: their names, kinds, \`file:line\`,
+signatures, the call path among them (including dynamic-dispatch hops like
+callbacks, React re-render and JSX children that grep can't follow), and a
+blast-radius summary of what depends on them. It does **not** include source
+bodies. The map is for deciding where to look; before you edit a symbol, call
+\`codegraph_node\` with its name and \`includeCode: true\` (a container returns its
+member outline; use \`codegraph_explore\` with \`mode: "source"\` for its full body)
+for the verbatim, line-numbered source — the same
+\`<n>\\t<line>\` shape \`Read\` gives you, safe to \`Edit\` from.
 
 Whether you're answering "how does X work" or implementing a change (fixing a
 bug, adding a feature), call \`codegraph_explore\` before you Read; one call
-usually answers the whole question. Codegraph is a pre-built search index, so
-your own grep + read loop, or a file-reading sub-agent, repeats work it already
-did and costs more for the same answer: typically one to a few codegraph calls
-against dozens of greps and reads.
+usually answers the whole question or names the exact symbols to fetch.
+Codegraph is a pre-built search index, so your own grep + read loop, or a
+file-reading sub-agent, repeats work it already did and costs more for the same
+answer: typically one to a few codegraph calls against dozens of greps and
+reads.
 
 ## How to query
 
-- **Almost any code question — "how does X work", architecture, a bug, "what/where is X", or surveying an area** → \`codegraph_explore\` with a natural-language question or the relevant names. It returns the verbatim source grouped by file, capped by project size.
-- **"How does X reach/become Y? / the flow / the path from X to Y"** → \`codegraph_explore\`, naming the symbols that span the flow (e.g. \`mutateElement renderScene\`) — it surfaces the call path among them, riding dynamic-dispatch hops, and returns their source.
-- **Reading or editing a file/symbol you can name** → put its name or file path in the \`codegraph_explore\` query — it returns that current line-numbered source (safe to \`Edit\` from) with the call path and blast radius attached, so you don't Read it separately. For an overloaded name it returns every matching definition's body in one call.
-- Name what you need as precisely as you can — a receiver type with its method, a constant or variable, a callable, or a file path. Named items are funded first within the output cap; an oversized body comes back as a bounded excerpt whose gap markers name what was left out. Treat returned ranges as already Read; for trimmed parts, query the names in the gap marker.
+- **Almost any code question — "how does X work", architecture, a bug, "what/where is X", or surveying an area** → \`codegraph_explore\` with a natural-language question or the relevant names. It returns the map (symbols, \`file:line\`, flow and blast radius), capped at about 4K characters.
+- **"How does X reach/become Y? / the flow / the path from X to Y"** → \`codegraph_explore\`, naming the symbols that span the flow (e.g. \`mutateElement renderScene\`) — it surfaces the call path among them, riding dynamic-dispatch hops.
+- **Reading or editing a file/symbol you can name** → call \`codegraph_node\` with its name and \`includeCode: true\` (or put the name in \`codegraph_explore\` with \`mode: "source"\`) — it returns that current line-numbered source, safe to \`Edit\` from, with the call path and blast radius attached. For an overloaded name it returns every matching definition's body in one call.
+- Name what you need as precisely as you can — a receiver type with its method, a constant or variable, a callable, or a file path. Named items are funded first within the output cap; in \`mode: "source"\` an oversized body comes back as a bounded excerpt whose gap markers name what was left out. Treat source returned by \`mode: "source"\` (or \`codegraph_node\` with \`includeCode\`) as already Read; for trimmed parts, query the names in the gap marker.
 - **"Why is this like this? What did the last session decide / try / get told about X?"** → \`codegraph_sessions\` with a few words. It searches the prose of this project's earlier Claude Code, Codex, Cursor/T3, OpenCode, AGY, and Devin sessions (prompts, replies, compaction summaries — stemmed, ranked) and names the session each hit came from (\`claude:\`, \`codex:\`, \`cursor:\`, \`opencode:\`, \`agy:\`, \`devin:\`). History and rationale live there, not in the code. A hit is a short snippet; pass \`full: true\` to read each hit's whole passage in the same call (up to 16,000 bytes in all), and \`context: N\` (0-5, implies \`full\`) to also get the N passages either side of each hit from the same transcript. \`sinceDays: N\` keeps only the last N days and \`until: "2026-10-20"\` only docs before that date, so a search can reach history older than the newest 100 hits. Experimental: \`projects: [paths]\` (up to 5) searches those projects' session histories in one call instead of this one, each hit naming its project. Passages are returned as stored, including any credentials a transcript holds.
-- **Need more?** Call \`codegraph_explore\` again with more specific names — treat the source it returns as already Read. Suggested call counts are advisory only, NOT a quota; extra calls are never rejected or rate-limited.
+- **Need more?** Call \`codegraph_explore\` again with more specific names; for source bodies use \`codegraph_node\` with \`includeCode: true\` or \`codegraph_explore\` with \`mode: "source"\`. Suggested call counts are advisory only, NOT a quota; extra calls are never rejected or rate-limited.
 - Qualified symbol names accept dots, \`::\`, or slashes, including containers whose names contain dots (for example, \`AppWeb.Format.group\`).
 - Named-symbol call paths require exact matches; partial or mistyped names are never silently substituted as flow endpoints. If a graph query reports a missing symbol with did-you-mean suggestions, query the suggested name explicitly.
 - Explore matches names and indexed code words lexically, not by meaning; an empty result reports word matches and may suggest indexed candidate names to retry with \`codegraph_explore\`.
@@ -69,7 +73,7 @@ against dozens of greps and reads.
 - Questions about tests include source from the nearest test callers of named symbols, within three caller hops and the file/output budgets. These are static caller links, not measured runtime coverage. Naming a JavaScript or TypeScript test file prioritizes matching \`it\`/\`test\` callbacks, including \`.each\` parameterized tests.
 
 - **The source codegraph returns is the file's current text** (files that changed since the last sync are flagged), so re-checking it with grep costs time and context without adding accuracy. Call edges from the parse are reliable; a hop marked as a name match (see Limitations) is the one to check.
-- **Read/Grep are for what the index lacks**: a detail a codegraph answer didn't cover, or files codegraph doesn't index (such as configs). Markdown is indexed — every \`.md\` file's headings, links and section text (including tables and commands) — so a documentation question (a rule, a runbook, a plan row, a research finding) goes to \`codegraph_explore\` too; it returns the section body, not just its heading.
+- **Read/Grep are for what the index lacks**: a detail a codegraph answer didn't cover, or files codegraph doesn't index (such as configs). Markdown is indexed — every \`.md\` file's headings, links and section text (including tables and commands) — so a documentation question (a rule, a runbook, a plan row, a research finding) goes to \`codegraph_explore\` too; pass \`mode: "source"\` for the section body, not just its heading.
 - **A question about the working changes** ("what do my changes affect", "this branch", \`main..HEAD\`) goes to \`codegraph_explore\` as asked: it reads the diff itself (merge base with the default branch plus uncommitted edits, or the named range) and leads with the changed symbols, their callers and their tests.
 - **Near-duplicates (update together)** in a blast radius or trail names other function bodies nearly identical to the one you are reading. A bug fixed in one copy is usually still in the others: check them, and tell the user if you leave them unchanged.
 - **Requested-source limit notices** distinguish files not pinned within the file limit from unexamined path-like references. A file without pin priority may still appear through other matches. If the summary names uncovered indexed source ranges, explore those ranges to continue; the file and output limits still apply.

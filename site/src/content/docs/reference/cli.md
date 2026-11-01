@@ -15,7 +15,7 @@ codegraph status [path]           # Show statistics (--json)
 codegraph ui [path]               # Open the browser viewer (not released yet — see below)
 codegraph unlock [path]           # Remove a stale lock file that's blocking indexing
 codegraph query <search>          # Search symbols (--kind, --limit, --json)
-codegraph explore <query>         # Relevant symbols' source + call paths in one shot (same output as the codegraph_explore MCP tool)
+codegraph explore <query>         # Compact map by default; --mode map|snippets|source (same output as codegraph_explore)
 codegraph context <task...>       # Context for a task: relevant symbols, relationships and code (--format markdown|json, --max-nodes, --no-code)
 codegraph sessions <words...>     # Search this project's earlier agent sessions (--role, --since <days>, --until <date>, --session, --any, --full, --context <n>, --project <path...> (experimental), --json; same output as codegraph_sessions)
 codegraph node <symbol|file>      # One symbol's source + callers, or read a file with line numbers (same output as codegraph_node)

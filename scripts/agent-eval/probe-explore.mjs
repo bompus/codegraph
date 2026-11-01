@@ -25,6 +25,8 @@
 //                      one running this script, so `bun probe-explore.mjs --mcp`
 //                      serves on Bun)
 //   --timeout-ms <n>   per-request limit with --mcp (default 30000)
+//   --mode <mode>      explore mode (default: source, so the source-loss gate
+//                      compares bodies; use map for compact coverage)
 import { spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -32,17 +34,30 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const SOURCE_HEADER = '**Source Code**';
 const FILE_HEADER = /^\*\*[^`\n]*`([^`]+)`\*\*/;
+const MAP_HEADER = 'omitted in map mode';
 
-/** The source files an explore answer renders, in order, from its Source Code section on. */
+/** The source files an explore answer actually renders, in order. A map renders none. */
 export function renderedFiles(text) {
   const files = [];
   let inSource = false;
   for (const line of text.split('\n')) {
+    if (line.startsWith(SOURCE_HEADER) && line.includes(MAP_HEADER)) {
+      inSource = false;
+      continue;
+    }
     if (line.startsWith(SOURCE_HEADER)) inSource = true;
     const m = inSource ? FILE_HEADER.exec(line) : null;
     if (m) files.push(m[1]);
   }
   return files;
+}
+
+/** The files a compact map names, for coverage checks when it carries no bodies. */
+export function mapFiles(text) {
+  if (!/^\*\*Source Code\*\* — omitted in map mode/m.test(text)) return [];
+  const at = text.indexOf(SOURCE_HEADER);
+  if (at < 0) return [];
+  return [...text.slice(at).matchAll(new RegExp(FILE_HEADER.source, 'gm'))].map((m) => m[1]);
 }
 
 /** One probe row: where the answer's source starts and where each expected pattern first lands. */
@@ -51,8 +66,10 @@ export function probeRow(id, text, ms, mustMatch = []) {
     id,
     ms,
     chars: text.length,
-    sourceAt: text.indexOf(SOURCE_HEADER),
+    sourceAt: /^\*\*Source Code\*\* — omitted in map mode/m.test(text) ? -1 : text.indexOf(SOURCE_HEADER),
     files: renderedFiles(text),
+    mapFiles: mapFiles(text),
+    compact: /^\*\*Source Code\*\* — omitted in map mode/m.test(text),
     mustMatchAt: mustMatch.map((re) => new RegExp(re).exec(text)?.index ?? -1),
   };
 }
@@ -83,7 +100,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--mcp') opts.mcp = true;
     else if (a === '--expect') opts.expect.push(argv[++i]);
-    else if (['--tasks', '--ids', '--out', '--build', '--runtime', '--timeout-ms'].includes(a)) opts[a.slice(2)] = argv[++i];
+    else if (['--tasks', '--ids', '--out', '--build', '--runtime', '--timeout-ms', '--mode'].includes(a)) opts[a.slice(2)] = argv[++i];
     else opts.positional.push(a);
   }
   return opts;
@@ -104,8 +121,10 @@ async function inProcess(build, repo) {
   const handler = new ToolHandler(cg);
   return {
     pid: process.pid,
-    async explore(query, maxFiles) {
-      const res = await handler.execute('codegraph_explore', maxFiles === undefined ? { query } : { query, maxFiles });
+    async explore(query, maxFiles, mode) {
+      const res = await handler.execute('codegraph_explore', {
+        query, ...(maxFiles === undefined ? {} : { maxFiles }), ...(mode ? { mode } : {}),
+      });
       if (res.isError) throw new Error(`codegraph_explore: ${JSON.stringify(res.content)}`);
       return (res.content ?? []).map((c) => c.text ?? '').join('\n');
     },
@@ -172,8 +191,10 @@ async function overMcp(build, repo, runtime, timeoutMs) {
   proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} }) + '\n');
   return {
     pid: proc.pid,
-    async explore(query, maxFiles) {
-      const args = maxFiles === undefined ? { query, projectPath: repo } : { query, projectPath: repo, maxFiles };
+    async explore(query, maxFiles, mode) {
+      const args = {
+        query, projectPath: repo, ...(maxFiles === undefined ? {} : { maxFiles }), ...(mode ? { mode } : {}),
+      };
       const res = await rpc('tools/call', { name: 'codegraph_explore', arguments: args });
       return (res.result?.content ?? []).map((c) => c.text ?? '').join('\n');
     },
@@ -208,7 +229,7 @@ async function main() {
     const idle = memMB(session.pid);
     for (const task of tasks) {
       const t0 = Date.now();
-      const text = await session.explore(task.prompt, task.maxFiles);
+      const text = await session.explore(task.prompt, task.maxFiles, opts.mode ?? 'source');
       const row = probeRow(task.id, text, Date.now() - t0, task.mustMatch);
       missing += row.mustMatchAt.filter((at) => at < 0).length;
       if (opts.out) writeFileSync(join(opts.out, `${task.id}.md`), text);

@@ -101,9 +101,18 @@ describe('probe-explore rows', () => {
     const row = probeRow('t1', text, 12, ['src/b\\.ts', 'absent']);
     expect(row).toEqual({
       id: 't1', ms: 12, chars: text.length, sourceAt: 6,
-      files: ['src/a.ts', 'src/b.ts'], mustMatchAt: [text.indexOf('src/b.ts'), -1],
+      files: ['src/a.ts', 'src/b.ts'], mapFiles: [], compact: false,
+      mustMatchAt: [text.indexOf('src/b.ts'), -1],
     });
     expect(probeRow('t2', 'no source here', 1).sourceAt).toBe(-1);
+    // A compact map names files but renders no source: the source-loss gate
+    // must not mistake its file headers for bodies.
+    const compactText = '**Source Code** — omitted in map mode; fetch a body.\n**`src/a.ts`**\n';
+    const compactRow = probeRow('t3', compactText, 1);
+    expect(compactRow.sourceAt).toBe(-1);
+    expect(compactRow.files).toEqual([]);
+    expect(compactRow.mapFiles).toEqual(['src/a.ts']);
+    expect(compactRow.compact).toBe(true);
   });
 
   it('selects tasks by id globs', () => {
