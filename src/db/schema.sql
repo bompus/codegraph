@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     end_column INTEGER NOT NULL,
     docstring TEXT,
     signature TEXT,
+    search_text TEXT,
     visibility TEXT,
     is_exported INTEGER DEFAULT 0,
     is_async INTEGER DEFAULT 0,
@@ -123,26 +124,27 @@ CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
     qualified_name,
     docstring,
     signature,
+    search_text,
     content='nodes',
     content_rowid='rowid'
 );
 
 -- Triggers to keep FTS index in sync
 CREATE TRIGGER IF NOT EXISTS nodes_ai AFTER INSERT ON nodes BEGIN
-    INSERT INTO nodes_fts(rowid, id, name, qualified_name, docstring, signature)
-    VALUES (NEW.rowid, NEW.id, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature);
+    INSERT INTO nodes_fts(rowid, id, name, qualified_name, docstring, signature, search_text)
+    VALUES (NEW.rowid, NEW.id, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature, NEW.search_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS nodes_ad AFTER DELETE ON nodes BEGIN
-    INSERT INTO nodes_fts(nodes_fts, rowid, id, name, qualified_name, docstring, signature)
-    VALUES ('delete', OLD.rowid, OLD.id, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature);
+    INSERT INTO nodes_fts(nodes_fts, rowid, id, name, qualified_name, docstring, signature, search_text)
+    VALUES ('delete', OLD.rowid, OLD.id, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature, OLD.search_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE ON nodes BEGIN
-    INSERT INTO nodes_fts(nodes_fts, rowid, id, name, qualified_name, docstring, signature)
-    VALUES ('delete', OLD.rowid, OLD.id, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature);
-    INSERT INTO nodes_fts(rowid, id, name, qualified_name, docstring, signature)
-    VALUES (NEW.rowid, NEW.id, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature);
+    INSERT INTO nodes_fts(nodes_fts, rowid, id, name, qualified_name, docstring, signature, search_text)
+    VALUES ('delete', OLD.rowid, OLD.id, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature, OLD.search_text);
+    INSERT INTO nodes_fts(rowid, id, name, qualified_name, docstring, signature, search_text)
+    VALUES (NEW.rowid, NEW.id, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature, NEW.search_text);
 END;
 
 -- Prose-word → symbol-name lookup for the prompt hook's graph-derived gate.

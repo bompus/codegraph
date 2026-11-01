@@ -176,6 +176,13 @@ export interface Node {
   /** Function/method signature */
   signature?: string;
 
+  /**
+   * Extra text the full-text index should match without displaying it in the
+   * node preview. Markdown sections use it for folded table rows, list items
+   * and commands that fall past the 600-character docstring preview.
+   */
+  searchText?: string;
+
   /** Visibility modifier */
   visibility?: 'public' | 'private' | 'protected' | 'internal';
 

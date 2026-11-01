@@ -108,10 +108,11 @@ node scripts/release.mjs
       const guide = cg.searchNodes('Project Guide').find((r) => r.node.language === 'markdown');
       expect(guide).toBeDefined();
 
-      const releaseCommand = cg
+      // The command is section text and summary now, not its own node.
+      const releaseSection = cg
         .searchNodes('release.mjs')
-        .find((r) => r.node.language === 'markdown' && r.node.kind === 'function');
-      expect(releaseCommand).toBeDefined();
+        .find((r) => r.node.language === 'markdown' && r.node.kind === 'module');
+      expect(releaseSection).toBeDefined();
 
       const guideEdges = cg.getOutgoingEdges(guide!.node.id).filter((e) => e.kind === 'imports');
       const guideTargets = guideEdges.map((e) => cg.getNode(e.target));
@@ -123,7 +124,7 @@ node scripts/release.mjs
         startLine: 1,
       });
 
-      const commandEdges = cg.getOutgoingEdges(releaseCommand!.node.id).filter((e) => e.kind === 'calls');
+      const commandEdges = cg.getOutgoingEdges(releaseSection!.node.id).filter((e) => e.kind === 'calls');
       const commandTargets = commandEdges.map((e) => cg.getNode(e.target)?.filePath);
       expect(commandTargets).toContain('scripts/release.mjs');
     } finally {
@@ -196,10 +197,14 @@ See [Setup](docs/setup.md#install).
     try {
       await cg.indexAll();
 
-      const p4s1Row = cg.searchNodes('P4-S1').find((r) => r.node.language === 'markdown');
-      expect(p4s1Row?.node.kind).toBe('constant');
+      // The table rows are section text now; the section owns their refs.
+      const p4s1Row = cg
+        .searchNodes('P4-S1')
+        .map((r) => r.node)
+        .find((n) => n.language === 'markdown' && n.qualifiedName === 'phases/phase4.md#fixed-script-templates');
+      expect(p4s1Row?.kind).toBe('module');
 
-      const edges = cg.getOutgoingEdges(p4s1Row!.node.id).filter((e) => e.kind === 'references');
+      const edges = cg.getOutgoingEdges(p4s1Row!.id).filter((e) => e.kind === 'references');
       const targets = edges.map((e) => cg.getNode(e.target));
       expect(targets).toEqual(
         expect.arrayContaining([

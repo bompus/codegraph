@@ -360,8 +360,11 @@ node scripts/release.mjs
     expect(headings.map((n) => n.name)).toContain('Project Guide');
     expect(headings.map((n) => n.name)).toContain('Release');
 
-    const commandNode = result.nodes.find((n) => n.kind === 'function' && n.signature === 'node scripts/release.mjs');
-    expect(commandNode).toBeDefined();
+    // The command lives in the Release section's searchable summary, not as
+    // its own node.
+    const release = headings.find((n) => n.name === 'Release');
+    expect(release?.docstring).toContain('commands:');
+    expect(release?.docstring).toContain('node scripts/release.mjs');
 
     expect(result.unresolvedReferences).toEqual(
       expect.arrayContaining([
@@ -394,19 +397,13 @@ node scripts/release.mjs
 
     const result = extractFromSource('phases/phase4.md', markdown);
 
-    const tableRows = result.nodes.filter((n) => n.kind === 'constant' && n.qualifiedName.includes('table-row'));
-    expect(tableRows.map((n) => n.name)).toEqual(expect.arrayContaining(['P4-S1', 'P4-S2']));
-
-    const p4s1 = tableRows.find((n) => n.name === 'P4-S1');
-    expect(p4s1?.signature).toContain('Template: P4-S1');
-    expect(p4s1?.signature).toContain('Dispatcher: scripts/csv_search.py::run_p4');
-
-    const commandNode = result.nodes.find((n) =>
-      n.kind === 'function' &&
-      n.language === 'markdown' &&
-      n.signature?.includes('python "{script_path}" p4')
-    );
-    expect(commandNode).toBeDefined();
+    // Rows and commands are section text now: no constant/function nodes.
+    expect(result.nodes.filter((n) => n.kind === 'constant' || n.kind === 'function')).toEqual([]);
+    const phase4 = result.nodes.find((n) => n.kind === 'module' && n.name === 'Phase 4');
+    expect(phase4?.docstring).toContain('P4-S1');
+    expect(phase4?.docstring).toContain('scripts/csv_search.py::run_p4');
+    expect(phase4?.docstring).toContain('commands:');
+    expect(phase4?.docstring).toContain('python "{script_path}" p4');
 
     expect(result.unresolvedReferences).toEqual(
       expect.arrayContaining([
@@ -439,12 +436,12 @@ node scripts/release.mjs
 `;
 
     const result = extractFromSource('docs/runbook.md', markdown);
-    const constants = result.nodes.filter((n) => n.kind === 'constant');
-
-    expect(constants).toEqual(expect.arrayContaining([
-      expect.objectContaining({ docstring: 'POST-FENCE references src/auth.ts::login.' }),
-      expect.objectContaining({ name: 'POST-TABLE' }),
-    ]));
+    // The list item and the table row are section text, not nodes.
+    expect(result.nodes.filter((n) => n.kind === 'constant' || n.kind === 'function')).toEqual([]);
+    const runbook = result.nodes.find((n) => n.kind === 'module' && n.name === 'Runbook');
+    expect(runbook?.docstring).toContain('POST-FENCE references src/auth.ts::login.');
+    expect(runbook?.docstring).toContain('POST-TABLE');
+    expect(result.unresolvedReferences.filter((ref) => ref.referenceName === 'docs/src/auth.ts::login').length).toBeGreaterThanOrEqual(2);
   });
 
   it('indexes Setext (underline) headings and skips frontmatter / code fences', () => {
