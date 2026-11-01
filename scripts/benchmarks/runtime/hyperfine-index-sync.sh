@@ -36,29 +36,36 @@ CG_DIR=".cg-bench-$RUN_ID"
 CURRENT_FILE=""
 CURRENT_BACKUP=""
 CURRENT_CM=""
-# True when the working-tree diff for the probe consists only of the runner's
-# own appended marker blocks. The probe was clean at the start, so any deletion
-# or other addition is an edit made while the benchmark ran.
+# True when the current file is exactly the original bytes plus the runner's
+# appended marker blocks. This compares bytes, not a diff: an added source line
+# such as `++ retries;` is `+++ retries;` in a diff and must not be mistaken for
+# a file header. The probe was clean at the start, so any other suffix is an
+# edit made while the benchmark ran.
 probe_only_runner_edits() {
-  local file=$1 cm=$2
-  git diff --unified=0 -- "$file" | awk -v cm="$cm" '
-    /^--- / { next }
-    /^-/ { bad = 1; exit }
-    /^\+\+\+ / { next }
-    /^\+/ {
-      line = substr($0, 2)
-      if (line == "") next
-      if (line ~ ("^" cm " cg bench probe [0-9]+$")) next
-      if (line ~ /^void_probe_marker_[0-9]+ = 1$/) next
-      bad = 1; exit
+  local file=$1 backup=$2 cm=$3
+  local size
+  size=$(stat -c %s "$backup") || return 1
+  if ! head -c "$size" -- "$file" | cmp -s - "$backup"; then
+    return 1
+  fi
+  tail -c +$((size + 1)) -- "$file" | awk -v cm="$cm" '
+    { line[NR] = $0 }
+    END {
+      i = 1
+      while (i <= NR) {
+        if (line[i] != "") exit 1
+        if (line[i + 1] !~ ("^" cm " cg bench probe [0-9]+$")) exit 1
+        if (line[i + 2] !~ /^void_probe_marker_[0-9]+ = 1$/) exit 1
+        i += 3
+      }
+      exit 0
     }
-    END { exit bad ? 1 : 0 }
   '
 }
 cleanup() {
   if [ -n "$CURRENT_FILE" ] && [ -n "$CURRENT_BACKUP" ] && [ -f "$CURRENT_BACKUP" ]; then
     # Never overwrite an edit another process made during the run.
-    if ! probe_only_runner_edits "$CURRENT_FILE" "${CURRENT_CM:-//}"; then
+    if ! probe_only_runner_edits "$CURRENT_FILE" "$CURRENT_BACKUP" "${CURRENT_CM:-//}"; then
       echo "probe changed by another process; not restoring $CURRENT_FILE; original bytes kept at $CURRENT_BACKUP" >&2
     # Never delete the only copy of the probe's original bytes. A failed
     # restore keeps the backup and says where it is.
@@ -124,7 +131,7 @@ while read -r corpus file cm; do
     [ "$file_hash" = "$db_hash" ] || {
       echo "sync did not process the probe: $corpus/$file" >&2; exit 7
     }
-    if ! probe_only_runner_edits "$file" "$cm"; then
+    if ! probe_only_runner_edits "$file" "$backup" "$cm"; then
       echo "probe changed by another process during the arm: $corpus/$file; not restoring (backup: $backup)" >&2
       exit 7
     fi
