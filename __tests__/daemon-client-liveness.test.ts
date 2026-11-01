@@ -20,6 +20,8 @@ describe('parseClientHelloLine', () => {
       .toEqual({ pid: 1234, hostPid: null, exploreMode: 'source' });
     expect(parseClientHelloLine('{"codegraph_client":1,"pid":1234,"exploreMode":"  "}'))
       .toEqual({ pid: 1234, hostPid: null });
+    expect(parseClientHelloLine('{"codegraph_client":1,"pid":1234,"exploreMode":null,"advertisedMode":"map"}'))
+      .toEqual({ pid: 1234, hostPid: null, exploreMode: null, advertisedMode: 'map' });
   });
 
   it('accepts a null host pid and a missing host pid', () => {

@@ -122,8 +122,10 @@ export interface MCPSessionOptions {
   explicitProjectPath?: string | null;
   /** Only a shared daemon can acknowledge ownership-bound reconciliation. */
   refreshWatcher?: (params: unknown) => Promise<unknown>;
-  /** The launching proxy's CODEGRAPH_EXPLORE_MODE, sent in its client hello. */
-  exploreMode?: string;
+  /** The launching proxy's CODEGRAPH_EXPLORE_MODE; null means it was unset. */
+  exploreMode?: string | null;
+  /** The mode the proxy advertised in tools/list. */
+  advertisedMode?: string;
 }
 
 /**
@@ -138,7 +140,8 @@ export class MCPSession {
   private resolvePromise: Promise<void> | null = null;
   private explicitProjectPath: string | null;
   private refreshWatcher?: MCPSessionOptions['refreshWatcher'];
-  private readonly exploreMode?: string;
+  private readonly exploreMode?: string | null;
+  private readonly advertisedMode?: string;
   /**
    * What `codegraph_explore` has already returned to THIS client, per project
    * (CG-17). Owned by the session, not the engine: the daemon shares one engine
@@ -157,6 +160,7 @@ export class MCPSession {
     this.explicitProjectPath = opts.explicitProjectPath ?? null;
     this.refreshWatcher = opts.refreshWatcher;
     this.exploreMode = opts.exploreMode;
+    this.advertisedMode = opts.advertisedMode;
   }
 
   /**
@@ -371,7 +375,9 @@ export class MCPSession {
     await this.retryInitIfNeeded();
 
     if (process.env.CODEGRAPH_MCP_DEBUG) process.stderr.write(`[mcp-debug] toolsCall ${toolName} id=${String(request.id)} dispatch\n`);
-    const result = await this.engine.getToolHandler().execute(toolName, toolArgs, this.exploreSession, this.exploreMode);
+    const result = await this.engine.getToolHandler().execute(
+      toolName, toolArgs, this.exploreSession, this.exploreMode, this.advertisedMode,
+    );
     if (process.env.CODEGRAPH_MCP_DEBUG) process.stderr.write(`[mcp-debug] toolsCall ${toolName} id=${String(request.id)} done\n`);
     this.transport.sendResult(request.id, result);
     // After the reply is on the wire — telemetry must never delay a tool

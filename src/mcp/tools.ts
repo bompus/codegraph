@@ -483,7 +483,7 @@ const EXPLORE_MAP_MAX_CHARS = 4000;
 const EXPLORE_SNIPPETS_MAX_CHARS = 8000;
 const EXPLORE_SNIPPET_LINES = 12;
 
-function exploreModeOption(value: unknown): ExploreMode | undefined {
+export function exploreModeOption(value: unknown): ExploreMode | undefined {
   return typeof value === 'string' && (EXPLORE_MODES as readonly string[]).includes(value)
     ? (value as ExploreMode)
     : undefined;
@@ -514,9 +514,16 @@ export function resolveExploreMode(
   env: NodeJS.ProcessEnv = process.env,
   sessionMode?: unknown,
 ): ExploreMode {
-  return exploreModeOption(arg)
-    ?? exploreModeOption(sessionMode)
-    ?? exploreModeWithoutProject(env)
+  const call = exploreModeOption(arg);
+  if (call) return call;
+  if (sessionMode !== undefined) {
+    const session = exploreModeOption(sessionMode);
+    if (session) return session;
+    // A proxy hello with no env override means the daemon's inherited env is
+    // not this session's env; fall through to the project layer instead.
+    return projectExploreMode(projectRoot) ?? DEFAULT_EXPLORE_MODE;
+  }
+  return exploreModeWithoutProject(env)
     ?? projectExploreMode(projectRoot)
     ?? DEFAULT_EXPLORE_MODE;
 }
@@ -526,14 +533,27 @@ export function exploreModeWithoutProject(env: NodeJS.ProcessEnv = process.env):
   return exploreModeOption(env.CODEGRAPH_EXPLORE_MODE);
 }
 
-/** One compact map row: a selected symbol's location and signature. */
-export function compactSymbolRows(nodes: readonly Node[], max: number): string[] {
+/**
+ * One compact map row per selected symbol. Explicitly requested nodes (query
+ * names, line anchors, the flow spine) go first, so a row limit cannot drop the
+ * symbol the caller actually named. Returns how many eligible rows were left out.
+ */
+export function compactSymbolRows(
+  nodes: readonly Node[],
+  max: number,
+  priority: ReadonlySet<string> = new Set(),
+): { rows: string[]; omitted: number } {
+  const eligible = nodes
+    .filter((node) => node.kind !== 'export' && node.kind !== 'import'
+      && node.startLine != null && !isConfigLeafNode(node))
+    .map((node, index) => ({ node, index }))
+    .sort((a, b) =>
+      (Number(priority.has(b.node.id)) - Number(priority.has(a.node.id))) || (a.index - b.index))
+    .map(({ node }) => node);
   const rows: string[] = [];
   const seen = new Set<string>();
-  for (const node of nodes) {
+  for (const node of eligible) {
     if (rows.length >= max) break;
-    if (node.kind === 'export' || node.kind === 'import') continue;
-    if (node.startLine == null || isConfigLeafNode(node)) continue;
     const key = `${node.name}\u0000${node.startLine}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -543,7 +563,7 @@ export function compactSymbolRows(nodes: readonly Node[], max: number): string[]
       : '';
     rows.push(`- \`${node.name}\` (${node.kind}) :${node.startLine}${suffix}`);
   }
-  return rows;
+  return { rows, omitted: eligible.length - rows.length };
 }
 
 /**
@@ -568,6 +588,16 @@ export function injectCompactSymbolTables(
 }
 
 /**
+ * A fence longer than any backtick run in the body, so a Markdown excerpt's
+ * own ``` block cannot close the wrapper (visible with line numbers off).
+ */
+function sourceFence(body: string): string {
+  let longest = 3;
+  for (const run of body.match(/`{3,}/g) ?? []) longest = Math.max(longest, run.length + 1);
+  return '`'.repeat(longest);
+}
+
+/**
  * Reduce a rendered explore response to a map or snippets. The renderer above
  * has already chosen and ordered the files; this keeps its summary, flow,
  * blast radius, a bounded Relationships list and the per-file symbol headers,
@@ -587,7 +617,9 @@ export function compactExploreText(
   let section: Section = 'preamble';
   const out: string[] = [];
   let inFence = false;
+  let fence = '';
   let snippet = 0;
+  let queryEcho: string | null = null;
   let blastEntries = 0;
   let blastOmitted = 0;
   let relKinds = 0;
@@ -618,12 +650,27 @@ export function compactExploreText(
     }
   };
 
+  const compactQuery = (query: string) => {
+    const normalized = query.replace(/\s+/g, ' ').trim();
+    return normalized.length > 160 ? `${normalized.slice(0, 157)}…` : normalized;
+  };
   for (const line of text.split('\n')) {
+    if (queryEcho !== null) {
+      queryEcho += ` ${line}`;
+      if (line.endsWith('**')) {
+        out.push(`**Exploration: ${compactQuery(queryEcho.slice('**Exploration: '.length, -2))}**`);
+        queryEcho = null;
+      }
+      continue;
+    }
     const relKindLine = /^\*\*[^*\n]+:\*\*$/.test(line);
     if (!inFence) {
-      if (line.startsWith('**Exploration: ') && line.endsWith('**')) {
-        const query = line.slice('**Exploration: '.length, -2);
-        out.push(`**Exploration: ${query.length > 160 ? `${query.slice(0, 157)}…` : query}**`);
+      if (line.startsWith('**Exploration: ')) {
+        if (line.endsWith('**')) {
+          out.push(`**Exploration: ${compactQuery(line.slice('**Exploration: '.length, -2))}**`);
+        } else {
+          queryEcho = line;
+        }
         continue;
       }
       if (line === '**Source Code**') {
@@ -678,7 +725,7 @@ export function compactExploreText(
     }
 
     if (inFence) {
-      if (line.startsWith('```')) {
+      if (/^`{3,}\s*$/.test(line) && (line.match(/^`+/)![0].length >= fence.length)) {
         inFence = false;
         if (mode === 'snippets') {
           if (snippet >= EXPLORE_SNIPPET_LINES) out.push('...');
@@ -693,10 +740,16 @@ export function compactExploreText(
       continue;
     }
 
+    if (/^> \*\*Complete source for .*included above|source above is verbatim|do NOT re-read/i.test(line)) {
+      continue;
+    }
+
     switch (section) {
       case 'source': {
-        if (line.startsWith('```')) {
+        const openFence = /^(`{3,})/.exec(line);
+        if (openFence) {
           inFence = true;
+          fence = openFence[1]!;
           snippet = 0;
           if (mode === 'snippets') out.push(line);
           continue;
@@ -780,7 +833,10 @@ export function compactExploreText(
                 ? '; fetch a candidate\'s body with codegraph_node includeCode: true.'
                 : '; pass mode: "source" for the body.',
             )
-            : candidate);
+            : candidate.replace(
+              'source for the sites above is included below.',
+              'source for the sites above is excerpted below; for a site past the excerpt, use codegraph_explore mode: "source".',
+            ));
           continue;
         }
         if (mode === 'map' && line.startsWith('> Source for these symbols follows')) {
@@ -805,7 +861,7 @@ export function compactExploreText(
       + '\n\n... (compact response truncated; narrow the query or name the symbols you need)';
   }
   const followUp = nodeServed
-    ? 'For one symbol\'s body, call codegraph_node with its name and `includeCode: true`; for the full source, call codegraph_explore with mode: "source".'
+    ? 'For one symbol\'s body, call codegraph_node with its name and `includeCode: true`; a container returns its member outline, so pass `mode: "source"` for its full body. For the full source, call codegraph_explore with mode: "source".'
     : 'For the full source, call codegraph_explore with mode: "source".';
   const hint = mode === 'map'
     ? `> Source omitted in compact map mode. ${followUp}`
@@ -2415,7 +2471,7 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_node',
-    description: 'Two modes. (1) Read a file: pass `file` (a path or basename) with no `symbol` to get that file\'s current on-disk source with line numbers in Read\'s shape (`<n>\\t<line>`, safe to Edit from), narrowable with `offset`/`limit`, plus a one-line note of which files depend on it. (2) One symbol you can name: its location, signature, verbatim source (includeCode=true) and caller/callee trail in one call, so before changing it you see what calls it and what your edit would break. For an ambiguous name it returns every matching definition\'s body; pass `file`/`line` to pin one. Use codegraph_explore for several related symbols or the full flow.',
+    description: 'Two modes. (1) Read a file: pass `file` (a path or basename) with no `symbol` to get that file\'s current on-disk source with line numbers in Read\'s shape (`<n>\\t<line>`, safe to Edit from), narrowable with `offset`/`limit`, plus a one-line note of which files depend on it. (2) One symbol you can name: its location, signature, verbatim source (includeCode=true; a container returns its member outline) and caller/callee trail in one call, so before changing it you see what calls it and what your edit would break. For an ambiguous name it returns every matching definition\'s body; pass `file`/`line` to pin one. Use codegraph_explore for several related symbols or the full flow.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2425,7 +2481,7 @@ export const tools: ToolDefinition[] = [
         },
         includeCode: {
           type: 'boolean',
-          description: 'Symbol mode: include the symbol\'s full body (default: false). Ignored in file mode, which always returns source unless `symbolsOnly` is set.',
+          description: 'Symbol mode: include the symbol\'s source (default: false). A container returns its member outline; use codegraph_explore mode: "source" for its full body. Ignored in file mode, which always returns source unless `symbolsOnly` is set.',
           default: false,
         },
         file: {
@@ -3695,6 +3751,7 @@ export class ToolHandler {
     args: Record<string, unknown>,
     sessionState?: ExploreSessionState,
     exploreMode?: unknown,
+    advertisedMode?: unknown,
   ): Promise<ToolResult> {
     // A cross-project session search (experimental) names its projects itself and
     // needs no default one: anchor the call on the first listed project that has an
@@ -3802,8 +3859,9 @@ export class ToolHandler {
       // structured-clone boundary into a worker, where a closure or a handler
       // field could not follow.
       const dispatchArgs = this.withSessionView(toolName, args, sessionState);
-      if (toolName === 'codegraph_explore' && exploreMode !== undefined) {
-        dispatchArgs.__exploreMode = exploreMode;
+      if (toolName === 'codegraph_explore') {
+        if (exploreMode !== undefined) dispatchArgs.__exploreMode = exploreMode;
+        if (advertisedMode !== undefined) dispatchArgs.__advertisedMode = advertisedMode;
       }
       // The default may have appeared after the workers started. Pass the
       // main thread's current root explicitly; with no root or projectPath,
@@ -5195,7 +5253,11 @@ export class ToolHandler {
     }
   }
 
-  private async handleExplore(args: Record<string, unknown>, sessionMode?: unknown): Promise<ToolResult> {
+  private async handleExplore(
+    args: Record<string, unknown>,
+    sessionMode?: unknown,
+    advertisedMode?: unknown,
+  ): Promise<ToolResult> {
     const rawQuery = this.validateString(args.query, 'query');
     if (typeof rawQuery !== 'string') return rawQuery;
     // One normalization point so the flow-builder, relevance search, and
@@ -5206,9 +5268,16 @@ export class ToolHandler {
     const projectRoot = cg.getProjectRoot();
     // The proxy's session override travels with the call; the daemon's own env
     // is only the fallback when the launching session had none.
-    const mode = resolveExploreMode(args.mode, projectRoot, process.env, args.__exploreMode ?? sessionMode);
+    const sessionModeArg = '__exploreMode' in args ? args.__exploreMode : sessionMode;
+    const mode = resolveExploreMode(args.mode, projectRoot, process.env, sessionModeArg);
+    // The follow-up must match the surface the client was actually offered, not
+    // the per-call mode: a map requested from a source-mode session cannot call
+    // node. The proxy's hello carries that advertised mode.
+    const advertised = exploreModeOption(
+      '__advertisedMode' in args ? args.__advertisedMode : advertisedMode,
+    ) ?? this.servedExploreMode();
     const allow = this.toolAllowlist();
-    const nodeServed = allow ? allow.has('node') : defaultSurfaceFor(mode).has('node');
+    const nodeServed = allow ? allow.has('node') : defaultSurfaceFor(advertised).has('node');
 
     // Resolve adaptive output budget from project size. Falls back to the
     // largest-tier defaults if stats aren't available, which preserves
@@ -6758,8 +6827,9 @@ export class ToolHandler {
     );
 
     // Step 3: Build relationship map
+    const headingQuery = query.replace(/\s+/g, ' ').trim();
     const lines: string[] = [
-      `**Exploration: ${query}**`,
+      `**Exploration: ${headingQuery.length > 160 ? `${headingQuery.slice(0, 157)}…` : headingQuery}**`,
       '',
       // Curated summary — filled in after the source loop (see below). We do NOT
       // report `subgraph.nodes.size` / `fileGroups.size` here: that's the raw
@@ -7564,7 +7634,8 @@ export class ToolHandler {
           backReferencedFiles.push(filePath);
         }
         if (body.length > 0) {
-          lines.push('```' + lang, body, '```', '');
+          const fence = sourceFence(body);
+          lines.push(fence + lang, body, fence, '');
           // ```lang \n body \n ``` \n '' \n — exact, same as the header above.
           totalChars += body.length + lang.length + 11;
           sourceSpent += body.length;
@@ -7588,11 +7659,12 @@ export class ToolHandler {
         noteEmitted(filePath, opts.covered, 0, fingerprint);
         renderedFilePaths.push(filePath);
         if (!suppressedFallback && opts.fullBody.length > 0) {
+          const fence = sourceFence(opts.fullBody);
           suppressedFallback = {
             filePath,
             at,
             replacing: lines.length - at,
-            section: [opts.header, '', '```' + lang, opts.fullBody, '```', ''],
+            section: [opts.header, '', fence + lang, opts.fullBody, fence, ''],
             sourceChars: opts.fullBody.length,
             overhead: opts.overhead,
             ranges: opts.fullRanges,
@@ -7878,8 +7950,9 @@ export class ToolHandler {
         if (parts.length > 0) {
           const suffix = `sections: ${shown.join(' · ')}${elided ? ' (long sections show only the rows that match the question)' : ''} — the rest of the file is not shown`;
           const header = fileSectionHeader(filePath, suffix);
-          lines.push(header, '', '```' + lang, parts.join('\n\n'), '```', '');
-          docRenderedLines.set(filePath, { marker: header + '\n\n```' + lang + '\n', lines: renderedLines });
+          const fence = sourceFence(parts.join('\n\n'));
+          lines.push(header, '', fence + lang, parts.join('\n\n'), fence, '');
+          docRenderedLines.set(filePath, { marker: header + '\n\n' + fence + lang + '\n', lines: renderedLines });
           totalChars += used + 120;
           noteEmitted(filePath, mergeRanges([...picked.values()].flat()
             .map(ln => ({ start: ln, end: ln }))), used, fingerprint);
@@ -9604,13 +9677,24 @@ export class ToolHandler {
     );
     finalText = finalText.replace(summaryPlaceholder, summaryLine);
     if (mode !== 'source') {
+      const priority = new Set<string>([
+        ...subgraph.roots, ...exactNodeIds, ...flow.namedNodeIds, ...flow.pathNodeIds,
+      ]);
       const tables = new Map<string, string[]>();
       for (const fp of survivors) {
         const group = fileGroups.get(fp);
-        if (!group) continue;
         // Doc headings are navigation, not code to locate; a smaller list keeps
         // the doc-tier graph tail inside the map budget.
-        const rows = compactSymbolRows(group.nodes, docTierFiles.has(fp) ? 3 : 6);
+        const symbols = compactSymbolRows(group?.nodes ?? [], docTierFiles.has(fp) ? 3 : 6, priority);
+        const rows = [...symbols.rows];
+        if (symbols.omitted > 0) {
+          rows.push(`- (+${symbols.omitted} more symbol${symbols.omitted === 1 ? '' : 's'} in this file)`);
+        }
+        // A quoted-prose or path anchor can land in a file with no symbol rows;
+        // its line is the whole answer, so keep it even when the source is gone.
+        for (const anchor of lineAnchors.filter((a) => a.file === fp).slice(0, 3)) {
+          rows.push(`- line :${anchor.start}${anchor.end > anchor.start ? `-${anchor.end}` : ''}`);
+        }
         if (rows.length > 0) tables.set(fp, rows);
       }
       finalText = injectCompactSymbolTables(finalText, tables);

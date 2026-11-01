@@ -22,6 +22,7 @@ import * as fs from 'fs';
 import * as net from 'net';
 import { HOST_PPID_ENV } from '../extraction/node-runtime-flags';
 import { DaemonClientHello, DaemonHello, MAX_HELLO_LINE_BYTES } from './daemon';
+import { DEFAULT_EXPLORE_MODE, exploreModeOption } from './tools';
 import { EARLY_PPID } from './early-ppid';
 import { supervisionLostReason } from './ppid-watchdog';
 import { armStartupHandshakeTimeout } from './startup-handshake';
@@ -214,12 +215,16 @@ export async function connectWithHello(
  * host pid if set, else our own parent (the host, on a no-relaunch bundle).
  */
 function sendClientHello(socket: net.Socket): void {
-  const exploreMode = process.env.CODEGRAPH_EXPLORE_MODE?.trim();
+  const envMode = process.env.CODEGRAPH_EXPLORE_MODE?.trim();
+  // `null` says "this session has no env override", so the daemon does not
+  // inherit an older session's override. The advertised mode mirrors the
+  // proxy's tools/list choice (env or the product default).
   const clientHello: DaemonClientHello = {
     codegraph_client: 1,
     pid: process.pid,
     hostPid: parseHostPpid(process.env[HOST_PPID_ENV]) ?? EARLY_PPID,
-    ...(exploreMode ? { exploreMode } : {}),
+    exploreMode: envMode ? envMode : null,
+    advertisedMode: exploreModeOption(envMode) ?? DEFAULT_EXPLORE_MODE,
   };
   try { socket.write(JSON.stringify(clientHello) + '\n'); } catch { /* best-effort */ }
 }

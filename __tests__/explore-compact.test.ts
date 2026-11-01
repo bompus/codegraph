@@ -151,7 +151,7 @@ describe('compactExploreText promises', () => {
 
   it('leaves snippets promises alone because the source does follow', () => {
     const out = compactExploreText(TEXT, 'snippets');
-    expect(out).toContain('included below');
+    expect(out).toContain('excerpted below');
     expect(out).toContain('Source for these symbols follows');
     expect(out).toContain('**Source Code**\n');
     expect(out).toContain('const x = 1;');
@@ -229,11 +229,46 @@ describe('compactExploreText sections', () => {
     const out = compactExploreText(`**Exploration: ${query}**\n\nFound 1 symbol across 1 file.`, 'map');
     expect(out.split('\n')[0]!.length).toBeLessThanOrEqual(175);
     expect(out).toContain('…');
+    // A multiline query heading must not bypass the bound either.
+    const multiline = compactExploreText(`**Exploration: src/a.ts\n${query}**\n\nFound 1 symbol.`, 'map');
+    expect(multiline.split('\n')[0]!.length).toBeLessThanOrEqual(175);
+    expect(multiline).toContain('Found 1 symbol.');
+  });
+
+  it('does not let a nested Markdown fence close the source wrapper', () => {
+    const text = [
+      '**Source Code**',
+      '',
+      '**`doc.md`** — section',
+      '',
+      '````markdown',
+      '# Title',
+      '```yaml',
+      '- a',
+      '```',
+      '````',
+    ].join('\n');
+    const out = compactExploreText(text, 'map');
+    expect(out).not.toContain('- a');
+  });
+
+  it('removes source-completeness claims from compact output', () => {
+    const text = [
+      '**Not shown above — explore these names for their source**',
+      '',
+      '- file.ts: run',
+      '',
+      '> **Complete source for 1 file is included above — do NOT re-read them.**',
+    ].join('\n');
+    const out = compactExploreText(text, 'map');
+    expect(out).not.toContain('Complete source');
+    expect(out).toContain('- file.ts: run');
   });
 
   it('only names codegraph_node when the client can call it', () => {
     const served = compactExploreText(RENDERED, 'map', true);
     expect(served).toContain('codegraph_node');
+    expect(served).toContain('container returns its member outline');
     const unserved = compactExploreText(RENDERED, 'map', false);
     expect(unserved).not.toContain('codegraph_node');
     expect(unserved).toContain('mode: "source"');
@@ -244,7 +279,7 @@ describe('compactExploreText sections', () => {
       'snippets', false,
     );
     expect(snippets).not.toContain('codegraph_node');
-    expect(snippets).toContain('included below');
+    expect(snippets).toContain('excerpted below');
   });
 });
 
@@ -255,9 +290,18 @@ describe('compact symbol rows', () => {
   } as unknown as Node;
 
   it('names the location and signature before the body is dropped', () => {
-    expect(compactSymbolRows([node], 6)).toEqual([
+    expect(compactSymbolRows([node], 6).rows).toEqual([
       '- `runNode` (method) :1349 — async runNode(workflow: Workflow)',
     ]);
+  });
+
+  it('keeps explicitly requested symbols ahead of the row limit', () => {
+    const mk = (id: string, startLine: number) => ({
+      id, name: id, kind: 'function', startLine, language: 'typescript', filePath: 'a.ts',
+    }) as unknown as Node;
+    const result = compactSymbolRows([mk('a', 1), mk('b', 2), mk('c', 3)], 1, new Set(['c']));
+    expect(result.rows).toEqual(['- `c` (function) :3']);
+    expect(result.omitted).toBe(2);
   });
 
   it('inserts the rows under the matching file header', () => {
@@ -282,6 +326,9 @@ describe('resolveExploreMode', () => {
     // The launching session's override beats the daemon's inherited env.
     expect(resolveExploreMode(undefined, tmpDir, { CODEGRAPH_EXPLORE_MODE: 'source' }, 'map')).toBe('map');
     expect(resolveExploreMode('source', tmpDir, { CODEGRAPH_EXPLORE_MODE: 'map' }, 'source')).toBe('source');
+    // An explicit null says the session had no override: skip the daemon env
+    // and use the project file.
+    expect(resolveExploreMode(undefined, tmpDir, { CODEGRAPH_EXPLORE_MODE: 'snippets' }, null)).toBe('source');
   });
 });
 

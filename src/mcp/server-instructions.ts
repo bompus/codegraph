@@ -39,8 +39,9 @@ signatures, the call path among them (including dynamic-dispatch hops like
 callbacks, React re-render and JSX children that grep can't follow), and a
 blast-radius summary of what depends on them. It does **not** include source
 bodies. The map is for deciding where to look; before you edit a symbol, call
-\`codegraph_node\` with its name and \`includeCode: true\` (or
-\`codegraph_explore\` with \`mode: "source"\`) for the verbatim, line-numbered source — the same
+\`codegraph_node\` with its name and \`includeCode: true\` (a container returns its
+member outline; use \`codegraph_explore\` with \`mode: "source"\` for its full body)
+for the verbatim, line-numbered source — the same
 \`<n>\\t<line>\` shape \`Read\` gives you, safe to \`Edit\` from.
 
 Whether you're answering "how does X work" or implementing a change (fixing a
