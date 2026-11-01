@@ -2415,7 +2415,11 @@ export class ExtractionOrchestrator {
     };
     for (const file of files) rememberBasename(file);
     for (const file of this.queries.getAllFilePaths()) rememberBasename(file);
-    const extractionContext = { knownFileNames };
+    // A full index has the whole project in hand, so a relative file target
+    // with no matching basename is dead. An incremental sync re-extracts one
+    // file at a time and must keep the reference for a target added later
+    // (#1240), so indexFile() passes no context and keeps every target.
+    const extractionContext = { knownFileNames, pruneMissingTargets: true };
     /** Only meaningful when nothing was indexable — see IndexResult (#1502). */
     const skipSummary = (): Pick<IndexResult, 'filesSkippedUnsupported' | 'topUnsupportedExtensions'> => {
       let total = 0;

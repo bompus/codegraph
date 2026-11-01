@@ -27,13 +27,15 @@ import type { Language, ExtractionResult } from '../types';
  * Sent once per worker spawn (the pool re-sends it to a recycled worker).
  */
 let knownFileNames: Set<string> | undefined;
+let pruneMissingTargets: boolean | undefined;
 
-parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: string; content?: string; languages?: Language[]; frameworkNames?: string[]; language?: Language; knownFileNames?: string[] }) => {
+parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: string; content?: string; languages?: Language[]; frameworkNames?: string[]; language?: Language; knownFileNames?: string[]; pruneMissingTargets?: boolean }) => {
   if (msg.type === 'load-grammars') {
     // Nothing to load since the wasm path was removed: grammars live in the
     // kernel binary. The handshake stays so the pool's readiness model
     // (spawned → ready → idle) is unchanged.
     knownFileNames = msg.knownFileNames ? new Set(msg.knownFileNames) : undefined;
+    pruneMissingTargets = msg.pruneMissingTargets;
     parentPort!.postMessage({ type: 'grammars-loaded' });
   } else if (msg.type === 'parse') {
     const { id, filePath, content, frameworkNames } = msg;
@@ -79,7 +81,9 @@ parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: st
         content!,
         language,
         frameworkNames,
-        knownFileNames ? { knownFileNames } : undefined
+        knownFileNames || pruneMissingTargets
+          ? { knownFileNames, pruneMissingTargets }
+          : undefined
       );
 
       parentPort!.postMessage({ type: 'parse-result', id, result, parseMs: performance.now() - t0 });

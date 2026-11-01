@@ -336,6 +336,7 @@ export class ParseWorkerPool {
       knownFileNames: this.sharedContext?.knownFileNames
         ? [...this.sharedContext.knownFileNames]
         : undefined,
+      pruneMissingTargets: this.sharedContext?.pruneMissingTargets,
     });
   }
 
