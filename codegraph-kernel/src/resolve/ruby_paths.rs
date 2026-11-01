@@ -45,6 +45,45 @@ impl KernelResolver {
             };
         }
         if r.reference_kind == "calls" {
+            // A call on an instance `Foo.new(…)` made, bare or namespaced
+            // (`new Foo().m`, `new A::B().m!`): an instance method of the class
+            // Ruby's lookup finds for `Foo` there, its own or one its ancestry
+            // declares — never a namesake's by the method name alone. A class
+            // the project doesn't declare (rack-protection's `Request.new(env)`
+            // is rack's) has no method here.
+            if let Some(c) = re!(r"^new (::)?([A-Z]\w*(?:::[A-Z]\w*)*)\(\)\.([A-Za-z_]\w*[?!=]?)$").captures(&r.reference_name) {
+                let class = self
+                    .ruby_constants_named(&c[2], r, c.get(1).is_some())?
+                    .into_iter()
+                    .next()
+                    .filter(|n| n.kind == "class");
+                let method = match class {
+                    Some(class) => self.ruby_method_of(&class.qualified_name, &c[3], r, "instance")?,
+                    None => None,
+                };
+                return Ok(Some(match method {
+                    Some((method, own)) => ResolveOutcome::resolved(&method, if own { 0.9 } else { 0.85 }, "instance-method", true, None),
+                    None => ResolveOutcome::unresolved(),
+                }));
+            }
+            // A call on an instance variable `@writer.flush`, typed by the
+            // class's `initialize`: an instance method of the class every
+            // assignment there gives the variable — or nothing when that
+            // class is not the project's. A variable `initialize` does not
+            // type is left to the other strategies, as before (#3053).
+            if let Some(c) = re!(r"^@(\w+)\.([A-Za-z_]\w*[?!=]?)$").captures(&r.reference_name) {
+                let Some(class) = self.ruby_ivar_class(&c[1], r)? else {
+                    return Ok(None);
+                };
+                let method = match class {
+                    Some(class) => self.ruby_method_of(&class.qualified_name, &c[2], r, "instance")?,
+                    None => None,
+                };
+                return Ok(Some(match method {
+                    Some((method, own)) => ResolveOutcome::resolved(&method, if own { 0.85 } else { 0.8 }, "instance-method", true, None),
+                    None => ResolveOutcome::unresolved(),
+                }));
+            }
             let Some(c) = re!(r"^(::)?([A-Z]\w*(?:::[A-Z]\w*)*)\.([A-Za-z_]\w*[?!=]?)$").captures(r.reference_name.trim_start_matches("()")) else {
                 return Ok(None);
             };
@@ -58,7 +97,7 @@ impl KernelResolver {
             let Some(owner) = owner else {
                 return Ok(Some(ResolveOutcome::unresolved()));
             };
-            return match self.ruby_method_of(&owner.qualified_name, &c[3], r)? {
+            return match self.ruby_method_of(&owner.qualified_name, &c[3], r, "class")? {
                 Some((method, own)) => Ok(Some(ResolveOutcome::resolved(
                     &method,
                     if own { 0.85 } else { 0.8 },
@@ -105,6 +144,11 @@ impl KernelResolver {
     /// lexicalScope: the qualified name of the innermost class or module
     /// around `r`, or empty at the top level of its file.
     fn ruby_lexical_scope(&mut self, r: &ResolveRefIn) -> Res<String> {
+        Ok(self.ruby_innermost_namespace(r)?.map(|i| i.qualified_name.clone()).unwrap_or_default())
+    }
+
+    /// innermostNamespace: the innermost class or module around `r`, if any.
+    fn ruby_innermost_namespace(&mut self, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
         let mut inner: Option<Arc<KNode>> = None;
         for n in self.nodes_in_file(&r.file_path)?.iter() {
             if n.language != "ruby" || !matches!(n.kind.as_str(), "class" | "module") || n.start_line > r.line || n.end_line < r.line {
@@ -114,22 +158,97 @@ impl KernelResolver {
                 inner = Some(n.clone());
             }
         }
-        Ok(inner.map(|i| i.qualified_name.clone()).unwrap_or_default())
+        Ok(inner)
+    }
+
+    /// ivarClass (#3053): `Some` the class of what `@name` holds where `r`
+    /// is written — `Some(None)` when that class is not the project's —
+    /// or `None` for the other strategies when `r` is not in an instance
+    /// method of a class, or `initialize` does not type the variable.
+    fn ruby_ivar_class(&mut self, name: &str, r: &ResolveRefIn) -> Res<Option<Option<Arc<KNode>>>> {
+        let caller = self.node_by_id(&r.from_node_id)?;
+        match &caller {
+            Some(c) if c.language == "ruby" && c.kind == "method" && !c.is_static => {}
+            _ => return Ok(None),
+        }
+        let Some(owner) = self.ruby_innermost_namespace(r)? else {
+            return Ok(None);
+        };
+        if owner.kind != "class" {
+            return Ok(None);
+        }
+        let key = format!("{}\0{}", owner.qualified_name, name);
+        if let Some(hit) = self.ruby_ivar_memo.get(&key) {
+            return Ok(hit.clone());
+        }
+        let found = self.ruby_ivar_class_from_initialize(name, &owner.qualified_name, r)?;
+        self.ruby_ivar_memo.insert(key, found.clone());
+        Ok(found)
+    }
+
+    /// ivarClassFromInitialize: every assignment to `@name` in the owner's
+    /// `initialize` must be at a statement's start and a lone `Const.new(…)`
+    /// of one constant — then the class Ruby's lookup finds for that
+    /// constant from there.
+    fn ruby_ivar_class_from_initialize(&mut self, name: &str, owner: &str, r: &ResolveRefIn) -> Res<Option<Option<Arc<KNode>>>> {
+        let mut written: Option<(String, bool, String, i64)> = None;
+        for init in self.nodes_by_qualified_name(&format!("{owner}::initialize"))?.iter() {
+            if init.kind != "method" || init.language != "ruby" || init.is_static {
+                continue;
+            }
+            let Some(lines) = self.read_file(&init.file_path) else {
+                return Ok(None);
+            };
+            let mut body = String::new();
+            for i in init.start_line - 1..init.end_line {
+                match lines.line(i as usize) {
+                    Some(l) => {
+                        body.push_str(l);
+                        body.push('\n');
+                    }
+                    None => break,
+                }
+            }
+            let body = strip_ruby_comments(&body);
+            let Some(assigned) = constructed_assignments(&body, name) else {
+                return Ok(None);
+            };
+            for (path, absolute, line) in assigned {
+                match &written {
+                    Some((p, a, _, _)) if *p != path || *a != absolute => return Ok(None),
+                    None => written = Some((path, absolute, init.file_path.clone(), init.start_line + line)),
+                    _ => {}
+                }
+            }
+        }
+        let Some((path, absolute, file, line)) = written else {
+            return Ok(None);
+        };
+        let mut at = r.clone();
+        at.file_path = file;
+        at.line = line;
+        at.reference_name = path.clone();
+        at.reference_kind = "references".to_string();
+        let class = self.ruby_constants_named(&path, &at, absolute)?.into_iter().next();
+        Ok(Some(class.filter(|n| n.kind == "class")))
     }
 
     /// methodOf: `name` declared on `owner_qn` itself (kind `class` first),
     /// else on the first ancestor in its Ruby ancestry that declares it.
     /// Returns the method and whether it is the owner's own. `r` is the call
     /// site: production code never reaches a method only a test declares.
-    pub(super) fn ruby_method_of(&mut self, owner_qn: &str, name: &str, r: &ResolveRefIn) -> Res<Option<(Arc<KNode>, bool)>> {
+    pub(super) fn ruby_method_of(&mut self, owner_qn: &str, name: &str, r: &ResolveRefIn, kind: &str) -> Res<Option<(Arc<KNode>, bool)>> {
         let production = !super::resolver_upstream::test_suite_path(&r.file_path);
         let own: Vec<Arc<KNode>> = self
             .nodes_by_qualified_name(&format!("{owner_qn}::{name}"))?
             .iter()
-            .filter(|n| n.language == "ruby" && n.kind == "method" && !(production && super::resolver_upstream::test_suite_path(&n.file_path)))
+            // A receiver bound to an instance (`new C().m`, a typed `@x`) can
+            // only reach instance methods: an own class method does not stand
+            // in for one an ancestor declares.
+            .filter(|n| n.language == "ruby" && n.kind == "method" && !(kind == "instance" && n.is_static) && !(production && super::resolver_upstream::test_suite_path(&n.file_path)))
             .cloned()
             .collect();
-        if let Some(m) = ruby_methods_of_kind_first(ruby_ordered(own, r), "class").into_iter().next() {
+        if let Some(m) = ruby_methods_of_kind_first(ruby_ordered(own, r), kind).into_iter().next() {
             return Ok(Some((m, true)));
         }
         let ancestry = self.ruby_ancestry(owner_qn)?;
@@ -139,10 +258,10 @@ impl KernelResolver {
             let found: Vec<Arc<KNode>> = self
                 .nodes_by_qualified_name(&format!("{qn}::{name}"))?
                 .iter()
-                .filter(|n| n.language == "ruby" && n.kind == "method" && !(production && super::resolver_upstream::test_suite_path(&n.file_path)))
+                .filter(|n| n.language == "ruby" && n.kind == "method" && !(kind == "instance" && n.is_static) && !(production && super::resolver_upstream::test_suite_path(&n.file_path)))
                 .cloned()
                 .collect();
-            if let Some(m) = ruby_methods_of_kind_first(ruby_ordered(found, r), "class").into_iter().next() {
+            if let Some(m) = ruby_methods_of_kind_first(ruby_ordered(found, r), kind).into_iter().next() {
                 return Ok(Some((m, false)));
             }
         }
@@ -203,4 +322,183 @@ pub(super) fn ruby_methods_of_kind_first(methods: Vec<Arc<KNode>>, kind: &str) -
     let (mut same, other): (Vec<Arc<KNode>>, Vec<Arc<KNode>>) = methods.into_iter().partition(|m| m.is_static == want);
     same.extend(other);
     same
+}
+
+/// constructedAssignments (#3053): each assignment to `@name` in `body`
+/// (an `initialize`, comments blanked): the constant whose `.new` it
+/// assigns, and the assignment's line within `body`. None when one of
+/// them is anything else: not at the start of a statement (`@a, @b = …`),
+/// or not a lone `Const.new(…)` (`Foo.new.tap {…}`, `writer || Foo.new`,
+/// `build_writer`).
+fn constructed_assignments(body: &str, name: &str) -> Option<Vec<(String, bool, i64)>> {
+    // Upstream's `/(?<![@\w])@name\s*(?:…)?=(?![=~>])/g`, minus the
+    // look-around Rust's regex lacks: the boundary char is captured and
+    // skipped, the `=~>` tail is checked by hand.
+    let target = super::cached_pattern(&format!(r"(^|[^@\w])@{}\s*(?:\|\||&&|\*\*|<<|>>|[-+*/%|&^])?=", regex::escape(name))).ok()?;
+    let mut out = Vec::new();
+    for m in target.captures_iter(body) {
+        let whole = m.get(0).unwrap();
+        let at = whole.start() + m.get(1).unwrap().as_str().len();
+        let after_eq = whole.end();
+        match body.as_bytes().get(after_eq) {
+            Some(b'=') | Some(b'~') | Some(b'>') => continue,
+            _ => {}
+        }
+        let statement_start = body[..at].rfind(['\n', ';']).map_or(0, |i| i + 1);
+        if !body[statement_start..at].trim().is_empty() {
+            return None;
+        }
+        let (path, absolute) = constructed_value(body, after_eq)?;
+        let line = body[..at].matches('\n').count() as i64;
+        out.push((path, absolute, line));
+    }
+    Some(out)
+}
+
+/// constructedValue: the constant a value written at `from` constructs
+/// when it is a lone `Const.new`, `A::B.new(…)` or `::Foo.new …`: its
+/// arguments in parentheses or without them, a block, or a statement
+/// modifier may follow, but nothing the value is passed through
+/// (`.tap`, `||`). None otherwise.
+fn constructed_value(s: &str, from: usize) -> Option<(String, bool)> {
+    let m = re!(r"^\s*(::)?([A-Z]\w*(?:::[A-Z]\w*)*)\s*\.\s*new").captures(&s[from..])?;
+    let mut i = from + m.get(0).unwrap().end();
+    // upstream's `new(?![\w?!])` (`\w` is ASCII): `new?`/`new!`/`newly`
+    // are method names.
+    match s[i..].chars().next() {
+        Some(c) if c.is_ascii_alphanumeric() || matches!(c, '_' | '?' | '!') => return None,
+        _ => {}
+    }
+    if s.as_bytes().get(i) == Some(&b'(') {
+        i = skip_parens(s, i)?;
+    }
+    // The end of the statement, a block, or (after a space) a modifier or
+    // arguments without parentheses: anything but a chain or an operator.
+    let tail = &s[i.min(s.len())..];
+    let ok = match tail.chars().next() {
+        None | Some('\n') | Some(';') | Some('{') => true,
+        _ => re!(r#"^[ \t]+(?:$|\n|;|\{|[\w:@$"'\[])"#).is_match(tail.get(..200).unwrap_or(tail)),
+    };
+    // A chain may go on at the start of the next line: `Foo.new\n  .tap {…}`.
+    let continued = re!(r"^[ \t]*\n\s*&?\.").is_match(tail.get(..200).unwrap_or(tail));
+    (ok && !continued).then(|| (m[2].to_string(), m.get(1).is_some()))
+}
+
+/// skipParens: the index past the parenthesized group opening at `i`,
+/// Ruby strings inside it skipped; None when it never closes.
+fn skip_parens(s: &str, i: usize) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut depth = 0i32;
+    let mut j = i;
+    while j < b.len() {
+        let c = b[j];
+        if c == b'"' || c == b'\'' {
+            j += 1;
+            while j < b.len() && b[j] != c {
+                if b[j] == b'\\' {
+                    j += 1;
+                }
+                j += 1;
+            }
+            j += 1;
+            continue;
+        }
+        if c == b'(' {
+            depth += 1;
+        } else if c == b')' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(j + 1);
+            }
+        }
+        j += 1;
+    }
+    None
+}
+
+/// stripCommentsForRegex(…, 'ruby') (upstream strip-comments.ts):
+/// `#` line comments and `=begin`/`=end` blocks blanked (newlines kept,
+/// so offsets still map); string literals skipped intact.
+fn strip_ruby_comments(src: &str) -> String {
+    let s: Vec<char> = src.chars().collect();
+    let n = s.len();
+    let mut out = String::with_capacity(src.len());
+    let mut i = 0;
+    let mut at_line_start = true;
+    while i < n {
+        let c = s[i];
+        // `=begin` opens a block comment only at a line's start (after
+        // optional whitespace); `=end` must sit at a line's start too.
+        if at_line_start && c == '=' && s[i..].iter().take(6).collect::<String>() == "=begin" {
+            let start = i;
+            i += 6;
+            while i < n {
+                if s[i] == '\n' {
+                    let mut j = i + 1;
+                    while j < n && (s[j] == ' ' || s[j] == '\t') {
+                        j += 1;
+                    }
+                    if s[j..].iter().take(4).collect::<String>() == "=end" {
+                        i = j + 4;
+                        while i < n && s[i] != '\n' {
+                            i += 1;
+                        }
+                        break;
+                    }
+                }
+                i += 1;
+            }
+            for &ch in &s[start..i.min(n)] {
+                super::awaited::push_blank(&mut out, ch);
+            }
+            at_line_start = i > 0 && s[i - 1] == '\n';
+            continue;
+        }
+        if c == '"' || c == '\'' {
+            let start = i;
+            i += 1;
+            while i < n && s[i] != c {
+                if s[i] == '\\' && i + 1 < n {
+                    i += 2;
+                    continue;
+                }
+                if s[i] == '\n' {
+                    break;
+                }
+                i += 1;
+            }
+            if i < n && s[i] == c {
+                i += 1;
+            }
+            out.extend(&s[start..i.min(n)]);
+            at_line_start = false;
+            continue;
+        }
+        if c == '#' {
+            let start = i;
+            while i < n && s[i] != '\n' {
+                i += 1;
+            }
+            for &ch in &s[start..i] {
+                super::awaited::push_blank(&mut out, ch);
+            }
+            at_line_start = false;
+            continue;
+        }
+        if c == '\n' {
+            at_line_start = true;
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c == ' ' || c == '\t' {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        at_line_start = false;
+        out.push(c);
+        i += 1;
+    }
+    out
 }

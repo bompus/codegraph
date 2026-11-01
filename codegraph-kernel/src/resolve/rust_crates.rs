@@ -95,11 +95,53 @@ pub(super) fn rust_manifest_dependencies(text: &str) -> Vec<ManifestDep> {
     deps
 }
 
+/// parseTargetPaths (cargo-workspace.ts): the target roots a manifest names with a `path` of their
+/// own — `[lib] path = "…"`, each `[[bin]] path = "…"` (ripgrep's `crates/core/main.rs`), and each
+/// `[[example]]`, `[[test]]` and `[[bench]]` one (dioxus's
+/// `examples/07-fullstack/handling_errors.rs`), as written — relative to the manifest's directory.
+fn rust_manifest_target_paths(text: &str) -> (Option<String>, Vec<String>, Vec<String>) {
+    let mut lib = None;
+    let mut bins = Vec::new();
+    let mut others = Vec::new();
+    let mut table = "";
+    for raw in text.lines() {
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if line.starts_with('[') {
+            table = match line {
+                "[lib]" => "lib",
+                "[[bin]]" => "bin",
+                _ if re!(r"^\[\[(?:example|test|bench)\]\]$").is_match(line) => "other",
+                _ => "",
+            };
+            continue;
+        }
+        let Some(at) = (!table.is_empty())
+            .then(|| re!(r#"^path\s*=\s*["']([^"'\n]+)["']"#).captures(line))
+            .flatten()
+            .map(|m| m[1].replace('\\', "/"))
+        else {
+            continue;
+        };
+        match table {
+            "lib" => lib = Some(at),
+            "bin" => bins.push(at),
+            _ => others.push(at),
+        }
+    }
+    (lib, bins, others)
+}
+
 pub(super) struct RustCrate {
     /// Its package name as code writes it (`tokio_test`).
     pub(super) name: String,
     /// Each dependency of any kind that is a project crate: the name code writes → that crate's directory.
     pub(super) keys: HashMap<String, String>,
+    /// The library root its manifest gives a `path` of its own, as a project file.
+    pub(super) lib: Option<String>,
+    /// The binaries' roots its manifest gives a `path` (ripgrep's `crates/core/main.rs`), as project files.
+    pub(super) bins: Vec<String>,
+    /// The examples', tests' and benches' roots its manifest gives a `path`, as project files: each its own crate.
+    pub(super) others: Vec<String>,
 }
 
 pub(super) struct RustCrateGraph {
@@ -110,7 +152,7 @@ pub(super) struct RustCrateGraph {
 }
 
 /// `rel` from the project directory `dir`, as a project directory; None when it leaves the project.
-fn join_project_dir(dir: &str, rel: &str) -> Option<String> {
+pub(super) fn join_project_dir(dir: &str, rel: &str) -> Option<String> {
     let mut parts: Vec<&str> = Vec::new();
     for segment in dir.split('/').chain(rel.split('/')) {
         match segment {
@@ -146,7 +188,22 @@ impl GraphBuilder {
         let path = if dir.is_empty() { "Cargo.toml".to_string() } else { format!("{dir}/Cargo.toml") };
         let Some(source) = resolver.read_file(&path) else { return false };
         let Some(name) = package_name(source.text()) else { return false };
-        self.crates.insert(dir.to_string(), RustCrate { name: name.clone(), keys: HashMap::new() });
+        let (lib, bins, others) = rust_manifest_target_paths(source.text());
+        let files = |rels: Vec<String>| {
+            rels.iter()
+                .filter_map(|rel| join_project_dir(dir, rel))
+                .collect()
+        };
+        self.crates.insert(
+            dir.to_string(),
+            RustCrate {
+                name: name.clone(),
+                keys: HashMap::new(),
+                lib: lib.and_then(|rel| join_project_dir(dir, &rel)),
+                bins: files(bins),
+                others: files(others),
+            },
+        );
         self.manifests.insert(dir.to_string(), source.text().to_string());
         self.by_name.entry(name).or_insert_with(|| dir.to_string());
         self.order.push(dir.to_string());

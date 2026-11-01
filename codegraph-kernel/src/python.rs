@@ -72,6 +72,21 @@ fn body_docstring(node: Node, src: &str) -> Option<String> {
     if cleaned.is_empty() { None } else { Some(cleaned) }
 }
 
+/// The identifiers a Python assignment or loop target binds: a bare name, or
+/// the names inside tuple, list and star targets. An attribute or subscript
+/// store binds nothing.
+fn target_names<'t>(node: Node<'t>, out: &mut Vec<Node<'t>>) {
+    match node.kind() {
+        "identifier" => out.push(node),
+        "attribute" | "subscript" => {}
+        _ => {
+            for c in named_kids(node) {
+                target_names(c, out);
+            }
+        }
+    }
+}
+
 fn docstring_space(c: char) -> bool {
     // Match JavaScript trim, including BOM but excluding NEXT LINE.
     (c.is_whitespace() && c != '\u{85}') || c == '\u{feff}'
@@ -344,9 +359,7 @@ impl<'t> Walker<'t> {
         if kind == "call" {
             self.extract_call(node);
         }
-        if kind == "assignment" {
-            self.emit_local_assignment_binding(node);
-        }
+        self.emit_statement_bindings(node);
         // An import inside a function body binds a name for that body: a row
         // scoped to the function (no import node, no `imports` ref — the
         // module-level walk owns those, as before).
@@ -633,16 +646,51 @@ impl<'t> Walker<'t> {
         }
     }
 
-    /// `x = …` inside a function body: a nodeless `local` row for the name.
-    fn emit_local_assignment_binding(&mut self, node: Node<'t>) {
-        let Some(scope) = self.enclosing_scope() else { return };
-        let Some(left) = node.child_by_field_name("left") else { return };
-        if left.kind() != "identifier" {
-            return;
+    /// The names a function-body statement or pattern binds besides a
+    /// definition or import: assignment (augmented and tuple targets too),
+    /// `for` and `with`/`except … as` targets, a walrus, and a `case` capture.
+    /// Each is a nodeless `local` row scoped to the function. A comprehension
+    /// variable or lambda parameter binds in its own expression, narrower
+    /// than the line-granular scope a row carries; the resolver reads those
+    /// from the syntax tree (`python_expression_binds`).
+    fn emit_statement_bindings(&mut self, node: Node<'t>) {
+        let mut targets = Vec::new();
+        match node.kind() {
+            "assignment" | "augmented_assignment" | "for_statement" => {
+                if let Some(left) = node.child_by_field_name("left") {
+                    target_names(left, &mut targets);
+                }
+            }
+            "as_pattern" => {
+                if let Some(alias) = node.child_by_field_name("alias") {
+                    target_names(alias, &mut targets);
+                }
+            }
+            "except_clause" | "except_group_clause" => {
+                if let Some(alias) = node.child_by_field_name("alias") {
+                    target_names(alias, &mut targets);
+                }
+            }
+            "named_expression" => {
+                if let Some(name) = node.child_by_field_name("name") {
+                    targets.push(name);
+                }
+            }
+            // `case other:` and `case Point(x=other)` capture; `other.MODE` is a value.
+            "dotted_name" if matches!(node.parent().map(|p| p.kind()), Some("case_pattern" | "keyword_pattern")) => {
+                if node.named_child_count() == 1 {
+                    targets.extend(node.named_child(0));
+                }
+            }
+            "splat_pattern" => targets.extend(node.named_child(0).filter(|c| c.kind() == "identifier")),
+            _ => {}
         }
-        let name = self.text(left).to_string();
-        let line = self.line_of(left);
-        self.push_binding_row(BINDING_LOCAL, &name, NONE, scope, line, None, false, None);
+        let Some(scope) = self.enclosing_scope() else { return };
+        for name_node in targets {
+            let name = self.text(name_node).to_string();
+            let line = self.line_of(name_node);
+            self.push_binding_row(BINDING_LOCAL, &name, NONE, scope, line, None, false, None);
+        }
     }
 
     /// Rows for an import statement without the node and refs `extract_import`

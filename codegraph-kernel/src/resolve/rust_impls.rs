@@ -134,7 +134,7 @@ impl KernelResolver {
 
     /// The crate dir a file belongs to: the longest crate dir prefixing it, or
     /// the root crate's "".
-    fn rust_crate_dir_of(file: &str, graph: &super::rust_crates::RustCrateGraph) -> Option<String> {
+    pub(super) fn rust_crate_dir_of(file: &str, graph: &super::rust_crates::RustCrateGraph) -> Option<String> {
         let mut best = graph.crates.contains_key("").then(String::new);
         for dir in graph.crates.keys() {
             if !dir.is_empty()

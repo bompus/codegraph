@@ -888,6 +888,9 @@ impl KernelResolver {
         }
         let imports = if r.language == "python" && r.reference_kind != "imports" {
             let root = r.reference_name.split('.').next().unwrap();
+            if self.python_expression_binds(root, r) {
+                return Ok(None);
+            }
             match self.receiver_binding(root, r)? {
                 Some(binding) if binding.kind == "import" => {
                     // Unaliased imports share the package object across scopes,
