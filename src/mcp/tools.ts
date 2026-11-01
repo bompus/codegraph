@@ -538,6 +538,7 @@ export function compactExploreText(text: string, mode: Exclude<ExploreMode, 'sou
   let blastEntries = 0;
   let relKinds = 0;
   let relEntries = 0;
+  let skipRelKind = false;
   let snippet = 0;
   let pointerEntries = 0;
   for (const line of lines) {
@@ -545,10 +546,26 @@ export function compactExploreText(text: string, mode: Exclude<ExploreMode, 'sou
       inSource = true;
       inBlast = false;
       inRelationships = false;
-      out.push(line);
+      out.push(mode === 'map'
+        ? '**Source Code** — omitted in map mode; fetch a body with codegraph_node includeCode: true.'
+        : line);
       continue;
     }
     if (!inSource) {
+      // The renderer promises source "below" in two places. A map has none, and
+      // an agent that reads the promise then finds no body stops trusting the
+      // map, so rewrite the promise rather than leave it dangling.
+      if (mode === 'map' && line.startsWith('> These sites choose their call target at runtime')) {
+        out.push(line.replace(
+          /; source for the sites above is included below\.$/,
+          '; fetch a candidate\'s body with codegraph_node includeCode: true.',
+        ));
+        continue;
+      }
+      if (mode === 'map' && line.startsWith('> Source for these symbols follows')) {
+        out.push('> Source is omitted in compact mode; the symbols and file headers above are the map.');
+        continue;
+      }
       if (line.startsWith('**Blast radius')) {
         inBlast = true;
         inRelationships = false;
@@ -578,17 +595,23 @@ export function compactExploreText(text: string, mode: Exclude<ExploreMode, 'sou
             out.push(line);
             relKinds++;
             relEntries = 0;
+            skipRelKind = false;
+          } else {
+            // The budget is three kinds. Without this flag the fourth kind's
+            // entries would land under the third header, labelled as the wrong
+            // relationship.
+            skipRelKind = true;
           }
           continue;
         }
         if (line.startsWith('- ')) {
-          if (relKinds <= 3 && relEntries < 4) {
+          if (!skipRelKind && relEntries < 4) {
             out.push(line);
             relEntries++;
           }
           continue;
         }
-        if (line.trim()) out.push(line);
+        if (line.trim() && !skipRelKind) out.push(line);
         continue;
       }
       out.push(line);
@@ -643,8 +666,8 @@ export function compactExploreText(text: string, mode: Exclude<ExploreMode, 'sou
       + '\n\n... (compact response truncated; narrow the query or name the symbols you need)';
   }
   const hint = mode === 'map'
-    ? '> Source omitted in compact map mode. For one symbol\'s body, call codegraph_node with its name; for the full source, call codegraph_explore with mode: "source".'
-    : `> Only the first ${EXPLORE_SNIPPET_LINES} source lines of each file are shown. For one symbol's body, call codegraph_node with its name; for the full source, call codegraph_explore with mode: "source".`;
+    ? '> Source omitted in compact map mode. For one symbol\'s body, call codegraph_node with its name and `includeCode: true`; for the full source, call codegraph_explore with mode: "source".'
+    : `> Only the first ${EXPLORE_SNIPPET_LINES} source lines of each file are shown. For one symbol's body, call codegraph_node with its name and \`includeCode: true\`; for the full source, call codegraph_explore with mode: "source".`;
   return body + '\n\n' + hint + '\n';
 }
 
@@ -2289,10 +2312,13 @@ export const tools: ToolDefinition[] = [
       required: [],
     },
     annotations: READ_ONLY_ANNOTATIONS,
+    // In map mode node is explore's body-on-demand follow-up, so it must be
+    // callable without a ToolSearch step; it is not listed in source mode.
+    _meta: { 'anthropic/alwaysLoad': true },
   },
   {
     name: 'codegraph_explore',
-    description: 'Returns a compact map of the code relevant to a query by default: the matching symbols with file:line and signatures, the call path among the named symbols — including dynamic-dispatch hops grep cannot follow — and, when it fits, a summary of what depends on them. It does not include source bodies. It is for deciding where to look; before editing a symbol, call codegraph_node with its name (or pass mode: "source") for the verbatim, line-numbered source. Use it first for questions about indexed code (how X works, where X is, a flow, a bug, a documentation section). The query is a natural-language question or a bag of symbol names and file paths; named items are prioritised, and a question about the working changes ("my changes", "this branch", `main..HEAD`) is answered from the git diff. Output is capped at about 4K characters in map mode and 8K in snippets; source mode uses the project-sized 13K–24K cap. Treat source returned by mode "source" as already Read, except files the response flags as pending sync or changed on disk. It does not return files codegraph does not index, such as most configs. One call usually covers a question.',
+    description: 'Returns a compact map of the code relevant to a query by default: the matching symbols with file:line and signatures, the call path among the named symbols — including dynamic-dispatch hops grep cannot follow — and, when it fits, a summary of what depends on them. It does not include source bodies. It is for deciding where to look; before editing a symbol, call codegraph_node with its name and includeCode: true (or pass mode: "source") for the verbatim, line-numbered source. Use it first for questions about indexed code (how X works, where X is, a flow, a bug, a documentation section). The query is a natural-language question or a bag of symbol names and file paths; named items are prioritised, and a question about the working changes ("my changes", "this branch", `main..HEAD`) is answered from the git diff. Output is capped at about 4K characters in map mode and 8K in snippets; source mode uses the project-sized 13K–24K cap. Treat source returned by mode "source" as already Read, except files the response flags as pending sync or changed on disk. It does not return files codegraph does not index, such as most configs. One call usually covers a question.',
     inputSchema: {
       type: 'object',
       properties: {

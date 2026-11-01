@@ -93,6 +93,12 @@ describe('compactExploreText', () => {
     expect(out).toContain('**calls:**');
     expect(out).toContain('- A → E');
     expect(out).not.toContain('- A → F');
+    // Only three relationship kinds fit, and the fourth kind's entries must
+    // not be relabelled under the third.
+    expect(out).toContain('**imports:**');
+    expect(out).toContain('- A → util');
+    expect(out).not.toContain('**references:**');
+    expect(out).not.toContain('- A → type');
     expect(out).toContain('**`a.ts`**');
     expect(out).toContain('**`b.ts`**');
     expect(out).not.toContain('function a()');
@@ -111,10 +117,43 @@ describe('compactExploreText', () => {
 
   it('stays under the map budget on a large response', () => {
     const headers = Array.from({ length: 200 }, (_, i) => `**\`f${i}.ts\`** — symbol`).join('\n');
-    const big = RENDERED.replace('**Source Code**', `${headers}\n\n**Source Code**`);
+    const big = RENDERED.replace('**Source Code**', `**Source Code**\n\n${headers}`);
     const out = compactExploreText(big, 'map');
     expect(out.length).toBeLessThanOrEqual(4000 + 200);
     expect(out).toContain('compact response truncated');
+  });
+});
+
+describe('compactExploreText promises', () => {
+  const TEXT = [
+    '**Flow**',
+    '',
+    '> These sites choose their call target at runtime (registry) — run codegraph_explore or codegraph_node on a candidate; source for the sites above is included below.',
+    '',
+    '> Source for these symbols follows; gap markers identify any ranges omitted to fit the output budget.',
+    '',
+    '**Source Code**',
+    '',
+    '```typescript',
+    '1\tconst x = 1;',
+    '```',
+  ].join('\n');
+
+  it('does not promise source a map does not contain', () => {
+    const out = compactExploreText(TEXT, 'map');
+    expect(out).not.toContain('included below');
+    expect(out).not.toContain('Source for these symbols follows');
+    expect(out).toContain('fetch a candidate\'s body with codegraph_node includeCode: true');
+    expect(out).toContain('**Source Code** — omitted in map mode');
+    expect(out).not.toContain('const x = 1;');
+  });
+
+  it('leaves snippets promises alone because the source does follow', () => {
+    const out = compactExploreText(TEXT, 'snippets');
+    expect(out).toContain('included below');
+    expect(out).toContain('Source for these symbols follows');
+    expect(out).toContain('**Source Code**\n');
+    expect(out).toContain('const x = 1;');
   });
 });
 
