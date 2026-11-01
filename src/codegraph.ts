@@ -70,6 +70,7 @@ import { seedLiteralsInQuery, seedRouteNamesInQuery } from './extraction/literal
 import { createYielder } from './resolution/cooperative-yield';
 import { createImportReader, reopenNameMatchedImports, reopenReferencesThroughAddedFiles, reopenReferencesThroughBarrels, reopenReferencesThroughChangedDefaults, reopenReferencesThroughDeclaredPackages, reopenReferencesThroughRetargetedModules } from './resolution/module-importers';
 import { ESM_IMPORT_LANGUAGES } from './resolution/import-resolver';
+import { minRefsForBulkLoad } from './resolution/resolver-pool';
 import { minRefsForPool } from './resolution/resolver-pool';
 
 /** The extraction, resolution and watcher modules, loaded on first use. */
@@ -738,7 +739,10 @@ export class CodeGraph {
         } finally {
           if (freshDb) {
             const tIdx = Date.now();
-            await this.db.endBulkParseLoad();
+            // The batched resolver immediately re-drops and then rebuilds the
+            // edge indexes when its own bulk window engages; skip the first
+            // rebuild in that case.
+            await this.db.endBulkParseLoad(this.queries.getUnresolvedReferencesCount() >= minRefsForBulkLoad());
             if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] parse-index-rebuild: ${Date.now() - tIdx}ms`);
           }
           const tFts = Date.now();
