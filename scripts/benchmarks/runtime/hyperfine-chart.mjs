@@ -3,19 +3,25 @@
 // directory produced by hyperfine-index-sync.sh.
 //
 // usage: node hyperfine-chart.mjs <results-dir> [--svg <path>] [--date YYYY-MM-DD]
-//          [--upstream <sha>] [--fork <sha>]
+//          [--upstream <sha>] [--fork <sha>] [--arms <base>,<candidate>]
+//          [--base-label <label>] [--cand-label <label>]
+//          [--corpora <csv>] [--allow-missing]
+//          [--expect-index <n>] [--expect-sync <n>]
 //
-// Files are named <corpus>-<arm>-<ns>-<index|sync>.json by the runner. Peak RSS
-// is Hyperfine's memory_peak_resident. A comparison counts as a change only
-// when the fork/upstream gap exceeds the larger arm's (max-min)/median spread,
-// matching the benchmark record's rule.
+// Files are named <corpus>-<arm>-<ns>-<index|sync>.json by the runner; arm
+// names default to upstream,fork and follow --arms. Corpus names are matched
+// case-insensitively. Peak RSS is Hyperfine's memory_peak_resident. A
+// comparison counts as a change only when the fork/base elapsed-time gap
+// exceeds the larger arm's (max-min)/median spread, matching the benchmark
+// record's rule. A directory must hold one campaign: the default sample counts
+// are 2 index and 4 sync measurements per arm, and a mismatch is rejected.
 
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
 const args = process.argv.slice(2);
 const dir = args.shift();
-if (!dir) {
+if (!dir || dir.startsWith('--')) {
   console.error('usage: hyperfine-chart.mjs <results-dir> [--svg <path>] [--date YYYY-MM-DD] [--upstream <sha>] [--fork <sha>]');
   process.exit(2);
 }
@@ -23,10 +29,21 @@ const flag = (name) => {
   const i = args.indexOf(name);
   return i >= 0 ? args[i + 1] : undefined;
 };
+const has = (name) => args.includes(name);
 const date = flag('--date') ?? new Date().toISOString().slice(0, 10);
 const upstream = flag('--upstream') ?? 'upstream';
 const fork = flag('--fork') ?? 'fork';
+const baseLabel = flag('--base-label') ?? 'Upstream';
+const candLabel = flag('--cand-label') ?? 'Fork';
 const svgPath = flag('--svg') ?? 'assets/fork-vs-upstream-performance.svg';
+const arms = (flag('--arms') ?? 'upstream,fork').split(',').map((a) => a.trim()).filter(Boolean);
+if (arms.length !== 2) {
+  console.error('--arms needs exactly two names: <base>,<candidate>');
+  process.exit(2);
+}
+const [baseArm, candArm] = arms;
+const expectedIndex = Number(flag('--expect-index') ?? 2);
+const expectedSync = Number(flag('--expect-sync') ?? 4);
 
 const LABELS = {
   gin: 'gin (Go)',
@@ -38,13 +55,16 @@ const LABELS = {
   n8n: 'n8n (Vue/TS)',
 };
 const ORDER = ['gin', 'alamofire', 'pretix', 'cpython', 'discourse', 'supabase', 'n8n'];
-const FILE = /^(.*)-(upstream|fork)-\d+-(index|sync)\.json$/;
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const FILE = new RegExp(`^(.*)-(${arms.map(escapeRe).join('|')})-\\d+-(index|sync)\\.json$`);
 
 const samples = new Map(); // corpus -> arm -> kind -> { times, rss }
 for (const file of readdirSync(dir)) {
   const m = FILE.exec(file);
   if (!m) continue;
-  const [, corpus, arm, kind] = m;
+  const corpus = m[1].toLowerCase();
+  const arm = m[2];
+  const kind = m[3];
   const data = JSON.parse(readFileSync(join(dir, file), 'utf8'));
   for (const result of data.results ?? []) {
     for (const run of result.measurements ?? []) {
@@ -73,39 +93,64 @@ function stats(corpus, arm, kind) {
   };
 }
 
-const corpora = ORDER.filter((c) => stats(c, 'upstream', 'index') && stats(c, 'fork', 'index'));
-if (corpora.length === 0) {
-  console.error(`no ${basename(dir)} Hyperfine results found`);
+const expectedCorpora = (flag('--corpora') ?? ORDER.join(',')).split(',').map((c) => c.trim().toLowerCase()).filter(Boolean);
+const present = ORDER.filter((c) => stats(c, baseArm, 'index') && stats(c, candArm, 'index'));
+const missing = expectedCorpora.filter((c) => !present.includes(c));
+if (missing.length > 0 && !has('--allow-missing')) {
+  console.error(`missing results for: ${missing.join(', ')} (use --allow-missing for a partial corpus set)`);
   process.exit(1);
+}
+const corpora = expectedCorpora.filter((c) => present.includes(c));
+if (corpora.length === 0) {
+  console.error(`no ${basename(dir)} Hyperfine results found for arms ${baseArm},${candArm}`);
+  process.exit(1);
+}
+
+for (const corpus of corpora) {
+  for (const arm of [baseArm, candArm]) {
+    for (const kind of ['index', 'sync']) {
+      const expected = kind === 'index' ? expectedIndex : expectedSync;
+      const s = stats(corpus, arm, kind);
+      if (!s) {
+        console.error(`missing ${kind} results for ${corpus}/${arm}`);
+        process.exit(1);
+      }
+      if (s.n !== expected) {
+        console.error(
+          `expected ${expected} ${kind} measurements for ${corpus}/${arm}, found ${s.n}; ` +
+            'use a fresh BENCH_OUT (or pass --expect-index/--expect-sync for a different protocol)',
+        );
+        process.exit(1);
+      }
+    }
+  }
 }
 
 const fmt = (n, digits = 2) => n.toFixed(digits);
 const pct = (n) => `${(Math.abs(n) * 100).toFixed(0)}%`;
-function verdict(ratio, a, b, higherIsBetter = false) {
+function verdict(displayRatio, a, b, higherIsBetter = false) {
+  // displayRatio is candidate/base for index and base/candidate for sync. The
+  // qualification gap is always the elapsed-time ratio fork/base.
+  const elapsedRatio = higherIsBetter ? 1 / displayRatio : displayRatio;
   const spread = Math.max(a.spread, b.spread);
-  const gap = Math.abs(ratio - 1);
+  const gap = Math.abs(elapsedRatio - 1);
   if (gap <= spread) return 'no clear change';
-  // Report elapsed-time change: for sync the ratio is upstream/fork, so a
-  // ratio of 1.22 is 18% less time, not a 22% time reduction.
-  const faster = higherIsBetter ? ratio > 1 : ratio < 1;
-  const elapsed = higherIsBetter
-    ? (ratio > 1 ? 1 - 1 / ratio : 1 / ratio - 1)
-    : Math.abs(1 - ratio);
-  return `${pct(elapsed)} ${faster ? 'faster' : 'slower'}`;
+  const faster = elapsedRatio < 1;
+  return `${pct(gap)} ${faster ? 'faster' : 'slower'}`;
 }
 
-console.log('| Corpus | Index upstream | Index fork | Fork / upstream | Verdict | Sync upstream | Sync fork | Upstream / fork | Verdict |');
+console.log('| Corpus | Index base | Index candidate | Candidate / base | Verdict | Sync base | Sync candidate | Base / candidate | Verdict |');
 console.log('|---|---:|---:|---:|---|---:|---:|---:|---|');
 for (const corpus of corpora) {
-  const ui = stats(corpus, 'upstream', 'index');
-  const fi = stats(corpus, 'fork', 'index');
-  const us = stats(corpus, 'upstream', 'sync');
-  const fs = stats(corpus, 'fork', 'sync');
-  const ir = fi.median / ui.median;
-  const sr = fs ? us.median / fs.median : NaN;
+  const bi = stats(corpus, baseArm, 'index');
+  const ci = stats(corpus, candArm, 'index');
+  const bs = stats(corpus, baseArm, 'sync');
+  const cs = stats(corpus, candArm, 'sync');
+  const ir = ci.median / bi.median;
+  const sr = bs.median / cs.median;
   console.log(
-    `| ${corpus} | ${fmt(ui.median, 3)} s | ${fmt(fi.median, 3)} s | ${fmt(ir, 3)} | ${verdict(ir, ui, fi)} | ` +
-      `${fmt(us.median, 3)} s | ${fmt(fs.median, 3)} s | ${fmt(sr, 3)} | ${verdict(sr, us, fs, true)} |`,
+    `| ${corpus} | ${fmt(bi.median, 3)} s | ${fmt(ci.median, 3)} s | ${fmt(ir, 3)} | ${verdict(ir, bi, ci)} | ` +
+      `${fmt(bs.median, 3)} s | ${fmt(cs.median, 3)} s | ${fmt(sr, 3)} | ${verdict(sr, bs, cs, true)} |`,
   );
 }
 
@@ -126,12 +171,12 @@ function bar(x1, scale, ratio) {
 const lines = [];
 lines.push('<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="780" viewBox="0 0 1000 780" role="img" aria-label="Fork versus upstream on seven corpora, Node, ' + date + '">');
 lines.push('<title>Fork versus upstream on seven corpora, Node, ' + date + '</title>');
-lines.push('<desc>Two panels: full index fork/upstream ratios and one-file sync upstream/fork speedups for gin, Alamofire, pretix, CPython, discourse, supabase and n8n.</desc>');
+lines.push('<desc>Two panels: full index candidate/base ratios and one-file sync base/candidate speedups for gin, Alamofire, pretix, CPython, discourse, supabase and n8n.</desc>');
 lines.push('<rect width="1000" height="780" fill="#0d1117"/>');
 lines.push('<style>text{font-family:Inter,Segoe UI,system-ui,sans-serif;fill:#e6edf3}.title{font-size:26px;font-weight:700}.sub{font-size:14px;fill:#9da7b3}.corpus{font-size:15px;font-weight:600}.val{font-size:14px;font-weight:700}.axis{font-size:12px;fill:#8b949e}.good{fill:#3fb950}.bad{fill:#f85149}.tie{fill:#8b949e}</style>');
 lines.push('<text x="46" y="56" class="title">Fork vs upstream on Node — seven corpora, ' + date + '</text>');
-lines.push('<text x="46" y="82" class="sub">Upstream ' + upstream + ' · fork ' + fork + ' · Node 24.22.2 · Hyperfine 2.0.0</text>');
-lines.push('<text x="46" y="104" class="sub">Index: median of 2 runs, fork / upstream (lower is better). Sync: median of 4 runs, upstream / fork (higher is better).</text>');
+lines.push('<text x="46" y="82" class="sub">' + baseLabel + ' ' + upstream + ' · ' + candLabel + ' ' + fork + ' · Node 24.22.2 · Hyperfine 2.0.0</text>');
+lines.push('<text x="46" y="104" class="sub">Index: median of 2 runs, candidate / base (lower is better). Sync: median of 4 runs, base / candidate (higher is better).</text>');
 lines.push('<text x="46" y="140" style="font-size:17px;font-weight:700">Full index</text>');
 for (const [label, x, muted] of [['0.5×', 46.0, false], ['0.75×', 144.0, false], ['1×', indexX1, true], ['1.25×', 339.9, false], ['1.5×', 437.8, false]]) {
   lines.push(`<line x1="${x}" y1="180" x2="${x}" y2="602" stroke="${muted ? '#8b949e' : '#30363d'}" stroke-width="1"/>`);
@@ -139,9 +184,9 @@ for (const [label, x, muted] of [['0.5×', 46.0, false], ['0.75×', 144.0, false
 }
 let y = 200;
 for (const corpus of corpora) {
-  const ui = stats(corpus, 'upstream', 'index');
-  const fi = stats(corpus, 'fork', 'index');
-  const ratio = fi.median / ui.median;
+  const bi = stats(corpus, baseArm, 'index');
+  const ci = stats(corpus, candArm, 'index');
+  const ratio = ci.median / bi.median;
   const b = bar(indexX1, indexScale, ratio);
   lines.push(`<text x="46" y="${y}" class="corpus">${LABELS[corpus] ?? corpus}</text>`);
   lines.push(`<rect x="${b.x.toFixed(1)}" y="${y - 12}" width="${Math.max(b.w, 1).toFixed(1)}" height="18" rx="3" class="tie"/>`);
@@ -155,9 +200,9 @@ for (const [label, x, muted] of [['0.5×', 523.0, false], ['1×', syncX1, true],
 }
 y = 200;
 for (const corpus of corpora) {
-  const us = stats(corpus, 'upstream', 'sync');
-  const fs = stats(corpus, 'fork', 'sync');
-  const ratio = us.median / fs.median;
+  const bs = stats(corpus, baseArm, 'sync');
+  const cs = stats(corpus, candArm, 'sync');
+  const ratio = bs.median / cs.median;
   const b = bar(syncX1, syncScale, ratio);
   const cls = ratio >= 1 ? 'good' : 'bad';
   lines.push(`<text x="523.0" y="${y}" class="corpus">${LABELS[corpus] ?? corpus}</text>`);

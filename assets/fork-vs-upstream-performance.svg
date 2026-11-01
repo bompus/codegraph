@@ -1,11 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1000" height="780" viewBox="0 0 1000 780" role="img" aria-label="Fork versus upstream on seven corpora, Node, 2026-11-01">
 <title>Fork versus upstream on seven corpora, Node, 2026-11-01</title>
-<desc>Two panels: full index fork/upstream ratios and one-file sync upstream/fork speedups for gin, Alamofire, pretix, CPython, discourse, supabase and n8n.</desc>
+<desc>Two panels: full index candidate/base ratios and one-file sync base/candidate speedups for gin, Alamofire, pretix, CPython, discourse, supabase and n8n.</desc>
 <rect width="1000" height="780" fill="#0d1117"/>
 <style>text{font-family:Inter,Segoe UI,system-ui,sans-serif;fill:#e6edf3}.title{font-size:26px;font-weight:700}.sub{font-size:14px;fill:#9da7b3}.corpus{font-size:15px;font-weight:600}.val{font-size:14px;font-weight:700}.axis{font-size:12px;fill:#8b949e}.good{fill:#3fb950}.bad{fill:#f85149}.tie{fill:#8b949e}</style>
 <text x="46" y="56" class="title">Fork vs upstream on Node — seven corpora, 2026-11-01</text>
-<text x="46" y="82" class="sub">Upstream cd04b21a · fork 8313e9a0 · Node 24.22.2 · Hyperfine 2.0.0</text>
-<text x="46" y="104" class="sub">Index: median of 2 runs, fork / upstream (lower is better). Sync: median of 4 runs, upstream / fork (higher is better).</text>
+<text x="46" y="82" class="sub">Upstream cd04b21a · Fork 8313e9a0 · Node 24.22.2 · Hyperfine 2.0.0</text>
+<text x="46" y="104" class="sub">Index: median of 2 runs, candidate / base (lower is better). Sync: median of 4 runs, base / candidate (higher is better).</text>
 <text x="46" y="140" style="font-size:17px;font-weight:700">Full index</text>
 <line x1="46" y1="180" x2="46" y2="602" stroke="#30363d" stroke-width="1"/>
 <text x="46" y="174" class="axis" text-anchor="middle">0.5×</text>

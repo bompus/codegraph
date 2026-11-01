@@ -9,7 +9,7 @@ The arms can differ in build, in runtime, or in both.
 |---|---|---|
 | `run-index-sync.sh <list>` | Pre-Hyperfine harness: full index, then two one-file syncs with `/usr/bin/time`: wall time, peak RSS, CPU, database size, node and edge counts. Not comparable with the Hyperfine rows. | `index-sync.tsv`, `logs/` |
 | `hyperfine-index-sync.sh <list>` | Full index and two one-file syncs timed with Hyperfine whole commands, mirrored arms; peak RSS from Hyperfine's JSON, graph counts from the fresh index | `*-index.json`, `*-sync.json`, `graph.tsv` |
-| `hyperfine-chart.mjs <dir> [--svg … --date … --upstream … --fork …]` | The README chart and a Markdown summary (medians, spreads, verdicts) from `hyperfine-index-sync.sh` output | SVG + stdout |
+| `hyperfine-chart.mjs <dir> [--svg … --date … --upstream … --fork … --arms base,candidate]` | The README chart and a Markdown summary (medians, spreads, verdicts) from `hyperfine-index-sync.sh` output. Arm names default to `upstream,fork`; corpus names are matched case-insensitively, and a sample count that does not match one campaign is rejected | SVG + stdout |
 | `run-mcp.sh <list>` | MCP server: start to first explore answer, warm explore median and p90, 8 explores at once, watcher sync, idle memory and CPU | `mcp.jsonl` |
 | `run-cli.sh <corpus> <query>` | CLI start: `--version`, `status`, one `explore` (hyperfine, 20 runs) | `cli-*.json`, `cli.txt` |
 | `sync-ab.mjs --corpus … --arm base=… --arm cand=…` | One change on one corpus: a one-file sync before and after, with same-build controls, until the result qualifies or stays inside run-to-run variation (see below) | `runs.jsonl`, `summary.md`, `summary.json`, `chart.json`, `logs/` in `--out` |

@@ -56,7 +56,19 @@ node scripts/benchmarks/runtime/hyperfine-chart.mjs "$BENCH_OUT" \
 
 `index-sync.list` is one corpus per line, `<corpus-path> <rel-file> <comment-prefix>`: the seven entries in `~/cg-scratch/index-sync-2026-10-28.list` (gin `auth.go` `//`, Alamofire `Source/Alamofire.swift` `//`, pretix `src/pretix/base/addressvalidation.py` `#`, CPython `Lib/__future__.py` `#`, discourse `config/boot.rb` `#`, supabase `apps/studio/lib/base64url.ts` `//`, n8n `packages/cli/src/abstract-server.ts` `//`).
 
-Each invocation runs one Hyperfine index command with `--prepare 'rm -rf .cg-bench'`, then two sync commands against that index. Every sync run's `--prepare` calls `hyperfine-append-probe.sh`, which appends a unique comment plus `void_probe_marker_<ns> = 1`; the runner restores the file with `git checkout` after each arm. That is how repeated sync runs each see a fresh one-file edit. Peak RSS is Hyperfine's `memory_peak_resident`.
+The corpus checkouts were clean at these commits; the edited file was restored after every arm. Untracked benchmark index directories (`.cg-*`, `.codegraph`) are omitted and do not affect the source tree.
+
+| Corpus | Commit | Edited file |
+|---|---|---|
+| gin | `1bd0ecf` | `auth.go` |
+| Alamofire | `bda9ed5` | `Source/Alamofire.swift` |
+| pretix | `aa14505` | `src/pretix/base/addressvalidation.py` |
+| CPython | `1e8ff18a` | `Lib/__future__.py` |
+| discourse | `ae5ba2c4` | `config/boot.rb` |
+| supabase | `36371de1` | `apps/studio/lib/base64url.ts` |
+| n8n | `7cc0450a` | `packages/cli/src/abstract-server.ts` |
+
+Each invocation runs one Hyperfine index command with `--prepare 'rm -rf .cg-bench'`, then two sync commands against that index. Every sync run's `--prepare` calls `hyperfine-append-probe.sh`, which appends a unique comment plus `void_probe_marker_<ns> = 1`; the runner restores the file with `git checkout` after each arm. That is how repeated sync runs each see a fresh one-file edit. The runner rejects a probe with uncommitted changes, saves its original bytes outside the repository and restores them on success, failure and interruption. It also rejects a `BENCH_OUT` that already holds a Hyperfine campaign, verifies the probe is in each fresh index, and checks that the last sync stored the last appended bytes; the chart rejects a sample count that does not match one campaign. Peak RSS is Hyperfine's `memory_peak_resident`.
 
 The campaign wrapped each corpus in the host benchmark lock and a fresh 10-second admission (`flock ~/.cache/setupLinuxHost/post-upgrade-bench.lock`, then `python3 admission.py`); the runner itself takes no lock.
 
