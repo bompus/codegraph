@@ -35,11 +35,34 @@ CG_DIR=".cg-bench-$RUN_ID"
 
 CURRENT_FILE=""
 CURRENT_BACKUP=""
+CURRENT_CM=""
+# True when the working-tree diff for the probe consists only of the runner's
+# own appended marker blocks. The probe was clean at the start, so any deletion
+# or other addition is an edit made while the benchmark ran.
+probe_only_runner_edits() {
+  local file=$1 cm=$2
+  git diff --unified=0 -- "$file" | awk -v cm="$cm" '
+    /^--- / { next }
+    /^-/ { bad = 1; exit }
+    /^\+\+\+ / { next }
+    /^\+/ {
+      line = substr($0, 2)
+      if (line == "") next
+      if (line ~ ("^" cm " cg bench probe [0-9]+$")) next
+      if (line ~ /^void_probe_marker_[0-9]+ = 1$/) next
+      bad = 1; exit
+    }
+    END { exit bad ? 1 : 0 }
+  '
+}
 cleanup() {
   if [ -n "$CURRENT_FILE" ] && [ -n "$CURRENT_BACKUP" ] && [ -f "$CURRENT_BACKUP" ]; then
+    # Never overwrite an edit another process made during the run.
+    if ! probe_only_runner_edits "$CURRENT_FILE" "${CURRENT_CM:-//}"; then
+      echo "probe changed by another process; not restoring $CURRENT_FILE; original bytes kept at $CURRENT_BACKUP" >&2
     # Never delete the only copy of the probe's original bytes. A failed
     # restore keeps the backup and says where it is.
-    if cp -- "$CURRENT_BACKUP" "$CURRENT_FILE"; then
+    elif cp -- "$CURRENT_BACKUP" "$CURRENT_FILE"; then
       rm -f "$CURRENT_BACKUP"
     else
       echo "could not restore $CURRENT_FILE; original bytes kept at $CURRENT_BACKUP" >&2
@@ -67,7 +90,7 @@ while read -r corpus file cm; do
     echo "could not back up probe file: $corpus/$file" >&2
     exit 2
   fi
-  CURRENT_FILE="$file"; CURRENT_BACKUP="$backup"
+  CURRENT_FILE="$file"; CURRENT_BACKUP="$backup"; CURRENT_CM="$cm"
 
   for arm in "${MIRRORED[@]}"; do
     runtime=${RUNTIME[$arm]}; build=${BUILD[$arm]}
@@ -101,11 +124,15 @@ while read -r corpus file cm; do
     [ "$file_hash" = "$db_hash" ] || {
       echo "sync did not process the probe: $corpus/$file" >&2; exit 7
     }
+    if ! probe_only_runner_edits "$file" "$cm"; then
+      echo "probe changed by another process during the arm: $corpus/$file; not restoring (backup: $backup)" >&2
+      exit 7
+    fi
     if ! cp -- "$backup" "$file" || ! cmp -s -- "$file" "$backup"; then
       echo "could not restore probe file: $corpus/$file" >&2; exit 7
     fi
     rm -rf -- "$CG_DIR"
   done
   rm -f "$backup"
-  CURRENT_FILE=""; CURRENT_BACKUP=""
+  CURRENT_FILE=""; CURRENT_BACKUP=""; CURRENT_CM=""
 done < "$LIST"
