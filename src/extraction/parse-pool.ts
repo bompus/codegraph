@@ -22,6 +22,7 @@
 
 import { Worker } from 'worker_threads';
 import type { Language, ExtractionResult } from '../types';
+import type { MarkdownExtractorContext } from './markdown-extractor';
 
 /**
  * Minimal worker surface the pool drives — satisfied by a real `worker_threads`
@@ -210,6 +211,11 @@ export interface ParseWorkerPoolOptions {
   loadSettleMs?: number;
   /** Optional verbose logger (the orchestrator's `[worker] …` logger). */
   log?: (msg: string) => void;
+  /**
+   * Extraction inputs every worker needs before its first parse (the
+   * index's known file basenames). Sent once per spawn, not per parse.
+   */
+  sharedContext?: MarkdownExtractorContext;
 }
 
 export class ParseWorkerPool {
@@ -236,6 +242,7 @@ export class ParseWorkerPool {
   private readonly createWorker: () => ParsePoolWorker;
   private readonly loadSettleMs: number;
   private readonly log: (msg: string) => void;
+  private readonly sharedContext?: MarkdownExtractorContext;
 
   constructor(opts: ParseWorkerPoolOptions) {
     this.languages = opts.languages;
@@ -244,6 +251,7 @@ export class ParseWorkerPool {
     this.parseTimeoutMs = opts.parseTimeoutMs ?? DEFAULT_PARSE_TIMEOUT_MS;
     this.loadSettleMs = opts.loadSettleMs ?? GRAMMAR_LOAD_SETTLE_MS;
     this.log = opts.log ?? (() => {});
+    this.sharedContext = opts.sharedContext;
     if (opts.createWorker) {
       this.createWorker = opts.createWorker;
     } else if (opts.workerScriptPath) {
@@ -320,7 +328,16 @@ export class ParseWorkerPool {
     w.on('error', (e) => { this.loadSettled(w); this.onWorkerGone(w, `${WORKER_DIED}: ${e?.message ?? 'unknown error'}`); });
     w.on('exit', (code) => { this.loadSettled(w); if (code !== 0) this.onWorkerGone(w, `${WORKER_DIED}: exited with code ${code}`); });
     // Readiness handshake; the worker replies 'grammars-loaded' and only then is idle.
-    w.postMessage({ type: 'load-grammars', languages: this.languages });
+    // The shared extraction context rides along, so a recycled worker gets it
+    // again without a per-parse clone.
+    w.postMessage({
+      type: 'load-grammars',
+      languages: this.languages,
+      knownFileNames: this.sharedContext?.knownFileNames
+        ? [...this.sharedContext.knownFileNames]
+        : undefined,
+      pruneMissingTargets: this.sharedContext?.pruneMissingTargets,
+    });
   }
 
   private onMessage(w: ParsePoolWorker, m: ParseWorkerMessage): void {

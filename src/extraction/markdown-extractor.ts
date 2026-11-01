@@ -19,6 +19,27 @@ interface FenceState {
   lines: Array<{ text: string; line: number }>;
 }
 
+/** Extraction inputs the Markdown extractor needs beyond the file itself. */
+export interface MarkdownExtractorContext {
+  /**
+   * Basenames of every file the index contains. Markdown path mentions and
+   * links resolve through the file-path arm, which looks candidates up by
+   * basename; a target whose basename is absent cannot resolve to a file.
+   * Omitted by callers without an index (unit tests, single-file tooling),
+   * which keeps the old permissive behaviour.
+   */
+  knownFileNames?: ReadonlySet<string>;
+  /**
+   * Skip the per-link import node for a target whose basename no indexed file
+   * has. Set only for a full project index. The reference is always kept: the
+   * resolver still tries the target's route/module/symbol arms and sync can
+   * retry a failed reference when a file appears later (#1240). The link node
+   * is decoration (a search child and a `contains` edge), so dropping it
+   * loses no edge. Without this flag every target gets its node, as before.
+   */
+  pruneMissingTargets?: boolean;
+}
+
 /**
  * Lightweight Markdown extractor.
  *
@@ -35,10 +56,20 @@ export class MarkdownExtractor {
   private errors: ExtractionError[] = [];
   private headings: HeadingInfo[] = [];
   private referenceKeys = new Set<string>();
+  private knownFileNames?: ReadonlySet<string>;
+  private pruneMissingTargets: boolean;
+  /**
+   * Targets whose import node was skipped. Their references are still stored;
+   * this list feeds a separate, larger `links:` part of the file digest so a
+   * link beyond the display digest's 12-item budget still stays searchable.
+   */
+  private prunedTargets: string[] = [];
 
-  constructor(filePath: string, source: string) {
+  constructor(filePath: string, source: string, context: MarkdownExtractorContext = {}) {
     this.filePath = normalizeRelativePath(filePath);
     this.lines = source.split('\n');
+    this.knownFileNames = context.knownFileNames;
+    this.pruneMissingTargets = context.pruneMissingTargets === true;
   }
 
   extract(): ExtractionResult {
@@ -430,27 +461,31 @@ export class MarkdownExtractor {
       if (!normalizedTarget) continue;
 
       const column = match.index;
-      const label = stripInlineMarkdown(match[1] || target) || target;
-      const displayName = path.posix.basename(stripAnchor(normalizedTarget)) || label;
-      const nodeId = generateNodeId(this.filePath, 'import', `${normalizedTarget}:${lineNumber}:${column}`, lineNumber);
-      const node: Node = {
-        id: nodeId,
-        kind: 'import',
-        name: displayName,
-        qualifiedName: `${this.filePath}::link:${normalizedTarget}:${lineNumber}:${column}`,
-        filePath: this.filePath,
-        language: 'markdown',
-        signature: match[0],
-        docstring: label,
-        startLine: lineNumber,
-        endLine: lineNumber,
-        startColumn: column,
-        endColumn: column + match[0].length,
-        updatedAt: Date.now(),
-      };
+      if (this.shouldCreateLinkNode(normalizedTarget)) {
+        const label = stripInlineMarkdown(match[1] || target) || target;
+        const displayName = path.posix.basename(stripAnchor(normalizedTarget)) || label;
+        const nodeId = generateNodeId(this.filePath, 'import', `${normalizedTarget}:${lineNumber}:${column}`, lineNumber);
+        const node: Node = {
+          id: nodeId,
+          kind: 'import',
+          name: displayName,
+          qualifiedName: `${this.filePath}::link:${normalizedTarget}:${lineNumber}:${column}`,
+          filePath: this.filePath,
+          language: 'markdown',
+          signature: match[0],
+          docstring: label,
+          startLine: lineNumber,
+          endLine: lineNumber,
+          startColumn: column,
+          endColumn: column + match[0].length,
+          updatedAt: Date.now(),
+        };
 
-      this.nodes.push(node);
-      this.edges.push({ source: owner.id, target: nodeId, kind: 'contains', provenance: 'heuristic' });
+        this.nodes.push(node);
+        this.edges.push({ source: owner.id, target: nodeId, kind: 'contains', provenance: 'heuristic' });
+      } else {
+        this.prunedTargets.push(normalizedTarget);
+      }
       this.addReference(owner.id, normalizedTarget, 'imports', lineNumber, column);
     }
   }
@@ -466,24 +501,28 @@ export class MarkdownExtractor {
       const normalizedTarget = this.normalizeReference(raw);
       if (!normalizedTarget) continue;
 
-      const nodeId = generateNodeId(this.filePath, 'import', `${normalizedTarget}:${lineNumber}:${match.index}`, lineNumber);
-      const node: Node = {
-        id: nodeId,
-        kind: 'import',
-        name: path.posix.basename(stripAnchor(normalizedTarget)) || normalizedTarget,
-        qualifiedName: `${this.filePath}::path:${normalizedTarget}:${lineNumber}:${match.index}`,
-        filePath: this.filePath,
-        language: 'markdown',
-        signature: raw,
-        startLine: lineNumber,
-        endLine: lineNumber,
-        startColumn: match.index,
-        endColumn: match.index + raw.length,
-        updatedAt: Date.now(),
-      };
+      if (this.shouldCreateLinkNode(normalizedTarget)) {
+        const nodeId = generateNodeId(this.filePath, 'import', `${normalizedTarget}:${lineNumber}:${match.index}`, lineNumber);
+        const node: Node = {
+          id: nodeId,
+          kind: 'import',
+          name: path.posix.basename(stripAnchor(normalizedTarget)) || normalizedTarget,
+          qualifiedName: `${this.filePath}::path:${normalizedTarget}:${lineNumber}:${match.index}`,
+          filePath: this.filePath,
+          language: 'markdown',
+          signature: raw,
+          startLine: lineNumber,
+          endLine: lineNumber,
+          startColumn: match.index,
+          endColumn: match.index + raw.length,
+          updatedAt: Date.now(),
+        };
 
-      this.nodes.push(node);
-      this.edges.push({ source: owner.id, target: nodeId, kind: 'contains', provenance: 'heuristic' });
+        this.nodes.push(node);
+        this.edges.push({ source: owner.id, target: nodeId, kind: 'contains', provenance: 'heuristic' });
+      } else {
+        this.prunedTargets.push(normalizedTarget);
+      }
       this.addReference(owner.id, normalizedTarget, 'references', lineNumber, match.index);
     }
   }
@@ -500,8 +539,10 @@ export class MarkdownExtractor {
       for (const symbol of symbols) {
         const normalizedTarget = this.normalizeReference(`${filePart}::${symbol}`);
         if (!normalizedTarget) continue;
+        const createNode = createImportNode && this.shouldCreateLinkNode(normalizedTarget);
+        if (createImportNode && !createNode) this.prunedTargets.push(normalizedTarget);
 
-        if (createImportNode) {
+        if (createNode) {
           const nodeId = generateNodeId(this.filePath, 'import', `${normalizedTarget}:${lineNumber}:${match.index}`, lineNumber);
           const node: Node = {
             id: nodeId,
@@ -554,9 +595,8 @@ export class MarkdownExtractor {
       const raw = match[0]!;
       if (text.slice(match.index + raw.length, match.index + raw.length + 2) === '::') continue;
       const normalizedTarget = this.normalizeReference(raw);
-      if (normalizedTarget) {
-        this.addReference(owner.id, normalizedTarget, 'references', lineNumber, match.index);
-      }
+      if (!normalizedTarget) continue;
+      this.addReference(owner.id, normalizedTarget, 'references', lineNumber, match.index);
     }
   }
 
@@ -622,6 +662,37 @@ export class MarkdownExtractor {
     return `${normalized}${symbolPart ? `::${symbolPart}` : ''}${anchor}`;
   }
 
+  /**
+   * Whether a target should get its own import node on a full index. The
+   * resolver's file-path arm collects candidates by basename, so a target
+   * whose basename no file node has cannot resolve to a file. Its reference
+   * is still recorded (the resolver's route/module/symbol arms may match it,
+   * and sync can retry it when a file appears), but the link node only added a
+   * search child and a `contains` edge. Without a known-file set, or outside a
+   * full index, every target keeps its node.
+   */
+  private shouldCreateLinkNode(normalizedTarget: string): boolean {
+    if (!this.pruneMissingTargets || !this.knownFileNames) return true;
+    const [pathAndSymbol] = splitAnchor(normalizedTarget);
+    const [pathPart] = splitFileSymbol(pathAndSymbol);
+    if (!pathPart || pathPart === this.filePath) return true;
+    return this.knownFileNames.has(path.posix.basename(pathPart));
+  }
+
+  /** Pruned link targets for the file digest's separate `links:` part. */
+  private summarizePrunedTargets(): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const target of this.prunedTargets) {
+      const display = compactRefDisplay(target);
+      if (!display || seen.has(display)) continue;
+      seen.add(display);
+      out.push(display);
+      if (out.length >= 64) break;
+    }
+    return out;
+  }
+
   private buildDocstring(startLine: number, endLine: number): string | undefined {
     const text = this.lines
       .slice(Math.max(0, startLine - 1), Math.max(0, endLine))
@@ -659,9 +730,15 @@ export class MarkdownExtractor {
   private finalizeFileDigest(fileNode: Node): void {
     const intro = this.buildIntro();
     const refs = this.collectKeyReferences();
+    const links = this.summarizePrunedTargets();
     const parts: string[] = [];
     if (intro) parts.push(intro);
     if (refs.length > 0) parts.push(`refs: ${refs.join(', ')}`);
+    if (links.length > 0) {
+      let text = links.join(', ');
+      if (text.length > 800) text = `${text.slice(0, 797).trimEnd()}...`;
+      parts.push(`links: ${text}`);
+    }
     const digest = parts.join('  ·  ').trim();
     fileNode.docstring = digest || this.buildDocstring(1, Math.min(this.lines.length, 40));
   }
@@ -698,18 +775,20 @@ export class MarkdownExtractor {
   /**
    * The documents/symbols this file points at, de-duplicated and compacted
    * (basename + `::symbol`/`#anchor`) in document order. Self-anchors and pure
-   * in-page links are dropped. Bounded so the whole digest stays short enough
-   * to display.
+   * in-page links are dropped. Includes targets pruned from the graph, so a
+   * link to an unindexed asset still makes the file findable. Bounded so the
+   * whole digest stays short enough to display.
    */
   private collectKeyReferences(maxItems = 12, maxChars = 150): string[] {
     const seen = new Set<string>();
     const out: string[] = [];
     let budget = maxChars;
     for (const ref of this.unresolvedReferences) {
-      const [pathSym] = splitAnchor(ref.referenceName);
+      const referenceName = ref.referenceName;
+      const [pathSym] = splitAnchor(referenceName);
       const [pathPart] = splitFileSymbol(pathSym);
       if (!pathPart || pathPart === this.filePath) continue; // pure/self anchor
-      const display = compactRefDisplay(ref.referenceName);
+      const display = compactRefDisplay(referenceName);
       if (!display || seen.has(display)) continue;
       if (out.length >= maxItems) break;
       if (out.length > 0 && budget - display.length - 2 < 0) break;

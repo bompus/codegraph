@@ -22,11 +22,20 @@ import { applyFrameworkExtracts } from './framework-extracts';
 import { mayDefineCppMacroMethods } from './languages/cpp-macro-methods';
 import type { Language, ExtractionResult } from '../types';
 
-parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: string; content?: string; languages?: Language[]; frameworkNames?: string[]; language?: Language }) => {
+/**
+ * The index's known file basenames, for the Markdown extractor's path check.
+ * Sent once per worker spawn (the pool re-sends it to a recycled worker).
+ */
+let knownFileNames: Set<string> | undefined;
+let pruneMissingTargets: boolean | undefined;
+
+parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: string; content?: string; languages?: Language[]; frameworkNames?: string[]; language?: Language; knownFileNames?: string[]; pruneMissingTargets?: boolean }) => {
   if (msg.type === 'load-grammars') {
     // Nothing to load since the wasm path was removed: grammars live in the
     // kernel binary. The handshake stays so the pool's readiness model
     // (spawned → ready → idle) is unchanged.
+    knownFileNames = msg.knownFileNames ? new Set(msg.knownFileNames) : undefined;
+    pruneMissingTargets = msg.pruneMissingTargets;
     parentPort!.postMessage({ type: 'grammars-loaded' });
   } else if (msg.type === 'parse') {
     const { id, filePath, content, frameworkNames } = msg;
@@ -67,7 +76,15 @@ parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: st
           applyFrameworkExtracts(result, filePath!, content!, language, frameworkNames);
         }
       }
-      result ??= extractFromSource(filePath!, content!, language, frameworkNames);
+      result ??= extractFromSource(
+        filePath!,
+        content!,
+        language,
+        frameworkNames,
+        knownFileNames || pruneMissingTargets
+          ? { knownFileNames, pruneMissingTargets }
+          : undefined
+      );
 
       parentPort!.postMessage({ type: 'parse-result', id, result, parseMs: performance.now() - t0 });
     } catch (err) {
