@@ -469,6 +469,185 @@ export function getExploreOutputBudget(fileCount: number): ExploreOutputBudget {
   };
 }
 
+/** The output shape of `codegraph_explore`. */
+export type ExploreMode = 'map' | 'snippets' | 'source';
+export const EXPLORE_MODES: readonly ExploreMode[] = ['map', 'snippets', 'source'];
+/** The product default until the compact A/B decides otherwise (one flip point). */
+export const DEFAULT_EXPLORE_MODE: ExploreMode = 'source';
+const EXPLORE_MAP_MAX_CHARS = 4000;
+const EXPLORE_SNIPPETS_MAX_CHARS = 8000;
+const EXPLORE_SNIPPET_LINES = 12;
+
+function exploreModeOption(value: unknown): ExploreMode | undefined {
+  return typeof value === 'string' && (EXPLORE_MODES as readonly string[]).includes(value)
+    ? (value as ExploreMode)
+    : undefined;
+}
+
+function projectExploreMode(projectRoot: string): ExploreMode | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(resolvePath(projectRoot, 'codegraph.json'), 'utf8')) as {
+      explore?: { mode?: unknown };
+    };
+    return exploreModeOption(parsed?.explore?.mode);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Per-call `mode`, then `CODEGRAPH_EXPLORE_MODE`, then the project's
+ * `codegraph.json` `explore.mode`, then `map`. A compact map is the default:
+ * the source bodies are what make explore's answer stay resident in the
+ * agent's context for every later turn, and `codegraph_node` serves one body
+ * far more cheaply when an edit actually needs it. `source` restores the
+ * previous verbatim output exactly.
+ */
+export function resolveExploreMode(
+  arg: unknown,
+  projectRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
+): ExploreMode {
+  return exploreModeOption(arg)
+    ?? exploreModeWithoutProject(env)
+    ?? projectExploreMode(projectRoot)
+    ?? DEFAULT_EXPLORE_MODE;
+}
+
+/** The layers that do not need an open project: per-call is handled by the caller. */
+export function exploreModeWithoutProject(env: NodeJS.ProcessEnv = process.env): ExploreMode | undefined {
+  return exploreModeOption(env.CODEGRAPH_EXPLORE_MODE);
+}
+
+/**
+ * Reduce a rendered explore response to a map or snippets. The renderer above
+ * has already chosen and ordered the files; this keeps its summary, blast
+ * radius, a bounded Relationships list and the per-file symbol headers, and
+ * drops the source fences (map) or keeps their first `EXPLORE_SNIPPET_LINES`
+ * lines (snippets). The result is for deciding where to look; `codegraph_node`
+ * or `mode: "source"` returns a body.
+ */
+export function compactExploreText(text: string, mode: Exclude<ExploreMode, 'source'>): string {
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let inSource = false;
+  let inFence = false;
+  let inBlast = false;
+  let inRelationships = false;
+  let inPointers = false;
+  let blastEntries = 0;
+  let relKinds = 0;
+  let relEntries = 0;
+  let snippet = 0;
+  let pointerEntries = 0;
+  for (const line of lines) {
+    if (line === '**Source Code**') {
+      inSource = true;
+      inBlast = false;
+      inRelationships = false;
+      out.push(line);
+      continue;
+    }
+    if (!inSource) {
+      if (line.startsWith('**Blast radius')) {
+        inBlast = true;
+        inRelationships = false;
+        out.push(line);
+        continue;
+      }
+      if (line.startsWith('**Relationships**')) {
+        inBlast = false;
+        inRelationships = true;
+        out.push(line);
+        continue;
+      }
+      if (inBlast) {
+        if (line.startsWith('- ')) {
+          if (blastEntries < 6) {
+            out.push(line);
+            blastEntries++;
+          }
+        } else if (line.trim()) {
+          out.push(line);
+        }
+        continue;
+      }
+      if (inRelationships) {
+        if (/^\*\*[^*\n]+:\*\*$/.test(line)) {
+          if (relKinds < 3) {
+            out.push(line);
+            relKinds++;
+            relEntries = 0;
+          }
+          continue;
+        }
+        if (line.startsWith('- ')) {
+          if (relKinds <= 3 && relEntries < 4) {
+            out.push(line);
+            relEntries++;
+          }
+          continue;
+        }
+        if (line.trim()) out.push(line);
+        continue;
+      }
+      out.push(line);
+      continue;
+    }
+    // Source section.
+    if (!inFence) {
+      if (line.startsWith('```')) {
+        inFence = true;
+        snippet = 0;
+        if (mode === 'snippets') out.push(line);
+        continue;
+      }
+      if (line.startsWith('**`')) {
+        out.push(line);
+        continue;
+      }
+      if (line.startsWith('**Not shown above')) {
+        inPointers = true;
+        out.push(line);
+        continue;
+      }
+      if (inPointers && line.startsWith('- ')) {
+        if (pointerEntries < 10) {
+          out.push(line);
+          pointerEntries++;
+        }
+        continue;
+      }
+      if (line === '---') out.push(line);
+      continue;
+    }
+    if (line.startsWith('```')) {
+      inFence = false;
+      if (mode === 'snippets') {
+        if (snippet >= EXPLORE_SNIPPET_LINES) out.push('...');
+        out.push(line);
+      }
+      continue;
+    }
+    if (mode === 'snippets' && snippet < EXPLORE_SNIPPET_LINES) {
+      out.push(line);
+      snippet++;
+    }
+  }
+  let body = out.join('\n').replace(/\n{3,}/g, '\n\n');
+  const maxChars = mode === 'map' ? EXPLORE_MAP_MAX_CHARS : EXPLORE_SNIPPETS_MAX_CHARS;
+  if (body.length > maxChars) {
+    const cut = body.slice(0, maxChars - 160);
+    const at = cut.lastIndexOf('\n');
+    body = (at > 0 ? cut.slice(0, at) : cut)
+      + '\n\n... (compact response truncated; narrow the query or name the symbols you need)';
+  }
+  const hint = mode === 'map'
+    ? '> Source omitted in compact map mode. For one symbol\'s body, call codegraph_node with its name; for the full source, call codegraph_explore with mode: "source".'
+    : `> Only the first ${EXPLORE_SNIPPET_LINES} source lines of each file are shown. For one symbol's body, call codegraph_node with its name; for the full source, call codegraph_explore with mode: "source".`;
+  return body + '\n\n' + hint + '\n';
+}
+
 // ── Explore relevance scoring (CG-10 / #1500) ──────────────────────────────
 //
 // A file earns its slice of the explore envelope from the symbols in it that the
@@ -2113,7 +2292,7 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_explore',
-    description: 'Returns the verbatim, line-numbered source of the code relevant to a query, grouped by file (the same `<n>\\t<line>` shape as Read, safe to Edit from), plus the call path among the named symbols — including dynamic-dispatch hops grep cannot follow — and, when it fits, a summary of what depends on them. Use it first for questions about indexed code (how X works, where X is, a flow, a bug, a documentation section) and to load the symbols you are about to change. The query is a natural-language question or a bag of symbol names and file paths; named items are prioritised, and a question about the working changes ("my changes", "this branch", `main..HEAD`) is answered from the git diff. Output is capped by project size (about 13K–24K characters); files that did not fit may be listed by name for a follow-up call. Treat returned ranges as already Read, except files the response flags as pending sync or changed on disk. It does not return files codegraph does not index, such as most configs. One call usually covers a question.',
+    description: 'Returns a compact map of the code relevant to a query by default: the matching symbols with file:line and signatures, the call path among the named symbols — including dynamic-dispatch hops grep cannot follow — and, when it fits, a summary of what depends on them. It does not include source bodies. It is for deciding where to look; before editing a symbol, call codegraph_node with its name (or pass mode: "source") for the verbatim, line-numbered source. Use it first for questions about indexed code (how X works, where X is, a flow, a bug, a documentation section). The query is a natural-language question or a bag of symbol names and file paths; named items are prioritised, and a question about the working changes ("my changes", "this branch", `main..HEAD`) is answered from the git diff. Output is capped at about 4K characters in map mode and 8K in snippets; source mode uses the project-sized 13K–24K cap. Treat source returned by mode "source" as already Read, except files the response flags as pending sync or changed on disk. It does not return files codegraph does not index, such as most configs. One call usually covers a question.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2123,7 +2302,12 @@ export const tools: ToolDefinition[] = [
         },
         maxFiles: {
           type: 'number',
-          description: 'Maximum number of files to return source from, 1–20. Omit it to use a default sized to the project (4 files below 150 indexed files, 5 below 500, 8 otherwise); when omitted and the query quotes a literal, the cap rises to the number of files holding it, up to 12. Total output is also capped by characters (about 13K–24K by project size), so a higher maxFiles spreads that budget over more files rather than returning more text.',
+          description: 'Maximum number of files to include, 1–20. Omit it to use a default sized to the project (4 files below 150 indexed files, 5 below 500, 8 otherwise); when omitted and the query quotes a literal, the cap rises to the number of files holding it, up to 12. In source mode the total is also capped by characters (about 13K–24K by project size), so a higher maxFiles spreads that budget over more files rather than returning more text.',
+        },
+        mode: {
+          type: 'string',
+          enum: ['map', 'snippets', 'source'],
+          description: 'Output shape. "map" (the default unless codegraph.json explore.mode or CODEGRAPH_EXPLORE_MODE overrides it) returns symbols, file:line, signatures, the flow and blast radius without source bodies. "snippets" adds the first 12 source lines of each file. "source" returns the full verbatim, line-numbered source (the previous behavior).',
         },
         projectPath: projectPathProperty,
       },
@@ -2340,7 +2524,8 @@ function withRequiredProjectPath(defs: ToolDefinition[]): ToolDefinition[] {
 export function getStaticTools(): ToolDefinition[] {
   const raw = process.env.CODEGRAPH_MCP_TOOLS;
   if (!raw || !raw.trim()) {
-    return tools.filter(t => DEFAULT_MCP_TOOLS.has(t.name.replace(/^codegraph_/, '')));
+    const surface = defaultSurfaceFor(exploreModeWithoutProject() ?? DEFAULT_EXPLORE_MODE);
+    return tools.filter(t => surface.has(t.name.replace(/^codegraph_/, '')));
   }
   const allow = new Set(raw.split(',').map(s => s.trim().replace(/^codegraph_/, '')).filter(Boolean));
   return allow.size ? tools.filter(t => allow.has(t.name.replace(/^codegraph_/, ''))) : tools;
@@ -2361,6 +2546,20 @@ export function getStaticTools(): ToolDefinition[] {
  * untouched, and `CODEGRAPH_MCP_TOOLS=explore,node,...` re-enables any of them.
  */
 const DEFAULT_MCP_TOOLS = new Set(['explore', 'sessions']);
+
+/**
+ * The default surface for one output mode. A compact response carries no source
+ * body, so `codegraph_node` is listed beside `codegraph_explore` as the way to
+ * fetch one symbol's body — without it the agent has no on-demand source path
+ * and asks explore for `mode: "source"` instead, which defeats the point. In
+ * `source` mode explore already returns the body, so listing node again only
+ * adds a mis-pick candidate (#2486).
+ */
+function defaultSurfaceFor(mode: ExploreMode): ReadonlySet<string> {
+  return mode === 'source'
+    ? DEFAULT_MCP_TOOLS
+    : new Set([...DEFAULT_MCP_TOOLS, 'node']);
+}
 
 /** Call-site lines codegraph_callers shows per caller (#2909), so one busy caller stays one line. */
 const MCP_CALL_SITES_SHOWN = 10;
@@ -2622,6 +2821,18 @@ export class ToolHandler {
    * tool is then truly absent from ListTools rather than merely denied on call.
    * Matching is on the short form, so "node" and "codegraph_node" both work.
    */
+  /** The output mode explore will use for the open project (or env-only with none). */
+  private servedExploreMode(): ExploreMode {
+    return this.cg
+      ? resolveExploreMode(undefined, this.cg.getProjectRoot())
+      : exploreModeWithoutProject() ?? DEFAULT_EXPLORE_MODE;
+  }
+
+  /** The default surface for the mode this handler will serve. */
+  private defaultSurface(): ReadonlySet<string> {
+    return defaultSurfaceFor(this.servedExploreMode());
+  }
+
   private toolAllowlist(): Set<string> | null {
     const raw = process.env.CODEGRAPH_MCP_TOOLS;
     if (!raw || !raw.trim()) return null;
@@ -2646,7 +2857,7 @@ export class ToolHandler {
   private isToolServed(name: string): boolean {
     const short = name.replace(/^codegraph_/, '');
     const allow = this.toolAllowlist();
-    return allow ? allow.has(short) : DEFAULT_MCP_TOOLS.has(short);
+    return allow ? allow.has(short) : this.defaultSurface().has(short);
   }
 
   /**
@@ -2660,9 +2871,10 @@ export class ToolHandler {
     // No explicit allowlist → the default surface (see
     // DEFAULT_MCP_TOOLS for the evidence). An allowlist replaces the
     // default entirely, so any defined tool can be re-enabled.
+    const surface = this.defaultSurface();
     let visible = allow
       ? tools.filter(t => allow.has(t.name.replace(/^codegraph_/, '')))
-      : tools.filter(t => DEFAULT_MCP_TOOLS.has(t.name.replace(/^codegraph_/, '')));
+      : tools.filter(t => surface.has(t.name.replace(/^codegraph_/, '')));
     // No default project loaded → no-root-index case (#993): a gateway server
     // started outside any repo, or a monorepo root whose indexes live in
     // sub-projects. With nothing to fall back to, EVERY call needs an explicit
@@ -4820,6 +5032,7 @@ export class ToolHandler {
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const projectRoot = cg.getProjectRoot();
+    const mode = resolveExploreMode(args.mode, projectRoot);
 
     // Resolve adaptive output budget from project size. Falls back to the
     // largest-tier defaults if stats aren't available, which preserves
@@ -9214,6 +9427,7 @@ export class ToolHandler {
       gatherNotice(uncoveredGather),
     );
     finalText = finalText.replace(summaryPlaceholder, summaryLine);
+    if (mode !== 'source') finalText = compactExploreText(finalText, mode);
 
     // Emit the allocation diagnostic from the FINAL text, so per-file bytes and
     // shares account for the hard-ceiling truncation above (CG-4).
@@ -9229,16 +9443,20 @@ export class ToolHandler {
     // be re-served for nothing.
     const emittedFiles: ExploreFileEmission[] = [];
     let sourceBytes = 0;
-    for (const fp of survivors) {
-      const emitted = emittedByFile.get(fp);
-      if (!emitted || emitted.ranges.length === 0) continue;
-      emittedFiles.push({
-        path: fp,
-        ranges: emitted.ranges,
-        bytes: emitted.bytes,
-        fingerprint: emitted.fingerprint,
-      });
-      sourceBytes += emitted.bytes;
+    // A compact response carries no source body, so it records no emitted
+    // source; a later call must not back-reference bytes the agent never saw.
+    if (mode === 'source') {
+      for (const fp of survivors) {
+        const emitted = emittedByFile.get(fp);
+        if (!emitted || emitted.ranges.length === 0) continue;
+        emittedFiles.push({
+          path: fp,
+          ranges: emitted.ranges,
+          bytes: emitted.bytes,
+          fingerprint: emitted.fingerprint,
+        });
+        sourceBytes += emitted.bytes;
+      }
     }
     // Include graph-only and omitted/deleted files, not just emitted source.
     const answerPaths = new Set(fileGroups.keys());
