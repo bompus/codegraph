@@ -52,7 +52,16 @@ const CLOSE_TIMEOUT_MS = 5000;
 // discourse (14.6→14.4 s); CPython was flat and pretix showed no clear
 // change (the 250-era vendor-JS cluster tail did not reproduce). 125 bought
 // ~1% on pretix for +300MB RSS; 250 remains the finer-grained fallback.
+// A page smaller than targetChunks*CHUNK_SIZE is split finer so a configured
+// small page (CODEGRAPH_RESOLVE_BATCH=500) still fans out across the pool.
 const CHUNK_SIZE = 500;
+
+/** Refs per worker message for a page and pool size: 500 for large pages,
+ *  finer when the page would otherwise leave most workers idle. */
+export function resolveChunkSize(refs: number, workers: number): number {
+  const targetChunks = Math.max(1, Math.min(workers, 4));
+  return Math.min(CHUNK_SIZE, Math.max(1, Math.ceil(refs / targetChunks)));
+}
 
 /**
  * Minimum TOTAL pending refs before the pool is created at all. Pool boot
@@ -445,8 +454,9 @@ export class ResolverPool {
   async resolveBatch(refs: UnresolvedReference[]): Promise<ChunkResult> {
     if (this.failed) throw this.failed;
     const chunkPromises: Promise<ChunkResult>[] = [];
-    for (let i = 0; i < refs.length; i += CHUNK_SIZE) {
-      const chunk = refs.slice(i, i + CHUNK_SIZE);
+    const chunkSize = resolveChunkSize(refs.length, this.workers.length);
+    for (let i = 0; i < refs.length; i += chunkSize) {
+      const chunk = refs.slice(i, i + chunkSize);
       const id = this.nextId++;
       // Queue, don't blast: pumpDispatch keeps each worker under its
       // in-flight bound and refills on each ack. Result order is fixed by

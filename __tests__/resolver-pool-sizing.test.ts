@@ -8,7 +8,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import * as os from 'os';
-import { ResolverPool, minRefsForBulkLoad, minRefsForPool } from '../src/resolution/resolver-pool';
+import { ResolverPool, minRefsForBulkLoad, minRefsForPool, resolveChunkSize } from '../src/resolution/resolver-pool';
 import {
   cgroupMemoryAvailable,
   darwinMemoryAvailable,
@@ -138,4 +138,21 @@ describe('memory budget helpers', () => {
       expect(darwinMemoryAvailable()).toBeNull();
     }
   );
+});
+
+describe('resolveChunkSize', () => {
+  it('keeps 500-ref chunks for large pages and splits small pages across workers', () => {
+    // Two 40k pages at a time, 12 workers: the measured 500-ref chunk.
+    expect(resolveChunkSize(40_000, 12)).toBe(500);
+    // CODEGRAPH_RESOLVE_BATCH=500 with four workers: four chunks, not one.
+    expect(resolveChunkSize(500, 4)).toBe(125);
+    // Two workers: two chunks.
+    expect(resolveChunkSize(500, 2)).toBe(250);
+    expect(resolveChunkSize(1_000, 4)).toBe(250);
+    // Tiny pages still enqueue one ref per chunk.
+    expect(resolveChunkSize(3, 4)).toBe(1);
+    expect(resolveChunkSize(0, 4)).toBe(1);
+    // No workers (preflight fallback): large-page size.
+    expect(resolveChunkSize(500, 0)).toBe(500);
+  });
 });
