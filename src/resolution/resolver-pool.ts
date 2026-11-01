@@ -47,12 +47,26 @@ interface PoolWorker {
 /** How long destroy() waits for a worker to exit on 'close' before terminating it. */
 const CLOSE_TIMEOUT_MS = 5000;
 
-// 250 refs per chunk — measured on pretix's vendor-JS ref cluster: dense,
-// expensive refs sit contiguously in rowid order, so at 500 a single chunk
-// held ~2.3s of work and owned the batch tail; at 250 the cluster spreads
-// ~2x finer across the steal queue (7.9s→7.1s index wall). 125 bought ~1%
-// more for +300MB RSS.
-const CHUNK_SIZE = 250;
+// 500 refs per chunk — re-measured 2026-10-31 on the current work-stealing
+// pool: 500 beat 250 on n8n (53.1→51.1 s), supabase (17.0→16.5 s) and
+// discourse (14.6→14.4 s); CPython was flat and pretix showed no clear
+// change (the 250-era vendor-JS cluster tail did not reproduce). 125 bought
+// ~1% on pretix for +300MB RSS; 250 remains the finer-grained fallback.
+// A page smaller than targetChunks*CHUNK_SIZE is split finer so a configured
+// small page (CODEGRAPH_RESOLVE_BATCH=500) still fans out across the pool.
+const CHUNK_SIZE = 500;
+/** The pre-500 measured chunk size. A page that cannot fill the pool with
+ *  500-ref chunks splits down toward this floor; below 4×250 it splits finer
+ *  so tiny pages still fan out. */
+const MIN_CHUNK_SIZE = 250;
+
+/** Refs per worker message for a page and pool size: 500 for large pages,
+ *  finer when 500 would leave workers idle (a 3,000-ref page on 12 workers
+ *  gets 250-ref chunks, not six 500s). */
+export function resolveChunkSize(refs: number, workers: number): number {
+  const targetChunks = Math.max(1, Math.min(workers, Math.max(4, Math.ceil(refs / MIN_CHUNK_SIZE))));
+  return Math.min(CHUNK_SIZE, Math.max(1, Math.ceil(refs / targetChunks)));
+}
 
 /**
  * Minimum TOTAL pending refs before the pool is created at all. Pool boot
@@ -445,8 +459,9 @@ export class ResolverPool {
   async resolveBatch(refs: UnresolvedReference[]): Promise<ChunkResult> {
     if (this.failed) throw this.failed;
     const chunkPromises: Promise<ChunkResult>[] = [];
-    for (let i = 0; i < refs.length; i += CHUNK_SIZE) {
-      const chunk = refs.slice(i, i + CHUNK_SIZE);
+    const chunkSize = resolveChunkSize(refs.length, this.workers.length);
+    for (let i = 0; i < refs.length; i += chunkSize) {
+      const chunk = refs.slice(i, i + chunkSize);
       const id = this.nextId++;
       // Queue, don't blast: pumpDispatch keeps each worker under its
       // in-flight bound and refills on each ack. Result order is fixed by
