@@ -1482,7 +1482,8 @@ program
   .description('Explore an area: relevant symbols\' source + call paths in one shot (same output as the codegraph_explore MCP tool)')
   .option('-p, --path <path>', 'Project path')
   .option('--max-files <number>', 'Maximum number of files to include source from')
-  .action(async (queryParts: string[], options: { path?: string; maxFiles?: string }) => {
+  .option('--mode <mode>', 'Output shape: map (default), snippets or source; codegraph.json explore.mode and CODEGRAPH_EXPLORE_MODE also set it')
+  .action(async (queryParts: string[], options: { path?: string; maxFiles?: string; mode?: string }) => {
     const projectPath = resolveProjectPath(options.path);
 
     try {
@@ -1498,6 +1499,7 @@ program
 
       const args: Record<string, unknown> = { query: queryParts.join(' ') };
       if (options.maxFiles) args.maxFiles = parseInt(options.maxFiles, 10);
+      if (options.mode) args.mode = options.mode;
       const result = await handler.execute('codegraph_explore', args);
 
       console.log(result.content[0]?.text ?? '');

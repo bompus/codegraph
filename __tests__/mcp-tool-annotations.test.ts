@@ -55,6 +55,9 @@ describe('Read-only annotations on the codegraph MCP tools (#1018)', () => {
     expect(tools.length).toBeGreaterThan(0);
     for (const tool of tools) expectReadOnly(tool);
     expectExploreAlwaysLoad(tools);
+    // `codegraph_node` is explore's body-on-demand follow-up in map mode; a
+    // deferred tool would need a ToolSearch step before the agent could use it.
+    expect(tools.find((t) => t.name === 'codegraph_node')!._meta).toEqual({ 'anthropic/alwaysLoad': true });
   });
 
   it('the static proxy surface carries annotations on every exposed tool', () => {
