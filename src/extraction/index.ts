@@ -2402,6 +2402,20 @@ export class ExtractionOrchestrator {
     }, skipStats);
     this.prepareLiquidThemeRoots(files);
     if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] scan: ${Date.now() - tScan}ms (${files.length} files)`);
+
+    // Markdown link/path targets resolve through the file-path arm, which
+    // collects candidates by basename. Hand extraction that set so a path
+    // mention whose target file is absent creates no import node and no
+    // failed reference. Existing DB rows are included on a re-index so a ref
+    // whose target is still tracked (but gone from disk) resolves as before.
+    const knownFileNames = new Set<string>();
+    const rememberBasename = (file: string): void => {
+      const cut = Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\'));
+      knownFileNames.add(cut >= 0 ? file.slice(cut + 1) : file);
+    };
+    for (const file of files) rememberBasename(file);
+    for (const file of this.queries.getAllFilePaths()) rememberBasename(file);
+    const extractionContext = { knownFileNames };
     /** Only meaningful when nothing was indexable — see IndexResult (#1502). */
     const skipSummary = (): Pick<IndexResult, 'filesSkippedUnsupported' | 'topUnsupportedExtensions'> => {
       let total = 0;
@@ -2498,6 +2512,7 @@ export class ExtractionOrchestrator {
         recycleInterval: WORKER_RECYCLE_INTERVAL,
         parseTimeoutMs: PARSE_TIMEOUT_MS,
         log,
+        sharedContext: extractionContext,
       });
       log(`Parse worker pool: ${poolSize} worker(s)`);
       // Bulk index: every core will be needed — spawn the whole pool now so
@@ -2538,7 +2553,7 @@ export class ExtractionOrchestrator {
     const parseFile = (filePath: string, content: string): Promise<ExtractionResult> => {
       const language = detectLanguage(filePath, content, overrides, this.rootDir);
       const names = this.frameworksForFile(filePath, frameworkNames);
-      if (!pool) return Promise.resolve(extractFromSource(filePath, content, language, names));
+      if (!pool) return Promise.resolve(extractFromSource(filePath, content, language, names, extractionContext));
       return pool.requestParse({ filePath, content, language, frameworkNames: names });
     };
 

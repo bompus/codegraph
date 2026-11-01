@@ -39,7 +39,7 @@ import { DfmExtractor } from './dfm-extractor';
 import { PASCAL_SYSTEM_NAMES } from './languages/pascal-system';
 import { VueExtractor } from './vue-extractor';
 import { MyBatisExtractor } from './mybatis-extractor';
-import { MarkdownExtractor } from './markdown-extractor';
+import { MarkdownExtractor, type MarkdownExtractorContext } from './markdown-extractor';
 import { CfmlExtractor } from './cfml-extractor';
 import { tryKernelExtract, takeDeferredPreParse, tryKernelBindings, attachBindingNodeIds } from './kernel';
 import { captureLiterals } from './literal-capture';
@@ -9857,7 +9857,8 @@ export function extractFromSource(
   filePath: string,
   source: string,
   language?: Language,
-  frameworkNames?: string[]
+  frameworkNames?: string[],
+  context?: MarkdownExtractorContext
 ): ExtractionResult {
   const detectedLanguage = language || detectLanguage(filePath, source);
   const fileExtension = path.extname(filePath).toLowerCase();
@@ -9891,7 +9892,7 @@ export function extractFromSource(
     result = extractor.extract();
   } else if (detectedLanguage === 'markdown') {
     // Use custom extractor for Markdown documentation structure and references
-    const extractor = new MarkdownExtractor(filePath, source);
+    const extractor = new MarkdownExtractor(filePath, source, context);
     result = extractor.extract();
   } else if (detectedLanguage === 'cfml' || detectedLanguage === 'cfscript') {
     // Custom extractor for CFML (.cfc/.cfm) — dialect-switches between the

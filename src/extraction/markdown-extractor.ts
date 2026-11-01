@@ -19,6 +19,19 @@ interface FenceState {
   lines: Array<{ text: string; line: number }>;
 }
 
+/** Extraction inputs the Markdown extractor needs beyond the file itself. */
+export interface MarkdownExtractorContext {
+  /**
+   * Basenames of every file the index contains. Markdown path mentions and
+   * links resolve through the file-path arm, which looks candidates up by
+   * basename; a slash-shaped relative target whose basename is absent cannot
+   * resolve, so it creates no import node and no reference. Omitted by
+   * callers without an index (unit tests, single-file tooling), which keeps
+   * the old permissive behaviour.
+   */
+  knownFileNames?: ReadonlySet<string>;
+}
+
 /**
  * Lightweight Markdown extractor.
  *
@@ -35,10 +48,12 @@ export class MarkdownExtractor {
   private errors: ExtractionError[] = [];
   private headings: HeadingInfo[] = [];
   private referenceKeys = new Set<string>();
+  private knownFileNames?: ReadonlySet<string>;
 
-  constructor(filePath: string, source: string) {
+  constructor(filePath: string, source: string, context: MarkdownExtractorContext = {}) {
     this.filePath = normalizeRelativePath(filePath);
     this.lines = source.split('\n');
+    this.knownFileNames = context.knownFileNames;
   }
 
   extract(): ExtractionResult {
@@ -412,7 +427,7 @@ export class MarkdownExtractor {
     const scriptPath = extractScriptPath(command);
     if (scriptPath) {
       const normalizedTarget = this.normalizeReference(scriptPath);
-      if (normalizedTarget) {
+      if (normalizedTarget && this.isResolvableTarget(normalizedTarget)) {
         this.addReference(nodeId, normalizedTarget, 'calls', line, column);
       }
     }
@@ -427,7 +442,7 @@ export class MarkdownExtractor {
       if (!isLocalReference(target)) continue;
 
       const normalizedTarget = this.normalizeReference(target);
-      if (!normalizedTarget) continue;
+      if (!normalizedTarget || !this.isResolvableTarget(normalizedTarget)) continue;
 
       const column = match.index;
       const label = stripInlineMarkdown(match[1] || target) || target;
@@ -464,7 +479,7 @@ export class MarkdownExtractor {
       if (line[match.index - 1] === '(') continue; // inline markdown link target, already handled
       if (line.slice(match.index + raw.length, match.index + raw.length + 2) === '::') continue;
       const normalizedTarget = this.normalizeReference(raw);
-      if (!normalizedTarget) continue;
+      if (!normalizedTarget || !this.isResolvableTarget(normalizedTarget)) continue;
 
       const nodeId = generateNodeId(this.filePath, 'import', `${normalizedTarget}:${lineNumber}:${match.index}`, lineNumber);
       const node: Node = {
@@ -499,7 +514,7 @@ export class MarkdownExtractor {
 
       for (const symbol of symbols) {
         const normalizedTarget = this.normalizeReference(`${filePart}::${symbol}`);
-        if (!normalizedTarget) continue;
+        if (!normalizedTarget || !this.isResolvableTarget(normalizedTarget)) continue;
 
         if (createImportNode) {
           const nodeId = generateNodeId(this.filePath, 'import', `${normalizedTarget}:${lineNumber}:${match.index}`, lineNumber);
@@ -554,7 +569,7 @@ export class MarkdownExtractor {
       const raw = match[0]!;
       if (text.slice(match.index + raw.length, match.index + raw.length + 2) === '::') continue;
       const normalizedTarget = this.normalizeReference(raw);
-      if (normalizedTarget) {
+      if (normalizedTarget && this.isResolvableTarget(normalizedTarget)) {
         this.addReference(owner.id, normalizedTarget, 'references', lineNumber, match.index);
       }
     }
@@ -620,6 +635,29 @@ export class MarkdownExtractor {
 
     if (normalized.startsWith('../') || normalized === '..') return null;
     return `${normalized}${symbolPart ? `::${symbolPart}` : ''}${anchor}`;
+  }
+
+  /**
+   * Whether a normalized reference target names a file the index can resolve.
+   * The resolver's file-path arm collects candidates by basename, so a
+   * relative path whose basename has no file node cannot resolve; symbol
+   * (`::`) and anchor (`#`) suffixes do not change that. A pure in-page anchor
+   * names this file, which is always present.
+   *
+   * Bare names stay: a root-absolute link (`/pricing`), a same-directory
+   * mention at the project root (`Next.js`, `config.toml`) or a parent
+   * reference can resolve to a route, module or table-row node by name, and
+   * the resolver's name arms do not need a file node for that. Only a
+   * slash-shaped relative path is unambiguously a file path. Without a
+   * known-file set the check is skipped.
+   */
+  private isResolvableTarget(normalizedTarget: string): boolean {
+    if (!this.knownFileNames) return true;
+    const [pathAndSymbol] = splitAnchor(normalizedTarget);
+    const [pathPart] = splitFileSymbol(pathAndSymbol);
+    if (!pathPart || pathPart === this.filePath) return true;
+    if (!pathPart.includes('/')) return true;
+    return this.knownFileNames.has(path.posix.basename(pathPart));
   }
 
   private buildDocstring(startLine: number, endLine: number): string | undefined {
