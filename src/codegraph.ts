@@ -971,7 +971,21 @@ export class CodeGraph {
         // the live database never keeps them dropped. Rebuilding when the
         // resolver already did is a CREATE IF NOT EXISTS no-op.
         if (deferredEdgeIndexes) {
-          try { await this.db.endBulkEdgeLoad(); } catch { /* schema heals on the next open */ }
+          try {
+            await this.db.endBulkEdgeLoad();
+          } catch (err) {
+            // Another connection may hold the write lock. Register the missing
+            // indexes for the live connection's off-thread recoverer (its own
+            // connection, 30s busy timeout) rather than returning with the
+            // edge indexes dropped; a failed recovery leaves them registered
+            // for the next open.
+            this.db.deferIndexRecovery();
+            await this.db.recoverIndexesOffThread().catch((recErr) => {
+              console.error(
+                `[index] edge indexes remain dropped after an aborted index (${recErr instanceof Error ? recErr.message : String(recErr)}); they will rebuild on the next open`
+              );
+            });
+          }
         }
         // Deterministic kernel-conn teardown while the valve is stopped and
         // the pool is gone — a GC-timed rusqlite close could otherwise fire

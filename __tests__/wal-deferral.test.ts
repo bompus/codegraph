@@ -69,6 +69,15 @@ describe('bulk parse/edge index windows', () => {
       expect(edgeIndexes()).toBeLessThan(before);
       await db.endBulkEdgeLoad();
       expect(edgeIndexes()).toBe(before);
+
+      // The abort path registers a failed rebuild for the live connection's
+      // off-thread recoverer instead of waiting for the next open.
+      db.beginBulkParseLoad();
+      await db.endBulkParseLoad(true);
+      expect(edgeIndexes()).toBeLessThan(before);
+      db.deferIndexRecovery();
+      await db.recoverIndexesOffThread();
+      expect(edgeIndexes()).toBe(before);
     } finally {
       db.close();
     }

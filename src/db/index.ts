@@ -513,6 +513,15 @@ export class DatabaseConnection {
     return this.deferredIndexDdls.length > 0;
   }
 
+  /** Register the bulk indexes a failed window left missing so the live
+   *  connection's off-thread recoverer rebuilds them (30s busy timeout on its
+   *  own connection) instead of waiting for the next open. */
+  deferIndexRecovery(): void {
+    if (this.deferredIndexDdls.length === 0) {
+      this.deferredIndexDdls = this.missingBulkSecondaryIndexDdls();
+    }
+  }
+
   /**
    * Recreate the secondary indexes {@link open} deferred, on a worker thread
    * with its own connection, so this thread's event loop, and the #850
