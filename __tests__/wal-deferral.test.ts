@@ -54,6 +54,27 @@ describe('resolveWalValveMb', () => {
   });
 });
 
+describe('bulk parse/edge index windows', () => {
+  it('defers the edge indexes on endBulkParseLoad(true) and restores them on endBulkEdgeLoad', async () => {
+    const db = openDb();
+    const edgeIndexes = () => (db.getDb().prepare(
+      "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='edges'"
+    ).all() as Array<{ name: string }>).length;
+    try {
+      const before = edgeIndexes();
+      expect(before).toBeGreaterThan(1);
+      db.beginBulkParseLoad(); // drops the parse indexes and the four edge indexes
+      expect(edgeIndexes()).toBeLessThan(before);
+      await db.endBulkParseLoad(true); // deferred: the resolver's window owns the rebuild
+      expect(edgeIndexes()).toBeLessThan(before);
+      await db.endBulkEdgeLoad();
+      expect(edgeIndexes()).toBe(before);
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe('DatabaseConnection WAL helpers', () => {
   it('reads and writes the wal_autocheckpoint interval', () => {
     const db = openDb();

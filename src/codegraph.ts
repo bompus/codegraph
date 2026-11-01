@@ -691,6 +691,10 @@ export class CodeGraph {
       // Set when the fastInit+pool path below defers autocheckpointing, so the
       // finally knows to restore the interval on that path too.
       let restoreAutocheckpoint = false;
+      // Set when the parse phase deferred the edge-index rebuild for the
+      // resolver's bulk window; the outer finally restores them if the run
+      // aborts before that window completes.
+      let deferredEdgeIndexes = false;
       if (deferWal) {
         priorAutocheckpoint = this.db.getWalAutocheckpoint();
         this.db.setWalAutocheckpoint(0);
@@ -725,6 +729,7 @@ export class CodeGraph {
         // — they delete per-file rows mid-phase through the file_path indexes.
         if (freshDb) this.db.beginBulkParseLoad();
         let result: IndexResult;
+        let extractionOk = false;
         try {
           result = await this.orchestrator.indexAll(
             options.onProgress,
@@ -736,13 +741,16 @@ export class CodeGraph {
             // edge snapshots) and delete, which belongs on one thread.
             freshDb ? { dbPath: this.db.getPath(), fastInit } : null
           );
+          extractionOk = true;
         } finally {
           if (freshDb) {
             const tIdx = Date.now();
             // The batched resolver immediately re-drops and then rebuilds the
             // edge indexes when its own bulk window engages; skip the first
-            // rebuild in that case.
-            await this.db.endBulkParseLoad(this.queries.getUnresolvedReferencesCount() >= minRefsForBulkLoad());
+            // rebuild only when parsing succeeded and the resolver will run.
+            // The outer finally restores them if it never does.
+            deferredEdgeIndexes = extractionOk && this.queries.getUnresolvedReferencesCount() >= minRefsForBulkLoad();
+            await this.db.endBulkParseLoad(deferredEdgeIndexes);
             if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] parse-index-rebuild: ${Date.now() - tIdx}ms`);
           }
           const tFts = Date.now();
@@ -957,6 +965,14 @@ export class CodeGraph {
         // (SQLite replays the WAL on the next open) and the follow-up write
         // that folds it is the known cost of a failed run.
         if (walValve) { walValve.stop(); await walValve.drain(); }
+        // The parse phase may have deferred the edge indexes for the resolver's
+        // bulk window. If this run aborted before the resolver rebuilt them
+        // (or reduced the pending set below the window), restore them here so
+        // the live database never keeps them dropped. Rebuilding when the
+        // resolver already did is a CREATE IF NOT EXISTS no-op.
+        if (deferredEdgeIndexes) {
+          try { await this.db.endBulkEdgeLoad(); } catch { /* schema heals on the next open */ }
+        }
         // Deterministic kernel-conn teardown while the valve is stopped and
         // the pool is gone — a GC-timed rusqlite close could otherwise fire
         // mid-shm-I/O in a LATER run (cross-build wal-index locks can't see
