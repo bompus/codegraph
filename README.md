@@ -198,67 +198,67 @@ Call resolution the fork adds:
 
 ### Measured results
 
-Upstream `main` at `cd04b21a` against the fork at `c63e3d7c`, Node.js 24.22.2 on the same 24-core bare-metal Linux host, measured 2026-10-31 under the host benchmark lock. This is the second 2026-10-31 run, after the prerequisite-pool fix below; the first one exposed that regression and is kept as [its own record](docs/benchmarks/fork-vs-upstream-2026-10-31.md). Seven corpora, arms in mirrored order; index figures are the median of two runs and sync figures the median of four. A comparison counts as a change only when the gap exceeds that comparison's own run-to-run spread — the larger of the two arms' (max − min) / median — and cells that cannot show that are marked no clear change rather than given a fixed band. Bun was not re-measured in this run; the Bun figures below are from the 2026-10-28 campaign, and the CLI table is from the 2026-10-27 run at `bc27fdb4`. The numbers, method, spreads, graph sizes and admission receipts are in [`docs/benchmarks/fork-vs-upstream-2026-10-31b.md`](docs/benchmarks/fork-vs-upstream-2026-10-31b.md). The scripts are in [`scripts/benchmarks/runtime/`](scripts/benchmarks/runtime/).
+Upstream `main` at `cd04b21a` against the fork at `8313e9a0`, Node.js 24.22.2 on the same 24-core bare-metal Linux host, measured 2026-11-01 under the host benchmark lock with Hyperfine 2.0.0. Seven corpora, arms in mirrored order; index figures are the median of two runs and sync figures the median of four. A comparison counts as a change only when the gap exceeds that comparison's own run-to-run spread — the larger of the two arms' (max − min) / median — and cells that cannot show that are marked no clear change rather than given a fixed band. Bun was not re-measured in this run; the Bun figures below are from the 2026-10-28 campaign, and the CLI table is from the 2026-10-27 run at `bc27fdb4`. The numbers, method, spreads, graph sizes and admission receipts are in [`docs/benchmarks/fork-vs-upstream-2026-11-01.md`](docs/benchmarks/fork-vs-upstream-2026-11-01.md). The scripts are in [`scripts/benchmarks/runtime/`](scripts/benchmarks/runtime/).
 
-![Fork against upstream CodeGraph on seven corpora, Node, 2026-10-31: the fork syncs a one-file edit 1.08 to 2.69 times faster, indexes CPython 1.71 times faster and n8n 1.32 times faster, and trails gin by 8% and supabase by 11% on a graph with 33% more nodes.](assets/fork-vs-upstream-performance.svg?v=13)
+![Fork against upstream CodeGraph on seven corpora, Node, 2026-11-01: the fork syncs six of seven one-file edits 1.22 to 2.63 times faster (discourse 3% slower), indexes CPython 1.79 times faster and n8n 1.43 times faster, and is level with gin and supabase, the latter on 18.5% more nodes.](assets/fork-vs-upstream-performance.svg?v=16)
 
-*2026-10-31 Node run, fork `c63e3d7c` against upstream `cd04b21a`. Ratios are exact; the tables mark which gaps clear the run-to-run spread.*
+*2026-11-01 Node run, fork `8313e9a0` against upstream `cd04b21a`. Ratios are exact; the tables mark which gaps clear the run-to-run spread.*
 
-The fork's one-file sync is faster on all seven corpora: 8% (discourse) to 63% (n8n), or 1.08× to 2.69×. Full indexing: CPython is 1.71× faster (27.06 s against 46.34 s), n8n 1.32× faster (53.95 s against 71.36 s), pretix 11% faster and Alamofire and discourse 4–5% faster; gin is 8% slower (0.07 s absolute on a 119-file repo) and supabase 11% slower on a graph with 33% more nodes and 12% more edges. The speed costs memory on the smaller corpora — index peaks +50% on gin, +37% on Alamofire, +23% on pretix and +1% on supabase — while it is lower on CPython (−17%), discourse (−12%) and n8n (−27%). MCP on n8n: warm explore 1.75× faster, the eight-explore wave 1.26× faster and `initialize` 1.79× faster, with busy memory 21% lower and idle memory 51% lower; the watcher's one-file re-index is the one loss, 9% slower (766 ms against 702 ms).
+The fork's one-file sync is faster on six of seven corpora: 18% (gin) to 62% (n8n) less elapsed time, or 1.22× to 2.63× reciprocal speed; discourse is 3% slower. Full indexing: CPython is 1.79× faster (25.84 s against 46.36 s), n8n 1.43× faster (50.16 s against 71.75 s), discourse 8% faster, Alamofire 5% faster and pretix 1% faster; gin and supabase are no clear change. Supabase is 1.9% slower inside a 2.1% fork spread, on a graph with 18.5% more nodes and 6.7% more edges. The speed costs memory on the smaller corpora — index peaks +49% on gin, +34% on Alamofire and +16% on pretix — while it is lower on CPython (−20%), discourse (−8%), supabase (−1%) and n8n (−29%). MCP on n8n: warm explore 1.72× faster, the eight-explore wave 1.27× faster and `initialize` 1.94× faster, with busy memory 19% lower and idle memory 52% lower; the watcher's one-file re-index is the one loss, 12% slower (754 ms against 676 ms).
 
-The [2026-10-28 Node+Bun campaign](docs/benchmarks/fork-vs-upstream-node-bun-2026-10-27.md), the [2026-10-30 Node re-measurement](docs/benchmarks/fork-vs-upstream-node-2026-10-30.md) and the [first 2026-10-31 run](docs/benchmarks/fork-vs-upstream-2026-10-31.md) are superseded by this run and kept with their original dates and commits.
+The [2026-10-28 Node+Bun campaign](docs/benchmarks/fork-vs-upstream-node-bun-2026-10-27.md), the [2026-10-30 Node re-measurement](docs/benchmarks/fork-vs-upstream-node-2026-10-30.md), the [first 2026-10-31 run](docs/benchmarks/fork-vs-upstream-2026-10-31.md) and the [second 2026-10-31 run](docs/benchmarks/fork-vs-upstream-2026-10-31b.md) are superseded by this run and kept with their original dates and commits.
 
 The fork starts its resolver pool at 12,000 pending references on a full index (150,000 before #590). Below that, it can start the pool part-way through if at least 20,000 unresolved references remain and the estimated main-thread work is at least 0.4 s. An explicit `CODEGRAPH_PARALLEL_RESOLVE_MIN` replaces both gates. The pool sizes itself at about one worker per 2,000 refs, capped at 25,000 refs per worker and by CPU and memory headroom (8 workers on gin, 12 on the larger corpora here); the bulk edge/ref index windows keep their own 150,000-ref floor. Workers spawn as the pool is gated in and open a pre-prerequisite snapshot, so the prerequisite batches resolve across the pool; a second snapshot is taken once their supertype edges persist and the workers recycle onto it. Resolution proceeds in pages of 40,000 references (`CODEGRAPH_RESOLVE_BATCH` overrides), across up to 12 workers (`CODEGRAPH_RESOLVE_WORKERS` sets the count, `0` disables the pool; `CODEGRAPH_NO_PARALLEL_RESOLVE=1` does the same).
 
-**Full index** (`codegraph init`), Node, 2026-10-31; time, peak memory and graph:
+**Full index** (`codegraph init`), Node, 2026-11-01; time, peak memory and graph:
 
 | Corpus | Upstream | Fork | Fork / upstream | Upstream nodes / edges | Fork nodes / edges |
 |---|---:|---:|---:|---:|---:|
-| gin (Go, 119 files) | 0.81 s, 496 MiB | 0.88 s, 744 MiB | **8% slower** | 2,660 / 8,050 | 3,089 / 8,546 |
-| Alamofire (Swift, 129 files) | 1.23 s, 850 MiB | 1.17 s, 1,168 MiB | **4% faster** | 4,600 / 12,512 | 5,614 / 13,682 |
-| pretix (Python + JS, 1,472 files) | 9.13 s, 3,547 MiB | 8.08 s, 4,367 MiB | **11% faster** | 32,783 / 79,319 | 32,799 / 73,769 |
-| CPython (C + Python, 3,708 files) | 46.34 s, 7,388 MiB | 27.06 s, 6,168 MiB | **1.71× faster** | 169,618 / 615,814 | 170,311 / 605,273 |
-| discourse (Ruby + JS, 20,277 files) | 15.13 s, 4,440 MiB | 14.38 s, 3,906 MiB | **5% faster** | 163,411 / 314,691 | 168,110 / 310,348 |
-| supabase (React + Next.js + TS, 10,716 files) | 15.70 s, 5,830 MiB | 17.37 s, 5,877 MiB | **11% slower** | 114,440 / 292,021 | 152,274 / 328,137 |
-| n8n (Vue + TS, 24,434 files) | 71.36 s, 12,219 MiB | 53.95 s, 8,867 MiB | **1.32× faster** | 315,422 / 1,239,521 | 328,519 / 1,236,342 |
+| gin (Go, 119 files) | 0.90 s, 484 MiB | 0.89 s, 721 MiB | **no clear change** | 2,660 / 8,050 | 2,985 / 8,442 |
+| Alamofire (Swift, 129 files) | 1.24 s, 844 MiB | 1.18 s, 1,133 MiB | **5% faster** | 4,600 / 12,512 | 5,587 / 13,655 |
+| pretix (Python + JS, 1,472 files) | 9.20 s, 3,574 MiB | 9.08 s, 4,129 MiB | **1% faster** | 32,781 / 79,317 | 32,795 / 73,765 |
+| CPython (C + Python, 3,708 files) | 46.36 s, 7,588 MiB | 25.84 s, 6,051 MiB | **1.79× faster** | 169,618 / 615,814 | 169,698 / 604,660 |
+| discourse (Ruby + JS, 20,277 files) | 15.33 s, 4,398 MiB | 14.13 s, 4,064 MiB | **8% faster** | 163,411 / 314,691 | 166,865 / 309,103 |
+| supabase (React + Next.js + TS, 10,716 files) | 15.73 s, 5,891 MiB | 16.03 s, 5,822 MiB | **no clear change** | 114,440 / 292,021 | 135,658 / 311,496 |
+| n8n (Vue + TS, 24,434 files) | 71.75 s, 12,252 MiB | 50.16 s, 8,754 MiB | **1.43× faster** | 315,422 / 1,239,521 | 324,381 / 1,232,201 |
 
-The fork indexes faster on five of seven corpora, by 4% (Alamofire) to 1.71× (CPython). pretix's 11% is close to its 9% fork spread but clears it. The two losses are gin (8%, 0.07 s absolute on a 119-file repo) and supabase (11% on a graph with 33% more nodes and 12% more edges; per node the fork is faster). The fork's larger graphs are part of the gin, Alamofire and supabase difference; pretix and CPython are within 1% on nodes. Peak-memory change, fork against upstream: gin +50%, Alamofire +37%, pretix +23%, CPython −17%, discourse −12%, supabase +1%, n8n −27%.
+The fork indexes faster on five of seven corpora, by 1% (pretix) to 1.79× (CPython). Gin and supabase are no clear change: gin's 0.7% gap is inside its 5.7% spread, and supabase's 1.9% is inside its 2.1% fork spread on a graph with 18.5% more nodes and 6.7% more edges. Peak-memory change, fork against upstream: gin +49%, Alamofire +34%, pretix +16%, CPython −20%, discourse −8%, supabase −1%, n8n −29%.
 
 **The 2026-10-31 regression is closed.** The first run that day showed supabase 36% and n8n level, but the fork's own index had slowed at matched graph sizes. A bisect named #591 (`05077514`): it moved the prerequisite (imports/extends/implements) batches to the main-thread kernel so the workers could open one post-prerequisite snapshot, serializing that phase on one core — supabase 17.27/17.46 s to 21.84/22.51 s, n8n 54.46/57.22 s to 70.34/70.70 s, index CPU ~630% to ~460%. #590 alone was inside the pre-#590 spread. `c63e3d7c` opens the pool on the pre-prerequisite snapshot again and recycles it onto a second snapshot after the supertypes persist; the interleaved A/B at fixed graph sizes was supabase 21.60/21.88 s → 17.11/17.27 s and n8n 70.72/73.17 s → 53.58/53.91 s. The cost is peak memory on n8n: 8.8–8.9 GiB against 8.2–8.5 GiB, still below upstream's 11.9 GiB. Evidence: [the fix's measurement doc](docs/benchmarks/fork-vs-upstream-2026-10-31b.md) and the [pre-fix run](docs/benchmarks/fork-vs-upstream-2026-10-31.md).
 
-**One-file sync** (edit one file, `codegraph sync`), Node, 2026-10-31:
+**One-file sync** (edit one file, `codegraph sync`), Node, 2026-11-01:
 
 | Corpus | Upstream | Fork | Upstream / fork |
 |---|---:|---:|---:|
-| gin | 0.37 s | 0.30 s | **1.23×** |
-| Alamofire | 0.39 s | 0.28 s | **1.39×** |
-| pretix | 1.50 s | 0.93 s | **1.62×** |
-| CPython | 5.21 s | 2.54 s | **2.05×** |
-| discourse | 1.06 s | 0.98 s | **1.08×** |
-| supabase | 7.49 s | 3.45 s | **2.17×** |
-| n8n | 11.37 s | 4.23 s | **2.69×** |
+| gin | 0.395 s | 0.325 s | **1.22×** |
+| Alamofire | 0.412 s | 0.295 s | **1.40×** |
+| pretix | 1.513 s | 0.901 s | **1.68×** |
+| CPython | 5.231 s | 2.596 s | **2.02×** |
+| discourse | 1.070 s | 1.101 s | **0.97× (3% slower)** |
+| supabase | 7.585 s | 3.450 s | **2.20×** |
+| n8n | 11.481 s | 4.368 s | **2.63×** |
 
-Every cell clears its run-to-run spread; discourse's 8% is the smallest.
+Six of seven clear their run-to-run spread and are faster; discourse is 3% slower, the one sync loss.
 
 Both builds rebuild the links inferred from events, callbacks and function pointers after a sync, so a sync ends with the graph a full index would build ([colbymchenry/codegraph#1988](https://github.com/colbymchenry/codegraph/issues/1988)). Upstream reruns every inference pass inside each sync that touches an inferred link; the fork reruns the same passes a full index runs once edits pause. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns the fork's rebuild off, trading it for stale inferred links.
 
-**MCP server** on n8n (`codegraph serve --mcp`; memory and CPU summed over the server and the daemon), Node, 2026-10-31:
+**MCP server** on n8n (`codegraph serve --mcp`; memory and CPU summed over the server and the daemon), Node, 2026-11-01. This table uses the existing process-tree harness (`scripts/benchmarks/runtime/mcp-bench.mjs`), not Hyperfine; the required runners cannot measure per-query MCP latency, concurrent explores, process-tree memory/CPU or the watcher sync. It is a separate measurement from the Hyperfine index/sync figures:
 
 | | Upstream | Fork |
 |---|---:|---:|
-| `initialize` answered | 115 ms | 64 ms |
-| Start to first explore answer | 2.91 s | 2.70 s |
-| Explore, warm median | 240 ms | 138 ms |
-| Explore, p90 | 282 ms | 178 ms |
-| 8 explores at once | 2.38 s | 1.88 s |
-| Memory while busy | 3.81 GiB | 3.02 GiB |
-| Edited file re-indexed by the watcher | 702 ms | 766 ms |
-| Memory at idle | 4.46 GiB | 2.19 GiB |
-| CPU at idle, share of one core | 0.40% | 0.20% |
+| `initialize` answered | 120 ms | 62 ms |
+| Start to first explore answer | 2.85 s | 2.75 s |
+| Explore, warm median | 244 ms | 142 ms |
+| Explore, p90 | 286 ms | 186 ms |
+| 8 explores at once | 2.40 s | 1.89 s |
+| Memory while busy | 3.66 GiB | 2.97 GiB |
+| Edited file re-indexed by the watcher | 676 ms | 754 ms |
+| Memory at idle | 4.31 GiB | 2.08 GiB |
+| CPU at idle, share of one core | 0.38% | 0.19% |
 
-The idle row is the process tree's RSS at the harness's idle sample, 70 s after the last query. The same measure across runs: **3.58 GiB** on 2026-10-27 (`bc27fdb4`, the old README row), **4.21 GiB** on 2026-10-28 (`5784e289`, the clean re-measure), **19.7 GiB** on 2026-10-30 (`a9dc5a61`, a real regression), **2.13 GiB** in the first 2026-10-31 run (`cf2a37a5`, #593) and **2.19 GiB** now (`c63e3d7c`). The “20 GB → 2 GB” statement is the 2026-10-30 to 2026-10-31 change on this harness, not a different definition from the earlier rows.
+The idle row is the process tree's RSS at the harness's idle sample, 70 s after the last query. The same measure across runs: **3.58 GiB** on 2026-10-27 (`bc27fdb4`, the old README row), **4.21 GiB** on 2026-10-28 (`5784e289`, the clean re-measure), **19.7 GiB** on 2026-10-30 (`a9dc5a61`, a real regression), **2.13 GiB** in the first 2026-10-31 run (`cf2a37a5`, #593), **2.19 GiB** at the 2026-10-31 run (`c63e3d7c`) and **2.08 GiB** on 2026-11-01 (`8313e9a0`). The “20 GB → 2 GB” statement is the 2026-10-30 to 2026-10-31 change on this harness, not a different definition from the earlier rows.
 
-**CLI startup** on gin (`hyperfine`, mean of 20 runs), 2026-10-27, fork `bc27fdb4` against upstream `69af19ac`; not re-measured on 2026-10-31:
+**CLI startup** on gin (`hyperfine`, mean of 20 runs), 2026-10-27, fork `bc27fdb4` against upstream `69af19ac`; not re-measured on 2026-11-01:
 
 | Command | Upstream, Node | Fork, Node | Fork, Bun |
 |---|---|---|---|
@@ -281,10 +281,10 @@ The [benchmark](#benchmark-results) and [speed](#built-for-speed--the-rust-kerne
 
 ### What it costs
 
-- **Larger database:** 12–20% bigger on six of the seven corpora above, and 38% on supabase, which has 1,978 Markdown files. It holds Markdown, binding rows and more nodes.
+- **Larger database:** 11–20% bigger on six of the seven corpora above, and 31.5% on supabase, which has 1,978 Markdown files. It holds Markdown, binding rows and more nodes.
 - **Fewer edges on some projects:** 7% fewer on pretix and 1.7% fewer on CPython, because the fork declines links it cannot confirm. Some of those were correct links.
-- **More memory while indexing on four projects:** in the 2026-10-31 comparison the fork's full index peaks higher on gin (+50%), Alamofire (+37%), pretix (+23%) and supabase (+1%) — the in-process resolver-pool workers used on small and mid-size projects, plus the second pool snapshot on large ones — while it is lower on CPython (−17%), discourse (−12%) and n8n (−27%).
-- **MCP watcher sync:** the daemon's one-file re-index is 9% slower (766 ms against 702 ms) because it also runs the deferred synthesized-edge refresh; the CLI one-file sync is faster on all seven corpora.
+- **More memory while indexing on the smaller projects:** in the 2026-11-01 comparison the fork's full index peaks higher on gin (+49%), Alamofire (+34%) and pretix (+16%) — the in-process resolver-pool workers used on small and mid-size projects — while it is lower on CPython (−20%), discourse (−8%), supabase (−1%) and n8n (−29%).
+- **MCP watcher sync:** the daemon's one-file re-index is 9% slower (766 ms against 702 ms) because it also runs the deferred synthesized-edge refresh; the CLI one-file sync is faster on six of the seven corpora (discourse is 3% slower).
 
 ---
 
