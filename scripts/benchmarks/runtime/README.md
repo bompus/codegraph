@@ -7,7 +7,9 @@ The arms can differ in build, in runtime, or in both.
 
 | Script | Measures | Output in `$BENCH_OUT` |
 |---|---|---|
-| `run-index-sync.sh <list>` | Full index, then two one-file syncs: wall time, peak RSS, CPU, database size, node and edge counts | `index-sync.tsv`, `logs/` |
+| `run-index-sync.sh <list>` | Pre-Hyperfine harness: full index, then two one-file syncs with `/usr/bin/time`: wall time, peak RSS, CPU, database size, node and edge counts. Not comparable with the Hyperfine rows. | `index-sync.tsv`, `logs/` |
+| `hyperfine-index-sync.sh <list>` | Full index and two one-file syncs timed with Hyperfine whole commands, mirrored arms; peak RSS from Hyperfine's JSON, graph counts from the fresh index | `*-index.json`, `*-sync.json`, `graph.tsv` |
+| `hyperfine-chart.mjs <dir> [--svg … --date … --upstream … --fork …]` | The README chart and a Markdown summary (medians, spreads, verdicts) from `hyperfine-index-sync.sh` output | SVG + stdout |
 | `run-mcp.sh <list>` | MCP server: start to first explore answer, warm explore median and p90, 8 explores at once, watcher sync, idle memory and CPU | `mcp.jsonl` |
 | `run-cli.sh <corpus> <query>` | CLI start: `--version`, `status`, one `explore` (hyperfine, 20 runs) | `cli-*.json`, `cli.txt` |
 | `sync-ab.mjs --corpus … --arm base=… --arm cand=…` | One change on one corpus: a one-file sync before and after, with same-build controls, until the result qualifies or stays inside run-to-run variation (see below) | `runs.jsonl`, `summary.md`, `summary.json`, `chart.json`, `logs/` in `--out` |
@@ -42,7 +44,9 @@ export BENCH_WRAP="nice -n 10 systemd-run --user --scope -p MemoryMax=16G --"
 
 `BENCH_ARMS` entries are `name=RUNTIME@BUILD`. `BENCH_WRAP` prefixes every
 timed command; it defaults to `nice -n 10`. `run-mcp.sh` runs `mcp-bench.mjs`
-with `$BENCH_NODE` (default `node`, 22.13 or newer).
+with `$BENCH_NODE` (default `node`, 22.13 or newer). `hyperfine-index-sync.sh`
+takes the same arms and list; it does not wait for a quiet host or take the
+benchmark lock, so wrap it in the host's admission and lock for a campaign.
 
 ## Corpus lists
 

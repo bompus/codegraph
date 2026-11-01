@@ -7,10 +7,10 @@
 <text x="46" y="82" class="sub">Upstream cd04b21a · fork 8313e9a0 · Node 24.22.2 · Hyperfine 2.0.0</text>
 <text x="46" y="104" class="sub">Index: median of 2 runs, fork / upstream (lower is better). Sync: median of 4 runs, upstream / fork (higher is better).</text>
 <text x="46" y="140" style="font-size:17px;font-weight:700">Full index</text>
-<line x1="46.0" y1="180" x2="46.0" y2="602" stroke="#30363d" stroke-width="1"/>
-<text x="46.0" y="174" class="axis" text-anchor="middle">0.5×</text>
-<line x1="144.0" y1="180" x2="144.0" y2="602" stroke="#30363d" stroke-width="1"/>
-<text x="144.0" y="174" class="axis" text-anchor="middle">0.75×</text>
+<line x1="46" y1="180" x2="46" y2="602" stroke="#30363d" stroke-width="1"/>
+<text x="46" y="174" class="axis" text-anchor="middle">0.5×</text>
+<line x1="144" y1="180" x2="144" y2="602" stroke="#30363d" stroke-width="1"/>
+<text x="144" y="174" class="axis" text-anchor="middle">0.75×</text>
 <line x1="241.9" y1="180" x2="241.9" y2="602" stroke="#8b949e" stroke-width="1"/>
 <text x="241.9" y="174" class="axis" text-anchor="middle">1×</text>
 <line x1="339.9" y1="180" x2="339.9" y2="602" stroke="#30363d" stroke-width="1"/>
@@ -18,8 +18,8 @@
 <line x1="437.8" y1="180" x2="437.8" y2="602" stroke="#30363d" stroke-width="1"/>
 <text x="437.8" y="174" class="axis" text-anchor="middle">1.5×</text>
 <text x="46" y="200" class="corpus">gin (Go)</text>
-<rect x="239.3" y="188" width="2.6" height="18" rx="3" class="tie"/>
-<text x="233.3" y="200" class="val tie" text-anchor="end">0.99×</text>
+<rect x="239.0" y="188" width="2.9" height="18" rx="3" class="tie"/>
+<text x="233.0" y="200" class="val tie" text-anchor="end">0.99×</text>
 <text x="46" y="258" class="corpus">Alamofire (Swift)</text>
 <rect x="222.0" y="246" width="19.9" height="18" rx="3" class="tie"/>
 <text x="216.0" y="258" class="val tie" text-anchor="end">0.95×</text>
@@ -39,8 +39,8 @@
 <rect x="124.0" y="536" width="117.9" height="18" rx="3" class="tie"/>
 <text x="118.0" y="548" class="val tie" text-anchor="end">0.70×</text>
 <text x="523.0" y="140" style="font-size:17px;font-weight:700">One-file sync</text>
-<line x1="523.0" y1="180" x2="523.0" y2="602" stroke="#30363d" stroke-width="1"/>
-<text x="523.0" y="174" class="axis" text-anchor="middle">0.5×</text>
+<line x1="523" y1="180" x2="523" y2="602" stroke="#30363d" stroke-width="1"/>
+<text x="523" y="174" class="axis" text-anchor="middle">0.5×</text>
 <line x1="609.2" y1="180" x2="609.2" y2="602" stroke="#8b949e" stroke-width="1"/>
 <text x="609.2" y="174" class="axis" text-anchor="middle">1×</text>
 <line x1="695.4" y1="180" x2="695.4" y2="602" stroke="#30363d" stroke-width="1"/>
@@ -49,26 +49,26 @@
 <text x="781.6" y="174" class="axis" text-anchor="middle">2×</text>
 <line x1="867.8" y1="180" x2="867.8" y2="602" stroke="#30363d" stroke-width="1"/>
 <text x="867.8" y="174" class="axis" text-anchor="middle">2.5×</text>
-<line x1="954.0" y1="180" x2="954.0" y2="602" stroke="#30363d" stroke-width="1"/>
-<text x="954.0" y="174" class="axis" text-anchor="middle">3×</text>
+<line x1="954" y1="180" x2="954" y2="602" stroke="#30363d" stroke-width="1"/>
+<text x="954" y="174" class="axis" text-anchor="middle">3×</text>
 <text x="523.0" y="200" class="corpus">gin (Go)</text>
-<rect x="609.2" y="188" width="37.1" height="18" rx="3" class="good"/>
-<text x="652.3" y="200" class="val good" text-anchor="start">1.22×</text>
+<rect x="609.2" y="188" width="37.3" height="18" rx="3" class="good"/>
+<text x="652.5" y="200" class="val good" text-anchor="start">1.22×</text>
 <text x="523.0" y="258" class="corpus">Alamofire (Swift)</text>
-<rect x="609.2" y="246" width="68.4" height="18" rx="3" class="good"/>
-<text x="683.6" y="258" class="val good" text-anchor="start">1.40×</text>
+<rect x="609.2" y="246" width="68.2" height="18" rx="3" class="good"/>
+<text x="683.4" y="258" class="val good" text-anchor="start">1.40×</text>
 <text x="523.0" y="316" class="corpus">pretix (Python)</text>
-<rect x="609.2" y="304" width="117.1" height="18" rx="3" class="good"/>
-<text x="732.3" y="316" class="val good" text-anchor="start">1.68×</text>
+<rect x="609.2" y="304" width="116.9" height="18" rx="3" class="good"/>
+<text x="732.1" y="316" class="val good" text-anchor="start">1.68×</text>
 <text x="523.0" y="374" class="corpus">CPython (C/Py)</text>
 <rect x="609.2" y="362" width="175.0" height="18" rx="3" class="good"/>
-<text x="790.2" y="374" class="val good" text-anchor="start">2.02×</text>
+<text x="790.2" y="374" class="val good" text-anchor="start">2.01×</text>
 <text x="523.0" y="432" class="corpus">discourse (Ruby)</text>
 <rect x="604.3" y="420" width="4.9" height="18" rx="3" class="bad"/>
 <text x="598.3" y="432" class="val bad" text-anchor="end">0.97×</text>
 <text x="523.0" y="490" class="corpus">supabase (TS)</text>
-<rect x="609.2" y="478" width="206.6" height="18" rx="3" class="good"/>
-<text x="821.8" y="490" class="val good" text-anchor="start">2.20×</text>
+<rect x="609.2" y="478" width="206.7" height="18" rx="3" class="good"/>
+<text x="821.9" y="490" class="val good" text-anchor="start">2.20×</text>
 <text x="523.0" y="548" class="corpus">n8n (Vue/TS)</text>
 <rect x="609.2" y="536" width="280.7" height="18" rx="3" class="good"/>
 <text x="895.9" y="548" class="val good" text-anchor="start">2.63×</text>
