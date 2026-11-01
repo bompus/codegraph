@@ -47,12 +47,12 @@ interface PoolWorker {
 /** How long destroy() waits for a worker to exit on 'close' before terminating it. */
 const CLOSE_TIMEOUT_MS = 5000;
 
-// 250 refs per chunk — measured on pretix's vendor-JS ref cluster: dense,
-// expensive refs sit contiguously in rowid order, so at 500 a single chunk
-// held ~2.3s of work and owned the batch tail; at 250 the cluster spreads
-// ~2x finer across the steal queue (7.9s→7.1s index wall). 125 bought ~1%
-// more for +300MB RSS.
-const CHUNK_SIZE = 250;
+// 500 refs per chunk — re-measured 2026-10-31 on the current work-stealing
+// pool: 500 beat 250 on n8n (53.1→51.1 s), supabase (17.0→16.5 s) and
+// discourse (14.6→14.4 s); CPython was flat and pretix showed no clear
+// change (the 250-era vendor-JS cluster tail did not reproduce). 125 bought
+// ~1% on pretix for +300MB RSS; 250 remains the finer-grained fallback.
+const CHUNK_SIZE = 500;
 
 /**
  * Minimum TOTAL pending refs before the pool is created at all. Pool boot
