@@ -32,8 +32,13 @@ CURRENT_FILE=""
 CURRENT_BACKUP=""
 cleanup() {
   if [ -n "$CURRENT_FILE" ] && [ -n "$CURRENT_BACKUP" ] && [ -f "$CURRENT_BACKUP" ]; then
-    cp -- "$CURRENT_BACKUP" "$CURRENT_FILE" 2>/dev/null
-    rm -f "$CURRENT_BACKUP"
+    # Never delete the only copy of the probe's original bytes. A failed
+    # restore keeps the backup and says where it is.
+    if cp -- "$CURRENT_BACKUP" "$CURRENT_FILE"; then
+      rm -f "$CURRENT_BACKUP"
+    else
+      echo "could not restore $CURRENT_FILE; original bytes kept at $CURRENT_BACKUP" >&2
+    fi
   fi
 }
 trap cleanup EXIT INT TERM
@@ -49,7 +54,14 @@ while read -r corpus file cm; do
     echo "probe file has uncommitted changes: $corpus/$file" >&2; exit 2
   fi
   backup=$(mktemp "$BENCH_OUT/.probe.XXXXXX") || exit 2
-  cp -- "$file" "$backup"
+  # Register the backup only after it is a verified byte copy. A full results
+  # filesystem can leave mktemp's file empty or partial, and the EXIT handler
+  # would then copy that over the probe.
+  if ! cp -- "$file" "$backup" || ! cmp -s -- "$file" "$backup"; then
+    rm -f "$backup"
+    echo "could not back up probe file: $corpus/$file" >&2
+    exit 2
+  fi
   CURRENT_FILE="$file"; CURRENT_BACKUP="$backup"
 
   for arm in "${MIRRORED[@]}"; do
@@ -84,7 +96,9 @@ while read -r corpus file cm; do
     [ "$file_hash" = "$db_hash" ] || {
       echo "sync did not process the probe: $corpus/$file" >&2; exit 7
     }
-    cp -- "$backup" "$file"
+    if ! cp -- "$backup" "$file" || ! cmp -s -- "$file" "$backup"; then
+      echo "could not restore probe file: $corpus/$file" >&2; exit 7
+    fi
     rm -rf .cg-bench
   done
   rm -f "$backup"
