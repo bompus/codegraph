@@ -194,6 +194,8 @@ export interface DaemonClientHello {
   codegraph_client: 1;
   pid: number;             // the proxy process's own pid
   hostPid: number | null;  // the MCP host pid (past any launcher shim), if known
+  /** The launching session's CODEGRAPH_EXPLORE_MODE, if it set one. */
+  exploreMode?: string;
 }
 
 export interface DaemonStartResult {
@@ -220,7 +222,7 @@ export class Daemon {
   // and so is not yet in `clients`. `server.close()` waits for all of them.
   private sockets = new Set<net.Socket>();
   /** Per-client peer pids from the optional client-hello, for the liveness sweep. */
-  private clientPeers = new Map<MCPSession, { pid: number | null; hostPid: number | null }>();
+  private clientPeers = new Map<MCPSession, { pid: number | null; hostPid: number | null; exploreMode?: string }>();
   private idleTimer: NodeJS.Timeout | null = null;
   private idleTimeoutMs: number;
   private maxIdleMs: number;
@@ -519,6 +521,7 @@ export class Daemon {
       const session = new MCPSession(transport, this.engine, {
         explicitProjectPath: this.projectRoot,
         refreshWatcher: (params) => this.refreshWatcher(params),
+        exploreMode: peers.exploreMode,
       });
       transport.onClose(() => this.dropClient(session));
       this.clients.add(session);
@@ -1038,13 +1041,20 @@ function resolveInstallCheckMs(): number {
  */
 export function parseClientHelloLine(
   line: string,
-): { pid: number; hostPid: number | null } | null {
+): { pid: number; hostPid: number | null; exploreMode?: string } | null {
   let parsed: unknown;
   try { parsed = JSON.parse(line); } catch { return null; }
   if (!parsed || typeof parsed !== 'object') return null;
   const o = parsed as Record<string, unknown>;
   if (o.codegraph_client !== 1 || typeof o.pid !== 'number') return null;
-  return { pid: o.pid, hostPid: typeof o.hostPid === 'number' ? o.hostPid : null };
+  const exploreMode = typeof o.exploreMode === 'string' && o.exploreMode.trim()
+    ? o.exploreMode.trim()
+    : undefined;
+  return {
+    pid: o.pid,
+    hostPid: typeof o.hostPid === 'number' ? o.hostPid : null,
+    ...(exploreMode ? { exploreMode } : {}),
+  };
 }
 
 /**
@@ -1073,13 +1083,13 @@ export function peerIsDead(
  */
 function readClientHello(
   socket: net.Socket,
-): Promise<{ pid: number | null; hostPid: number | null }> {
+): Promise<{ pid: number | null; hostPid: number | null; exploreMode?: string }> {
   return new Promise((resolve) => {
     let chunks: Buffer[] = [];
     let total = 0;
     let settled = false;
     const finish = (
-      peers: { pid: number | null; hostPid: number | null },
+      peers: { pid: number | null; hostPid: number | null; exploreMode?: string },
       putBack?: Buffer,
     ) => {
       if (settled) return;

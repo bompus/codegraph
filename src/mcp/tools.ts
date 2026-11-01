@@ -512,8 +512,10 @@ export function resolveExploreMode(
   arg: unknown,
   projectRoot: string,
   env: NodeJS.ProcessEnv = process.env,
+  sessionMode?: unknown,
 ): ExploreMode {
   return exploreModeOption(arg)
+    ?? exploreModeOption(sessionMode)
     ?? exploreModeWithoutProject(env)
     ?? projectExploreMode(projectRoot)
     ?? DEFAULT_EXPLORE_MODE;
@@ -524,145 +526,277 @@ export function exploreModeWithoutProject(env: NodeJS.ProcessEnv = process.env):
   return exploreModeOption(env.CODEGRAPH_EXPLORE_MODE);
 }
 
+/** One compact map row: a selected symbol's location and signature. */
+export function compactSymbolRows(nodes: readonly Node[], max: number): string[] {
+  const rows: string[] = [];
+  const seen = new Set<string>();
+  for (const node of nodes) {
+    if (rows.length >= max) break;
+    if (node.kind === 'export' || node.kind === 'import') continue;
+    if (node.startLine == null || isConfigLeafNode(node)) continue;
+    const key = `${node.name}\u0000${node.startLine}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const signature = node.signature?.replace(/\s+/g, ' ').trim();
+    const suffix = signature
+      ? ` — ${signature.length > 120 ? `${signature.slice(0, 117)}…` : signature}`
+      : '';
+    rows.push(`- \`${node.name}\` (${node.kind}) :${node.startLine}${suffix}`);
+  }
+  return rows;
+}
+
+/**
+ * Put the compact symbol rows under their file headers before the source is
+ * dropped. The header alone names symbols without lines; the map's contract is
+ * location and signature, so the rows carry both.
+ */
+export function injectCompactSymbolTables(
+  text: string,
+  tables: ReadonlyMap<string, readonly string[]>,
+): string {
+  if (tables.size === 0) return text;
+  const out: string[] = [];
+  for (const line of text.split('\n')) {
+    out.push(line);
+    const header = /^\*\*`(.+?)`\*\*/.exec(line);
+    if (!header) continue;
+    const rows = tables.get(header[1]!);
+    if (rows) out.push(...rows);
+  }
+  return out.join('\n');
+}
+
 /**
  * Reduce a rendered explore response to a map or snippets. The renderer above
- * has already chosen and ordered the files; this keeps its summary, blast
- * radius, a bounded Relationships list and the per-file symbol headers, and
- * drops the source fences (map) or keeps their first `EXPLORE_SNIPPET_LINES`
- * lines (snippets). The result is for deciding where to look; `codegraph_node`
- * or `mode: "source"` returns a body.
+ * has already chosen and ordered the files; this keeps its summary, flow,
+ * blast radius, a bounded Relationships list and the per-file symbol headers,
+ * and drops the source fences (map) or keeps the first `EXPLORE_SNIPPET_LINES`
+ * lines of each returned excerpt (snippets).
+ *
+ * Sections are tracked explicitly rather than by "have we reached Source
+ * Code": a documentation answer puts the graph sections AFTER the source, so
+ * an `inSource` flag that never clears silently deletes them.
  */
-export function compactExploreText(text: string, mode: Exclude<ExploreMode, 'source'>): string {
-  const lines = text.split('\n');
+export function compactExploreText(
+  text: string,
+  mode: Exclude<ExploreMode, 'source'>,
+  nodeServed = true,
+): string {
+  type Section = 'preamble' | 'blast' | 'discussed' | 'relationships' | 'source' | 'pointers';
+  let section: Section = 'preamble';
   const out: string[] = [];
-  let inSource = false;
   let inFence = false;
-  let inBlast = false;
-  let inRelationships = false;
-  let inPointers = false;
+  let snippet = 0;
   let blastEntries = 0;
+  let blastOmitted = 0;
   let relKinds = 0;
   let relEntries = 0;
+  let relOmitted = 0;
+  let relKindsOmitted = 0;
   let skipRelKind = false;
-  let snippet = 0;
   let pointerEntries = 0;
-  for (const line of lines) {
-    if (line === '**Source Code**') {
-      inSource = true;
-      inBlast = false;
-      inRelationships = false;
-      out.push(mode === 'map'
-        ? '**Source Code** — omitted in map mode; fetch a body with codegraph_node includeCode: true.'
-        : line);
-      continue;
+  let pointerOmitted = 0;
+
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const flushOmissions = () => {
+    if (section === 'blast' && blastOmitted > 0) {
+      out.push(`- (+${plural(blastOmitted, 'more blast-radius entry', 'more blast-radius entries')} omitted by the compact view)`);
+      blastOmitted = 0;
     }
-    if (!inSource) {
-      // The renderer promises source "below" in two places. A map has none, and
-      // an agent that reads the promise then finds no body stops trusting the
-      // map, so rewrite the promise rather than leave it dangling.
-      if (mode === 'map' && line.startsWith('> These sites choose their call target at runtime')) {
-        out.push(line.replace(
-          /; source for the sites above is included below\.$/,
-          '; fetch a candidate\'s body with codegraph_node includeCode: true.',
-        ));
+    if (section === 'relationships' && (relOmitted > 0 || relKindsOmitted > 0)) {
+      const bits: string[] = [];
+      if (relOmitted > 0) bits.push(plural(relOmitted, 'more relationship entry', 'more relationship entries'));
+      if (relKindsOmitted > 0) bits.push(plural(relKindsOmitted, 'more relationship kind', 'more relationship kinds'));
+      out.push(`- (+${bits.join(', ')} omitted by the compact view)`);
+      relOmitted = 0;
+      relKindsOmitted = 0;
+    }
+    if (section === 'pointers' && pointerOmitted > 0) {
+      out.push(`- (+${plural(pointerOmitted, 'more file', 'more files')} omitted by the compact view)`);
+      pointerOmitted = 0;
+    }
+  };
+
+  for (const line of text.split('\n')) {
+    const relKindLine = /^\*\*[^*\n]+:\*\*$/.test(line);
+    if (!inFence) {
+      if (line.startsWith('**Exploration: ') && line.endsWith('**')) {
+        const query = line.slice('**Exploration: '.length, -2);
+        out.push(`**Exploration: ${query.length > 160 ? `${query.slice(0, 157)}…` : query}**`);
         continue;
       }
-      if (mode === 'map' && line.startsWith('> Source for these symbols follows')) {
-        out.push('> Source is omitted in compact mode; the symbols and file headers above are the map.');
+      if (line === '**Source Code**') {
+        flushOmissions();
+        section = 'source';
+        out.push(mode === 'map'
+          ? `**Source Code** — omitted in map mode; ${nodeServed ? 'fetch a body with codegraph_node includeCode: true.' : 'pass mode: "source" for the verbatim source.'}`
+          : line);
         continue;
       }
       if (line.startsWith('**Blast radius')) {
-        inBlast = true;
-        inRelationships = false;
+        flushOmissions();
+        section = 'blast';
+        blastEntries = 0;
+        out.push(line);
+        continue;
+      }
+      if (line.startsWith('**Discussed in earlier sessions')) {
+        flushOmissions();
+        section = 'discussed';
         out.push(line);
         continue;
       }
       if (line.startsWith('**Relationships**')) {
-        inBlast = false;
-        inRelationships = true;
+        flushOmissions();
+        section = 'relationships';
+        relKinds = 0;
+        relEntries = 0;
+        skipRelKind = false;
         out.push(line);
         continue;
       }
-      if (inBlast) {
-        if (line.startsWith('- ')) {
-          if (blastEntries < 6) {
-            out.push(line);
-            blastEntries++;
-          }
-        } else if (line.trim()) {
+      if (line.startsWith('**Not shown above')) {
+        flushOmissions();
+        section = 'pointers';
+        out.push(line);
+        continue;
+      }
+      if (/^\*\*`.*`\*\*/.test(line)) {
+        if (section === 'source') {
+          out.push(line);
+          continue;
+        }
+      } else if (line.startsWith('**') && !(section === 'relationships' && relKindLine)) {
+        // A new top-level section; after source this is how the doc-tier graph
+        // sections are preserved instead of dropped.
+        flushOmissions();
+        section = 'preamble';
+        out.push(line);
+        continue;
+      }
+    }
+
+    if (inFence) {
+      if (line.startsWith('```')) {
+        inFence = false;
+        if (mode === 'snippets') {
+          if (snippet >= EXPLORE_SNIPPET_LINES) out.push('...');
           out.push(line);
         }
         continue;
       }
-      if (inRelationships) {
-        if (/^\*\*[^*\n]+:\*\*$/.test(line)) {
+      if (mode === 'snippets' && snippet < EXPLORE_SNIPPET_LINES) {
+        out.push(line);
+        snippet++;
+      }
+      continue;
+    }
+
+    switch (section) {
+      case 'source': {
+        if (line.startsWith('```')) {
+          inFence = true;
+          snippet = 0;
+          if (mode === 'snippets') out.push(line);
+          continue;
+        }
+        // Injected symbol rows sit outside the fence, one per selected symbol.
+        if (line.startsWith('- ')) {
+          out.push(line);
+          continue;
+        }
+        if (line === '---') out.push(line);
+        continue;
+      }
+      case 'pointers': {
+        if (line.startsWith('- ')) {
+          if (pointerEntries < 10) {
+            out.push(line);
+            pointerEntries++;
+          } else {
+            pointerOmitted++;
+          }
+          continue;
+        }
+        if (line.trim()) out.push(line);
+        continue;
+      }
+      case 'blast': {
+        if (line.startsWith('- ')) {
+          if (blastEntries < 6) {
+            out.push(line);
+            blastEntries++;
+          } else {
+            blastOmitted++;
+          }
+          continue;
+        }
+        if (line.trim()) out.push(line);
+        continue;
+      }
+      case 'discussed': {
+        out.push(line);
+        continue;
+      }
+      case 'relationships': {
+        if (relKindLine) {
           if (relKinds < 3) {
             out.push(line);
             relKinds++;
             relEntries = 0;
             skipRelKind = false;
           } else {
-            // The budget is three kinds. Without this flag the fourth kind's
-            // entries would land under the third header, labelled as the wrong
-            // relationship.
+            relKindsOmitted++;
             skipRelKind = true;
           }
           continue;
         }
         if (line.startsWith('- ')) {
+          const more = /^- \.\.\. and (\d+) more$/.exec(line);
+          if (more) {
+            if (!skipRelKind) out.push(line);
+            else relOmitted += Number(more[1]);
+            continue;
+          }
           if (!skipRelKind && relEntries < 4) {
             out.push(line);
             relEntries++;
+          } else {
+            relOmitted++;
           }
           continue;
         }
         if (line.trim() && !skipRelKind) out.push(line);
         continue;
       }
-      out.push(line);
-      continue;
-    }
-    // Source section.
-    if (!inFence) {
-      if (line.startsWith('```')) {
-        inFence = true;
-        snippet = 0;
-        if (mode === 'snippets') out.push(line);
-        continue;
-      }
-      if (line.startsWith('**`')) {
-        out.push(line);
-        continue;
-      }
-      if (line.startsWith('**Not shown above')) {
-        inPointers = true;
-        out.push(line);
-        continue;
-      }
-      if (inPointers && line.startsWith('- ')) {
-        if (pointerEntries < 10) {
-          out.push(line);
-          pointerEntries++;
+      default: {
+        if (line.startsWith('> These sites choose their call target at runtime')) {
+          const candidate = nodeServed ? line : line.replace(' or codegraph_node', '');
+          out.push(mode === 'map'
+            ? candidate.replace(
+              /; source for the sites above is included below\.$/,
+              nodeServed
+                ? '; fetch a candidate\'s body with codegraph_node includeCode: true.'
+                : '; pass mode: "source" for the body.',
+            )
+            : candidate);
+          continue;
         }
+        if (mode === 'map' && line.startsWith('> Source for these symbols follows')) {
+          out.push(nodeServed
+            ? '> Source is omitted in compact mode; the symbols and file headers above are the map. Fetch a body with codegraph_node includeCode: true.'
+            : '> Source is omitted in compact mode; the symbols and file headers above are the map. Pass mode: "source" for the body.');
+          continue;
+        }
+        out.push(line);
         continue;
       }
-      if (line === '---') out.push(line);
-      continue;
-    }
-    if (line.startsWith('```')) {
-      inFence = false;
-      if (mode === 'snippets') {
-        if (snippet >= EXPLORE_SNIPPET_LINES) out.push('...');
-        out.push(line);
-      }
-      continue;
-    }
-    if (mode === 'snippets' && snippet < EXPLORE_SNIPPET_LINES) {
-      out.push(line);
-      snippet++;
     }
   }
-  let body = out.join('\n').replace(/\n{3,}/g, '\n\n');
+  flushOmissions();
+
+  let body = out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd();
   const maxChars = mode === 'map' ? EXPLORE_MAP_MAX_CHARS : EXPLORE_SNIPPETS_MAX_CHARS;
   if (body.length > maxChars) {
     const cut = body.slice(0, maxChars - 160);
@@ -670,9 +804,12 @@ export function compactExploreText(text: string, mode: Exclude<ExploreMode, 'sou
     body = (at > 0 ? cut.slice(0, at) : cut)
       + '\n\n... (compact response truncated; narrow the query or name the symbols you need)';
   }
+  const followUp = nodeServed
+    ? 'For one symbol\'s body, call codegraph_node with its name and `includeCode: true`; for the full source, call codegraph_explore with mode: "source".'
+    : 'For the full source, call codegraph_explore with mode: "source".';
   const hint = mode === 'map'
-    ? '> Source omitted in compact map mode. For one symbol\'s body, call codegraph_node with its name and `includeCode: true`; for the full source, call codegraph_explore with mode: "source".'
-    : `> Only the first ${EXPLORE_SNIPPET_LINES} source lines of each file are shown. For one symbol's body, call codegraph_node with its name and \`includeCode: true\`; for the full source, call codegraph_explore with mode: "source".`;
+    ? `> Source omitted in compact map mode. ${followUp}`
+    : `> Only the first ${EXPLORE_SNIPPET_LINES} lines of each returned excerpt are shown. ${followUp}`;
   return body + '\n\n' + hint + '\n';
 }
 
@@ -2338,7 +2475,7 @@ export const tools: ToolDefinition[] = [
         mode: {
           type: 'string',
           enum: ['map', 'snippets', 'source'],
-          description: 'Output shape. "map" (the default unless codegraph.json explore.mode or CODEGRAPH_EXPLORE_MODE overrides it) returns symbols, file:line, signatures, the flow and blast radius without source bodies. "snippets" adds the first 12 source lines of each file. "source" returns the full verbatim, line-numbered source (the previous behavior).',
+          description: 'Output shape. "map" (the default unless codegraph.json explore.mode or CODEGRAPH_EXPLORE_MODE overrides it) returns symbols, file:line, signatures, the flow and blast radius without source bodies. "snippets" adds the first 12 lines of each returned excerpt. "source" returns the full verbatim, line-numbered source (the previous behavior).',
         },
         projectPath: projectPathProperty,
       },
@@ -3557,6 +3694,7 @@ export class ToolHandler {
     toolName: string,
     args: Record<string, unknown>,
     sessionState?: ExploreSessionState,
+    exploreMode?: unknown,
   ): Promise<ToolResult> {
     // A cross-project session search (experimental) names its projects itself and
     // needs no default one: anchor the call on the first listed project that has an
@@ -3664,6 +3802,9 @@ export class ToolHandler {
       // structured-clone boundary into a worker, where a closure or a handler
       // field could not follow.
       const dispatchArgs = this.withSessionView(toolName, args, sessionState);
+      if (toolName === 'codegraph_explore' && exploreMode !== undefined) {
+        dispatchArgs.__exploreMode = exploreMode;
+      }
       // The default may have appeared after the workers started. Pass the
       // main thread's current root explicitly; with no root or projectPath,
       // keep the main handler's workspace-specific not-indexed guidance.
@@ -5054,7 +5195,7 @@ export class ToolHandler {
     }
   }
 
-  private async handleExplore(args: Record<string, unknown>): Promise<ToolResult> {
+  private async handleExplore(args: Record<string, unknown>, sessionMode?: unknown): Promise<ToolResult> {
     const rawQuery = this.validateString(args.query, 'query');
     if (typeof rawQuery !== 'string') return rawQuery;
     // One normalization point so the flow-builder, relevance search, and
@@ -5063,7 +5204,11 @@ export class ToolHandler {
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const projectRoot = cg.getProjectRoot();
-    const mode = resolveExploreMode(args.mode, projectRoot);
+    // The proxy's session override travels with the call; the daemon's own env
+    // is only the fallback when the launching session had none.
+    const mode = resolveExploreMode(args.mode, projectRoot, process.env, args.__exploreMode ?? sessionMode);
+    const allow = this.toolAllowlist();
+    const nodeServed = allow ? allow.has('node') : defaultSurfaceFor(mode).has('node');
 
     // Resolve adaptive output budget from project size. Falls back to the
     // largest-tier defaults if stats aren't available, which preserves
@@ -9288,7 +9433,7 @@ export class ToolHandler {
       ? exploreCompletenessNotes(filesIncluded, trimmedShown, [...renderedFilePaths, ...fileGroups.keys()])
         .map((note) => ['', '---', note])
       : anyFileTrimmed || trimmedShown.length > 0
-        ? [['', `> Some file sections were trimmed for size. Elided symbols are named inside gap markers as \`name (file:line)\` and preferred in the file header — run another \`codegraph_explore\`${this.isToolServed('node') ? ' (or `codegraph_node`)' : ''} with those exact names for their source.`]]
+        ? [['', `> Some file sections were trimmed for size. Elided symbols are named inside gap markers as \`name (file:line)\` and preferred in the file header — run another \`codegraph_explore\`${nodeServed ? ' (or `codegraph_node`)' : ''} with those exact names for their source.`]]
         : [];
     /** Whether a trimmed section survives in `text` — picks a fallback note's wording after a cut. */
     const trimmedIn = (text: string): boolean =>
@@ -9458,7 +9603,19 @@ export class ToolHandler {
       gatherNotice(uncoveredGather),
     );
     finalText = finalText.replace(summaryPlaceholder, summaryLine);
-    if (mode !== 'source') finalText = compactExploreText(finalText, mode);
+    if (mode !== 'source') {
+      const tables = new Map<string, string[]>();
+      for (const fp of survivors) {
+        const group = fileGroups.get(fp);
+        if (!group) continue;
+        // Doc headings are navigation, not code to locate; a smaller list keeps
+        // the doc-tier graph tail inside the map budget.
+        const rows = compactSymbolRows(group.nodes, docTierFiles.has(fp) ? 3 : 6);
+        if (rows.length > 0) tables.set(fp, rows);
+      }
+      finalText = injectCompactSymbolTables(finalText, tables);
+      finalText = compactExploreText(finalText, mode, nodeServed);
+    }
 
     // Emit the allocation diagnostic from the FINAL text, so per-file bytes and
     // shares account for the hard-ceiling truncation above (CG-4).

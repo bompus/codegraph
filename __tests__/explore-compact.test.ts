@@ -8,7 +8,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { compactExploreText, getStaticTools, resolveExploreMode, ToolHandler } from '../src/mcp/tools';
+import type { Node } from '../src/types';
+import { compactExploreText, compactSymbolRows, getStaticTools, injectCompactSymbolTables, resolveExploreMode, ToolHandler } from '../src/mcp/tools';
 
 const RENDERED = [
   '**Exploration: Widget**',
@@ -112,7 +113,7 @@ describe('compactExploreText', () => {
     expect(out).toContain('const twelve');
     expect(out).not.toContain('const thirteen');
     expect(out).toContain('...');
-    expect(out).toMatch(/Only the first 12 source lines/);
+    expect(out).toMatch(/Only the first 12 lines of each returned excerpt/);
   });
 
   it('stays under the map budget on a large response', () => {
@@ -157,6 +158,115 @@ describe('compactExploreText promises', () => {
   });
 });
 
+describe('compactExploreText sections', () => {
+  it('preserves graph sections that follow documentation source', () => {
+    const text = [
+      '**Exploration: README runNode**',
+      '',
+      'Found 2 symbols across 2 files.',
+      '',
+      '**Source Code**',
+      '',
+      '**`README.md`** — sections',
+      '',
+      '```markdown',
+      '1\t# Title',
+      '```',
+      '',
+      '**`a.ts`** — runNode(function)',
+      '',
+      '```typescript',
+      '1\tfunction runNode() {}',
+      '```',
+      '',
+      '**Blast radius — what depends on these (update/verify before editing)**',
+      '',
+      '- `runNode` (a.ts:1) — 1 caller',
+      '',
+      '**Relationships**',
+      '',
+      '**calls:**',
+      '- A → B',
+      '',
+    ].join('\n');
+    const out = compactExploreText(text, 'map');
+    expect(out).toContain('**Blast radius');
+    expect(out).toContain('- `runNode` (a.ts:1) — 1 caller');
+    expect(out).toContain('**Relationships**');
+    expect(out).toContain('- A → B');
+    expect(out).toContain('**`a.ts`**');
+  });
+
+  it('ends the blast limit before the session-history section', () => {
+    const text = [
+      '**Blast radius — what depends on these (update/verify before editing)**',
+      '',
+      ...Array.from({ length: 7 }, (_, i) => `- b${i}`),
+      '',
+      '**Discussed in earlier sessions** (codegraph_sessions with the name reads them)',
+      '',
+      '- `runNode`: claude (2026-11-01)',
+      '',
+      '**Relationships**',
+      '',
+      '**calls:**',
+      '- A → B',
+    ].join('\n');
+    const out = compactExploreText(text, 'map');
+    expect(out).toContain('- b5');
+    expect(out).not.toContain('- b6');
+    expect(out).toContain('1 more blast-radius entry');
+    expect(out).toContain('- `runNode`: claude (2026-11-01)');
+  });
+
+  it('reports relationship entries and kinds the compact limits omit', () => {
+    const out = compactExploreText(RENDERED, 'map');
+    expect(out).toContain('2 more relationship entries, 1 more relationship kind');
+  });
+
+  it('bounds the echoed query before the map budget is applied', () => {
+    const query = 'x'.repeat(500);
+    const out = compactExploreText(`**Exploration: ${query}**\n\nFound 1 symbol across 1 file.`, 'map');
+    expect(out.split('\n')[0]!.length).toBeLessThanOrEqual(175);
+    expect(out).toContain('…');
+  });
+
+  it('only names codegraph_node when the client can call it', () => {
+    const served = compactExploreText(RENDERED, 'map', true);
+    expect(served).toContain('codegraph_node');
+    const unserved = compactExploreText(RENDERED, 'map', false);
+    expect(unserved).not.toContain('codegraph_node');
+    expect(unserved).toContain('mode: "source"');
+    // Snippets keeps the source, so it keeps the "included below" promise but
+    // must still not name a tool the client cannot call.
+    const snippets = compactExploreText(
+      '> These sites choose their call target at runtime; source for the sites above is included below.',
+      'snippets', false,
+    );
+    expect(snippets).not.toContain('codegraph_node');
+    expect(snippets).toContain('included below');
+  });
+});
+
+describe('compact symbol rows', () => {
+  const node = {
+    id: 'n1', name: 'runNode', kind: 'method', startLine: 1349, language: 'typescript',
+    filePath: 'a.ts', signature: 'async runNode(workflow: Workflow)',
+  } as unknown as Node;
+
+  it('names the location and signature before the body is dropped', () => {
+    expect(compactSymbolRows([node], 6)).toEqual([
+      '- `runNode` (method) :1349 — async runNode(workflow: Workflow)',
+    ]);
+  });
+
+  it('inserts the rows under the matching file header', () => {
+    const text = '**`a.ts`** — runNode(function)\n```typescript\n1\tfunction runNode() {}\n```';
+    expect(injectCompactSymbolTables(text, new Map([['a.ts', ['- `runNode` (method) :1349']]])))
+      .toBe('**`a.ts`** — runNode(function)\n- `runNode` (method) :1349\n```typescript\n1\tfunction runNode() {}\n```');
+  });
+});
+
 describe('resolveExploreMode', () => {
   it('falls back to the product default and reads codegraph.json', () => {
     expect(resolveExploreMode(undefined, tmpDir, {})).toBe('map');
@@ -169,6 +279,9 @@ describe('resolveExploreMode', () => {
     expect(resolveExploreMode(undefined, tmpDir, { CODEGRAPH_EXPLORE_MODE: 'snippets' })).toBe('snippets');
     expect(resolveExploreMode('map', tmpDir, { CODEGRAPH_EXPLORE_MODE: 'snippets' })).toBe('map');
     expect(resolveExploreMode('bogus', tmpDir, {})).toBe('source');
+    // The launching session's override beats the daemon's inherited env.
+    expect(resolveExploreMode(undefined, tmpDir, { CODEGRAPH_EXPLORE_MODE: 'source' }, 'map')).toBe('map');
+    expect(resolveExploreMode('source', tmpDir, { CODEGRAPH_EXPLORE_MODE: 'map' }, 'source')).toBe('source');
   });
 });
 

@@ -214,10 +214,12 @@ export async function connectWithHello(
  * host pid if set, else our own parent (the host, on a no-relaunch bundle).
  */
 function sendClientHello(socket: net.Socket): void {
+  const exploreMode = process.env.CODEGRAPH_EXPLORE_MODE?.trim();
   const clientHello: DaemonClientHello = {
     codegraph_client: 1,
     pid: process.pid,
     hostPid: parseHostPpid(process.env[HOST_PPID_ENV]) ?? EARLY_PPID,
+    ...(exploreMode ? { exploreMode } : {}),
   };
   try { socket.write(JSON.stringify(clientHello) + '\n'); } catch { /* best-effort */ }
 }

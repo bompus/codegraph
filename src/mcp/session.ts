@@ -122,6 +122,8 @@ export interface MCPSessionOptions {
   explicitProjectPath?: string | null;
   /** Only a shared daemon can acknowledge ownership-bound reconciliation. */
   refreshWatcher?: (params: unknown) => Promise<unknown>;
+  /** The launching proxy's CODEGRAPH_EXPLORE_MODE, sent in its client hello. */
+  exploreMode?: string;
 }
 
 /**
@@ -136,6 +138,7 @@ export class MCPSession {
   private resolvePromise: Promise<void> | null = null;
   private explicitProjectPath: string | null;
   private refreshWatcher?: MCPSessionOptions['refreshWatcher'];
+  private readonly exploreMode?: string;
   /**
    * What `codegraph_explore` has already returned to THIS client, per project
    * (CG-17). Owned by the session, not the engine: the daemon shares one engine
@@ -153,6 +156,7 @@ export class MCPSession {
   ) {
     this.explicitProjectPath = opts.explicitProjectPath ?? null;
     this.refreshWatcher = opts.refreshWatcher;
+    this.exploreMode = opts.exploreMode;
   }
 
   /**
@@ -367,7 +371,7 @@ export class MCPSession {
     await this.retryInitIfNeeded();
 
     if (process.env.CODEGRAPH_MCP_DEBUG) process.stderr.write(`[mcp-debug] toolsCall ${toolName} id=${String(request.id)} dispatch\n`);
-    const result = await this.engine.getToolHandler().execute(toolName, toolArgs, this.exploreSession);
+    const result = await this.engine.getToolHandler().execute(toolName, toolArgs, this.exploreSession, this.exploreMode);
     if (process.env.CODEGRAPH_MCP_DEBUG) process.stderr.write(`[mcp-debug] toolsCall ${toolName} id=${String(request.id)} done\n`);
     this.transport.sendResult(request.id, result);
     // After the reply is on the wire — telemetry must never delay a tool
