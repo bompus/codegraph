@@ -39,8 +39,8 @@ signatures, the call path among them (including dynamic-dispatch hops like
 callbacks, React re-render and JSX children that grep can't follow), and a
 blast-radius summary of what depends on them. It does **not** include source
 bodies. The map is for deciding where to look; before you edit a symbol, call
-\`codegraph_node\` with its name (or \`codegraph_explore\` with
-\`mode: "source"\`) for the verbatim, line-numbered source — the same
+\`codegraph_node\` with its name and \`includeCode: true\` (or
+\`codegraph_explore\` with \`mode: "source"\`) for the verbatim, line-numbered source — the same
 \`<n>\\t<line>\` shape \`Read\` gives you, safe to \`Edit\` from.
 
 Whether you're answering "how does X work" or implementing a change (fixing a
@@ -55,10 +55,10 @@ reads.
 
 - **Almost any code question — "how does X work", architecture, a bug, "what/where is X", or surveying an area** → \`codegraph_explore\` with a natural-language question or the relevant names. It returns the map (symbols, \`file:line\`, flow and blast radius), capped at about 4K characters.
 - **"How does X reach/become Y? / the flow / the path from X to Y"** → \`codegraph_explore\`, naming the symbols that span the flow (e.g. \`mutateElement renderScene\`) — it surfaces the call path among them, riding dynamic-dispatch hops.
-- **Reading or editing a file/symbol you can name** → call \`codegraph_node\` with its name (or put the name in \`codegraph_explore\` with \`mode: "source"\`) — it returns that current line-numbered source, safe to \`Edit\` from, with the call path and blast radius attached. For an overloaded name it returns every matching definition's body in one call.
+- **Reading or editing a file/symbol you can name** → call \`codegraph_node\` with its name and \`includeCode: true\` (or put the name in \`codegraph_explore\` with \`mode: "source"\`) — it returns that current line-numbered source, safe to \`Edit\` from, with the call path and blast radius attached. For an overloaded name it returns every matching definition's body in one call.
 - Name what you need as precisely as you can — a receiver type with its method, a constant or variable, a callable, or a file path. Named items are funded first within the output cap; in \`mode: "source"\` an oversized body comes back as a bounded excerpt whose gap markers name what was left out. Treat source returned by \`mode: "source"\` (or \`codegraph_node\` with \`includeCode\`) as already Read; for trimmed parts, query the names in the gap marker.
 - **"Why is this like this? What did the last session decide / try / get told about X?"** → \`codegraph_sessions\` with a few words. It searches the prose of this project's earlier Claude Code, Codex, Cursor/T3, OpenCode, AGY, and Devin sessions (prompts, replies, compaction summaries — stemmed, ranked) and names the session each hit came from (\`claude:\`, \`codex:\`, \`cursor:\`, \`opencode:\`, \`agy:\`, \`devin:\`). History and rationale live there, not in the code. A hit is a short snippet; pass \`full: true\` to read each hit's whole passage in the same call (up to 16,000 bytes in all), and \`context: N\` (0-5, implies \`full\`) to also get the N passages either side of each hit from the same transcript. \`sinceDays: N\` keeps only the last N days and \`until: "2026-10-20"\` only docs before that date, so a search can reach history older than the newest 100 hits. Experimental: \`projects: [paths]\` (up to 5) searches those projects' session histories in one call instead of this one, each hit naming its project. Passages are returned as stored, including any credentials a transcript holds.
-- **Need more?** Call \`codegraph_explore\` again with more specific names; for source bodies use \`codegraph_node\` or \`codegraph_explore\` with \`mode: "source"\`. Suggested call counts are advisory only, NOT a quota; extra calls are never rejected or rate-limited.
+- **Need more?** Call \`codegraph_explore\` again with more specific names; for source bodies use \`codegraph_node\` with \`includeCode: true\` or \`codegraph_explore\` with \`mode: "source"\`. Suggested call counts are advisory only, NOT a quota; extra calls are never rejected or rate-limited.
 - Qualified symbol names accept dots, \`::\`, or slashes, including containers whose names contain dots (for example, \`AppWeb.Format.group\`).
 - Named-symbol call paths require exact matches; partial or mistyped names are never silently substituted as flow endpoints. If a graph query reports a missing symbol with did-you-mean suggestions, query the suggested name explicitly.
 - Explore matches names and indexed code words lexically, not by meaning; an empty result reports word matches and may suggest indexed candidate names to retry with \`codegraph_explore\`.
