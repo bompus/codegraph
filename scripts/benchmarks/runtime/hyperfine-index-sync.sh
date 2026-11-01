@@ -7,7 +7,7 @@
 #
 # Each list line: <corpus-path> <rel-file-to-edit> <comment-prefix: // or #>.
 # For each corpus the arms run in mirrored order (base, candidate, candidate,
-# base). Each invocation builds a fresh .cg-bench with one Hyperfine run and
+# base). Each invocation builds a fresh, uniquely named .cg-bench-<campaign> with one Hyperfine run and
 # records the graph counts, then times two `codegraph sync` runs against that
 # index. Hyperfine's --prepare appends a unique marker before every sync
 # (hyperfine-append-probe.sh), so each run sees a one-file change. The probe
@@ -27,6 +27,11 @@ if compgen -G "$BENCH_OUT/*-index.json" >/dev/null; then
 fi
 WRAP_PREFIX=""
 ((${#WRAP[@]})) && WRAP_PREFIX="${WRAP[*]} "
+# An exclusively owned index directory, never the corpus's own .cg-bench (which
+# may hold a real index and viewer trails). CODEGRAPH_DIR must be a plain name,
+# so the campaign id cannot contain a path separator.
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+CG_DIR=".cg-bench-$RUN_ID"
 
 CURRENT_FILE=""
 CURRENT_BACKUP=""
@@ -66,12 +71,12 @@ while read -r corpus file cm; do
 
   for arm in "${MIRRORED[@]}"; do
     runtime=${RUNTIME[$arm]}; build=${BUILD[$arm]}
-    rm -rf .cg-bench
-    hyperfine --warmup 0 --runs 1 --style basic --prepare 'rm -rf .cg-bench' \
+    rm -rf -- "$CG_DIR"
+    hyperfine --warmup 0 --runs 1 --style basic --prepare "rm -rf -- $CG_DIR" \
       --export-json "$BENCH_OUT/$NAME-$arm-$(date +%s%N)-index.json" \
-      "$WRAP_PREFIX""env CODEGRAPH_TELEMETRY=0 DO_NOT_TRACK=1 CODEGRAPH_NO_DAEMON=1 CODEGRAPH_ALLOW_UNSAFE_NODE=1 CODEGRAPH_DIR=.cg-bench $runtime $build/dist/bin/codegraph.js init --yes ." \
+      "$WRAP_PREFIX""env CODEGRAPH_TELEMETRY=0 DO_NOT_TRACK=1 CODEGRAPH_NO_DAEMON=1 CODEGRAPH_ALLOW_UNSAFE_NODE=1 CODEGRAPH_DIR=$CG_DIR $runtime $build/dist/bin/codegraph.js init --yes ." \
       >> "$BENCH_OUT/$NAME-index.txt" 2>&1 || exit 7
-    db=.cg-bench/codegraph.db
+    db=$CG_DIR/codegraph.db
     printf '%s\t%s\t%s\t%s\t%s\n' "$NAME" "$arm" \
       "$(sqlite3 "$db" 'select count(*) from nodes')" \
       "$(sqlite3 "$db" 'select count(*) from edges')" \
@@ -86,7 +91,7 @@ while read -r corpus file cm; do
     hyperfine --warmup 0 --runs 2 --style basic \
       --prepare "bash $HERE/hyperfine-append-probe.sh '$file' '$cm'" \
       --export-json "$BENCH_OUT/$NAME-$arm-$(date +%s%N)-sync.json" \
-      "$WRAP_PREFIX""env CODEGRAPH_TELEMETRY=0 DO_NOT_TRACK=1 CODEGRAPH_NO_DAEMON=1 CODEGRAPH_ALLOW_UNSAFE_NODE=1 CODEGRAPH_DIR=.cg-bench $runtime $build/dist/bin/codegraph.js sync ." \
+      "$WRAP_PREFIX""env CODEGRAPH_TELEMETRY=0 DO_NOT_TRACK=1 CODEGRAPH_NO_DAEMON=1 CODEGRAPH_ALLOW_UNSAFE_NODE=1 CODEGRAPH_DIR=$CG_DIR $runtime $build/dist/bin/codegraph.js sync ." \
       >> "$BENCH_OUT/$NAME-sync.txt" 2>&1 || exit 7
     # The last sync must have stored the last appended bytes. A mismatch means
     # the run timed an "already up to date" no-op (excluded file, failed watch,
@@ -99,7 +104,7 @@ while read -r corpus file cm; do
     if ! cp -- "$backup" "$file" || ! cmp -s -- "$file" "$backup"; then
       echo "could not restore probe file: $corpus/$file" >&2; exit 7
     fi
-    rm -rf .cg-bench
+    rm -rf -- "$CG_DIR"
   done
   rm -f "$backup"
   CURRENT_FILE=""; CURRENT_BACKUP=""
