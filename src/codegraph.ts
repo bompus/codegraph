@@ -657,6 +657,10 @@ export class CodeGraph {
         return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
       }
       const startedAt = Date.now();
+      // Each full index owns its near-duplicate pass: the post-synthesis hook
+      // sets this, and a later index on the same instance must run it again
+      // even when that hook did not (no refs, no pool, resolver skipped).
+      this.nearDuplicatesRan = false;
       // Defer WAL auto-checkpointing for the whole bulk run (#1231): the
       // default 1000-page interval re-writes hot pages into the main DB file
       // over and over — ~95% of all disk I/O during a bulk index, and a
