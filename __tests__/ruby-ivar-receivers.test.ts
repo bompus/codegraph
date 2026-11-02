@@ -86,6 +86,17 @@ module Mixin
   end
 end
 `,
+  'app/wide.rb': `class WideHolder
+  def initialize
+    @wide = CacheWriter.new
+    @label = "${'x'.repeat(184)}é"
+  end
+
+  def via_wide
+    @wide.flush
+  end
+end
+`,
 };
 
 let root = '';
@@ -148,5 +159,12 @@ describe('Ruby calls on an instance variable initialize types', () => {
     const graph = await index();
     expect(callsAt(graph, 'app/holder.rb', 32)).toEqual([]);
     expect(callsAt(graph, 'app/holder.rb', 38)).toEqual([]);
+  });
+
+  it('still types an ivar when a multibyte character sits at the scan edge of its initializer', async () => {
+    const graph = await index();
+    // `@wide`'s tail crosses byte 200 inside `é`; a byte-indexed slice would
+    // panic (caught per-ref) and leave the call unresolved.
+    expect(callsAt(graph, 'app/wide.rb', 8)).toEqual(['CacheWriter::flush:2']);
   });
 });
