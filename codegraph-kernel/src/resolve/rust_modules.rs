@@ -31,7 +31,22 @@ impl KernelResolver {
         if self.read_file(&r.file_path).is_none() {
             return Ok(None);
         }
-        match self.match_rust_path_reference(r)? {
+        let path: Vec<String> =
+            r.reference_name.split("::").filter(|s| !s.is_empty()).map(str::to_string).collect();
+        let hit = self.match_rust_path_reference(r)?;
+        // A path whose head a `use` binds from the standard library —
+        // `fs::read` under `use std::fs;` — is std's, whatever module the
+        // project has of that name: `fs/mod.rs`'s own `read` is not
+        // `std::fs::read`. Only when the path found a project item, as in
+        // upstream, where resolveRustPathReference needs a module file before
+        // it gets this far; a path through an outside type that the project
+        // implements (`PathBuf::from` under `impl From<Fail> for PathBuf`) is
+        // the written-receiver arm's, not this one's. Terminal: a `::`-path
+        // has no name arm left to take it after this one declines.
+        if hit.is_some() && self.rust_path_head_is_out_of_repo(&path, r)? {
+            return Ok(Some(ResolveOutcome::unresolved()));
+        }
+        match hit {
             // A gated candidate is discarded to terminal unresolved — the
             // spine returns the import hit verbatim at ≥0.9, and this arm
             // always carries 0.9.
@@ -118,6 +133,19 @@ impl KernelResolver {
         Ok(self.match_rust_path_reference(&at)?.filter(|c| {
             r.reference_kind != "function_ref" || matches!(c.node.kind.as_str(), "function" | "method")
         }))
+    }
+
+    /// The stdlib-shadowing arm of upstream's `resolveRustPathReference`:
+    /// a path head that a `use` binds from the standard library makes the
+    /// whole path std's. `crate`/`self`/`super` are always project roots.
+    fn rust_path_head_is_out_of_repo(&mut self, path: &[String], r: &ResolveRefIn) -> Res<bool> {
+        let Some(head) = path.first() else { return Ok(false) };
+        if matches!(head.as_str(), "crate" | "self" | "super") {
+            return Ok(false);
+        }
+        let mut at = r.clone();
+        at.reference_name = head.clone();
+        self.is_bound_to_out_of_repo_import(&at)
     }
 
     /// resolveRustModuleFile (import-resolver.ts): map module segments to
