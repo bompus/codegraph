@@ -102,6 +102,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+ In Python, a call through a name the file imports as a module, like `other.update(…)` after `from pkg import other`, now links to that module only where nothing closer gives the name another value: a parameter, a local, a `with … as` or `except … as` target, a loop or comprehension variable, a lambda parameter or a `case` capture named `other` is that value, so its calls no longer show up as calls into the module. A `from pkg import third as other` written inside a function now links that function's `other.get()` to `third`, and no longer the rest of the file's. Re-index Python projects after upgrading. Thanks @BGamboa13. (#2632)
+
 - In JavaScript, a call in a file that gives an object that method itself, with `Sha256.prototype.update = function…`, no longer links to the only method of that name in some other file.
 
  In TypeScript, a type a file uses without importing it, like `Omit<T, K>`, `Record<K, V>`, the DOM's `Event`, or a generic's own `T`, no longer links to a type of that name another module of your project declares, like a local `export type Omit` or an enum member `T`: it links to the file's own type or a global one, declared in a script `.d.ts` or a `declare global` block. A type you import, write qualified (`vscode.TextDocument`), bring in with `import X = ns.X`, or name inside a `declare module` block links as before. Re-index TypeScript projects after upgrading. The declarations of a Flow library, like a `flow-typed` folder, are still global to the JavaScript files Flow reads, and to no TypeScript file.
