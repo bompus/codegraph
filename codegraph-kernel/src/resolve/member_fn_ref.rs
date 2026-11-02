@@ -253,9 +253,12 @@ impl KernelResolver {
         let site = r.clone().at(cls);
         let mut out = Vec::new();
         for name in python_base_names(&lines, (cls.start_line - 1).max(0) as usize) {
+            // A parameterized base, `Base[str]` or `Pair[str, Dict[str, int]]`,
+            // names its class before the brackets.
+            let name = name.split_once('[').map_or(name.as_str(), |(head, _)| head).trim().to_string();
             // `class Adapter(*bases, Right)` with `bases = (Left,)`: the tuple's
             // classes are bases too, in the order it writes them.
-            if let Some(variable) = name.trim().strip_prefix('*') {
+            if let Some(variable) = name.strip_prefix('*') {
                 for element in python_unpacked_bases(&lines, variable, (cls.start_line - 1).max(0) as usize) {
                     if let Some(base) = self.python_ref_class(&element, &site)? {
                         out.push(base);
