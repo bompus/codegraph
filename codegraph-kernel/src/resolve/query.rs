@@ -561,9 +561,17 @@ impl KernelResolver {
         }
         let nodes = self.nodes_in_file_unfiltered(file_path)?;
         let mut by_name: HashMap<String, Arc<KNode>> = HashMap::new();
+        let mut members: HashMap<String, Arc<KNode>> = HashMap::new();
         let mut default_component: Option<Arc<KNode>> = None;
         for n in nodes.iter() {
             if !n.is_exported {
+                continue;
+            }
+            // An exported object literal's method is a member of the object,
+            // not one of the module's own bindings: an import of the name
+            // means the module's `export function f` (upstream 59eb0d28).
+            if is_js_member_node(n) {
+                members.entry(n.name.clone()).or_insert_with(|| n.clone());
                 continue;
             }
             by_name.entry(n.name.clone()).or_insert_with(|| n.clone());
@@ -577,11 +585,17 @@ impl KernelResolver {
         if let Some(bound) = default_export_binding(&rows) {
             // The binding row names the declaration it exports; by name alone
             // a same-named function nested earlier in the file would win.
+            // A member of something else in the file is no default while the
+            // file declares a binding of that name (upstream 59eb0d28).
+            let own_declared = nodes
+                .iter()
+                .any(|n| n.name == bound.name && is_default_binding_kind(&n.kind) && !is_js_member_node(n));
             default_binding = bound
                 .node_id
                 .as_deref()
                 .and_then(|id| by_id.get(id))
                 .filter(|n| n.name == bound.name && is_default_binding_kind(&n.kind))
+                .filter(|n| !is_js_member_node(n) || !own_declared)
                 .map(|n| (*n).clone());
             if default_binding.is_none() {
                 let mut candidates: Vec<&Arc<KNode>> = nodes
@@ -593,6 +607,10 @@ impl KernelResolver {
                         .cmp(&b.start_line)
                         .then(a.start_column.cmp(&b.start_column))
                 });
+                // `export default f` names the module's own binding before an
+                // object's method of that name; a destructured binding
+                // (`export default k` of `const { k } = d`) has only the member.
+                candidates = module_bindings_first(candidates);
                 default_binding = candidates.first().map(|n| (*n).clone());
             }
         }
@@ -608,7 +626,15 @@ impl KernelResolver {
                     continue;
                 }
                 if let Some(decl) = by_id.get(node_id) {
-                    by_name.insert(exported.to_string(), (*decl).clone());
+                    let decl = (*decl).clone();
+                    // A member of something else in the file answers a name the
+                    // module declares nothing of (`export const { f } = d`), but
+                    // never before the module's own binding (upstream 59eb0d28).
+                    if is_js_member_node(&decl) {
+                        members.entry(exported.to_string()).or_insert(decl);
+                    } else {
+                        by_name.insert(exported.to_string(), decl);
+                    }
                 }
             }
         }
@@ -616,6 +642,7 @@ impl KernelResolver {
             by_name,
             default_component,
             default_binding,
+            members,
         });
         self.export_index.insert(file_path.to_string(), idx.clone());
         Ok(idx)
@@ -682,7 +709,7 @@ impl KernelResolver {
         // 2. Named re-exports.
         let reexports = self.reexports(file_path)?;
         if reexports.is_empty() {
-            return self.memo_symbol_opt(memo_key, None);
+            return self.memo_symbol_opt(memo_key, exported_member(&export_index, want));
         }
         // A namespace member (`ns.clone` through `import * as ns`) is
         // forwarded under the member's own name.
@@ -742,7 +769,7 @@ impl KernelResolver {
                 }
             }
         }
-        self.memo_symbol_opt(memo_key, None)
+        self.memo_symbol_opt(memo_key, exported_member(&export_index, want))
     }
 
     pub(super) fn memo_symbol_opt(
@@ -757,10 +784,51 @@ impl KernelResolver {
     }
 }
 
+/// The last answer for a named import: a member of something in the file, as
+/// `export const { f } = d` exports `d::f`, once nothing the file declares or
+/// forwards is the name (#2945).
+fn exported_member(idx: &FileExportIndexK, want: &ExportWant) -> Option<Arc<KNode>> {
+    let name = if want.is_default {
+        None
+    } else if want.is_namespace {
+        want.member_name.as_deref()
+    } else {
+        Some(want.exported_name.as_str())
+    };
+    name.and_then(|n| idx.members.get(n).cloned())
+}
+
 /// defaultExportBinding (import-resolver.ts): the identifier
 /// `export default NAME` names, from the file's binding rows.
 pub(super) fn default_export_binding(rows: &[KBinding]) -> Option<&KBinding> {
     rows.iter().find(|r| r.exported_as.as_deref() == Some("default") && r.node_id.is_some())
+}
+
+/// `nodes` with the members of something else in their JS/TS file (an
+/// object's method `d::f`) moved behind the module's own bindings. Extraction
+/// marks such a member exported, so it can share a name with what an import,
+/// export clause or default export means (#2945); it stays the last answer
+/// because `const { f } = d` gives the binding `f` no node but `d::f`.
+fn module_bindings_first(nodes: Vec<&Arc<KNode>>) -> Vec<&Arc<KNode>> {
+    if nodes.iter().all(|n| !is_js_member_node(n)) {
+        return nodes;
+    }
+    let mut own = Vec::with_capacity(nodes.len());
+    let mut members = Vec::new();
+    for n in nodes {
+        if is_js_member_node(n) { members.push(n); } else { own.push(n); }
+    }
+    own.extend(members);
+    own
+}
+
+/// A JS/TS node that is a member of something else in its file: an exported
+/// object literal's method (`export const d = { f() {} }` → `d::f`), which
+/// extraction marks exported but which no import of the name means while the
+/// module declares a binding of its own. Single-file components are their
+/// module's default export, whatever their script qualifies its members as.
+fn is_js_member_node(n: &KNode) -> bool {
+    is_js_family(&n.language) && !is_sfc_language(&n.language) && n.qualified_name != n.name
 }
 
 #[cfg(test)]

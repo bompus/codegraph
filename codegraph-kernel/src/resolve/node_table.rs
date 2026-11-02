@@ -547,6 +547,12 @@ pub(super) struct FileExportIndexK {
     pub(super) by_name: HashMap<String, Arc<KNode>>,
     pub(super) default_component: Option<Arc<KNode>>,
     pub(super) default_binding: Option<Arc<KNode>>,
+    /// Exported members of something else in a JS/TS file (`export const d =
+    /// { f() {} }` → `d::f`) by name: no import's first answer, only its last,
+    /// after the file's own bindings, export clause and re-exports (#2945).
+    /// That last answer is what reaches `d.f` through `export const { f } = d`,
+    /// whose binding has no node of its own.
+    pub(super) members: HashMap<String, Arc<KNode>>,
 }
 
 /// WorkspacePackages (workspace-packages.ts).
