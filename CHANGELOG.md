@@ -1274,6 +1274,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - In C, a function that writes a block macro before a block, like redis's `TEST_CONTEXT("…") {` or xxhash's `XXH_ASSERT(c)`, still counts as using the macro: a statement of a function body keeps the macro's name in the blanked span, so a change to the macro reaches the function. Elsewhere — an initializer, a struct or enum body, another macro's arguments, the rest of an expression, or the body of an `if`, `for`, `else` or `do` — the whole call is still blanked, as before. Re-index C projects after upgrading. (#3172)
 
+- In Go, a type now counts as implementing an interface only when its methods take and return the interface's types, not just as many of them: caddy's TLS matchers, whose `Match` takes a `*tls.ClientHelloInfo`, no longer implement its HTTP `RequestMatcher`, whose `Match` takes an `*http.Request`. Before, each false match also sent a call through the interface to a method it never reaches, and could push a real implementer off the list. Re-index Go projects after upgrading.
+
 ## [1.6.2] - 2026-10-03
 
 ### Highlights
