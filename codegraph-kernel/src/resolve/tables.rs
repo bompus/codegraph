@@ -442,6 +442,29 @@ pub(super) fn same_language_family(a: &str, b: &str) -> bool {
     matches!(language_family(a), Some(fa) if Some(fa) == language_family(b))
 }
 
+/// C_LINKED_LANGUAGES (name-matcher.ts, upstream 6d3804cf): C, C++ and
+/// Objective-C files share one table of names — a C function is called by its
+/// bare name from C++ and Objective-C alike, and a `.h` is C, C++ or
+/// Objective-C only as far as sniffing its text can tell — so name matching
+/// ranks them as one language.
+fn is_c_linked_language(lang: &str) -> bool {
+    matches!(lang, "c" | "cpp" | "objc")
+}
+
+/// sameLanguageFamily for a name match (name-matcher.ts, upstream 6d3804cf):
+/// the kernel's `language_family` splits C/C++ from Objective-C, while a bare
+/// name crosses freely between the three. Other families keep the kernel map.
+pub(super) fn same_name_match_language(a: &str, b: &str) -> bool {
+    same_language_family(a, b) || (is_c_linked_language(a) && is_c_linked_language(b))
+}
+
+/// sameRankingLanguage (name-matcher.ts, upstream 6d3804cf): the very language
+/// first, C, C++ and Objective-C as one. Ranking other families by family
+/// moved same-named declarations beside a caller in front of the one meant.
+pub(super) fn same_ranking_language(a: &str, b: &str) -> bool {
+    a == b || (is_c_linked_language(a) && is_c_linked_language(b))
+}
+
 pub(super) fn is_known_language_family(lang: &str) -> bool {
     language_family(lang).is_some()
 }

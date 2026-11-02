@@ -761,9 +761,10 @@ impl KernelResolver {
         let mut ref_dirs: Vec<String> =
             r.file_path.split('/').map(|s| s.to_string()).collect();
         ref_dirs.pop();
-        let has_same_language = candidates.iter().any(|c| c.language == r.language);
+        let has_same_language = candidates.iter().any(|c| same_ranking_language(&c.language, &r.language));
         for candidate in candidates {
-            if has_same_language && candidate.language != r.language {
+            let same_language = same_ranking_language(&candidate.language, &r.language);
+            if has_same_language && !same_language {
                 continue;
             }
             let mut score = 0f64;
@@ -772,8 +773,10 @@ impl KernelResolver {
             }
             if r.language == "vbnet" && self.vb_same_project(&candidate.file_path, &r.file_path) { score += 80.0; }
             score += path_proximity_from_dirs(&ref_dirs, &candidate.file_path) as f64;
-            if candidate.language == r.language {
-                score += 50.0;
+            // Between C, C++ and Objective-C the very language adds one point,
+            // which only breaks a tie: a directory nearer counts 15.
+            if same_language {
+                score += if candidate.language == r.language { 51.0 } else { 50.0 };
             } else {
                 score -= 80.0;
             }
@@ -1119,7 +1122,7 @@ impl KernelResolver {
             if bare_js && !is_bare_call_target_kind(&candidates[0].kind) {
                 return Ok(None);
             }
-            let cross = candidates[0].language != r.language;
+            let cross = !same_name_match_language(&candidates[0].language, &r.language);
             // A scope rule narrowed the set: the one left is what remains,
             // not what the call binds, unless its scope says so.
             let leftover = scope_shrank && !self.is_lang_survivor_bound(&candidates[0], r)?;
@@ -1177,8 +1180,8 @@ impl KernelResolver {
             // own copy: the name itself is not ambiguous, only which copy —
             // so rank it above a proximity guess, below a unique name or the
             // file's own definition (upstream 81559dcc).
-            let weighed: Vec<Arc<KNode>> = if candidates.iter().any(|c| c.language == r.language) {
-                candidates.iter().filter(|c| c.language == r.language).cloned().collect()
+            let weighed: Vec<Arc<KNode>> = if candidates.iter().any(|c| same_ranking_language(&c.language, &r.language)) {
+                candidates.iter().filter(|c| same_ranking_language(&c.language, &r.language)).cloned().collect()
             } else {
                 candidates.to_vec()
             };
@@ -1902,7 +1905,7 @@ impl KernelResolver {
             let reachable =
                 reachable && !bare_decline && !shadowed && !type_twin && self.is_lexically_reachable(&only, r)?;
             if reachable {
-                let cross = only.language != r.language;
+                let cross = !same_name_match_language(&only.language, &r.language);
                 return Ok(Some(KCand {
                     node: only,
                     confidence: if cross { 0.3 } else { 0.5 },
