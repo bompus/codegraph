@@ -59,6 +59,33 @@ impl KernelResolver {
         Ok(if dispatch.is_some() {self.kotlin_member_reachable(n,r)?} else {self.kotlin_top_level_visible(n,r)?})
     }
 
+    /// isKotlinExtensionInScope (name-matcher.ts): whether a Kotlin method a
+    /// call reached by its type's name can be called from the reference's
+    /// file. A member of a class in its file's package can; an extension,
+    /// `fun Modes.hidden()` indexed as `Modes::hidden`, is top-level, so only
+    /// from its own package or through an import of it or its package.
+    pub(super) fn kotlin_extension_in_scope(
+        &mut self,
+        n: &KNode,
+        r: &ResolveRefIn,
+    ) -> Res<bool> {
+        if n.language != "kotlin"
+            || n.kind != "method"
+            || n.file_path == r.file_path
+        {
+            return Ok(true);
+        }
+        let scope = self.kotlin_file_scope(&n.file_path);
+        let pkg = scope.pkg.clone();
+        if pkg.is_empty() {
+            return self.kotlin_top_level_visible(n, r);
+        }
+        if n.qualified_name.starts_with(&format!("{pkg}::")) {
+            return Ok(true);
+        }
+        self.kotlin_top_level_visible(n, r)
+    }
+
     pub(super) fn kotlin_unknown_extension_target(&mut self,n:&KNode,r:&ResolveRefIn)->Res<bool> {
         Ok(self.kotlin_visible_extension(n,r)? && self.kotlin_unknown_receiver_allowed(r)?)
     }

@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// Declarations a Java or Kotlin import's path can step into: `p.Outer.Inner`.
+const JVM_IMPORT_TYPE_KINDS: &[&str] =
+    &["class", "interface", "enum", "struct", "trait", "type_alias"];
+
 impl KernelResolver {
     // -----------------------------------------------------------------------
     // Import machinery (import-resolver.ts)
@@ -659,9 +663,14 @@ impl KernelResolver {
         Ok(re.captures(text).map(|m| m[1].to_string()))
     }
 
-    /// resolveJavaImportedReference (import-resolver.ts) — the bare arm
-    /// (`matchesBare` ⇒ memberName = localName) plus the static-import owner
-    /// fallback, both over the FQN→file-suffix disambiguation.
+    /// resolveJavaImportedReference (import-resolver.ts): a Java/Kotlin
+    /// reference through an import of a project declaration — `Foo.bar(…)`
+    /// after `import com.example.Foo`, the class itself, a nested type
+    /// (`JUtil.Nested.deep()`, `Outer.Inner()`), a Kotlin object's `INSTANCE`
+    /// or a class's `Companion`, a Kotlin file's top-level function through
+    /// its `FileKt` class, and `import static com.example.Foo.bar`. The
+    /// import is read by qualified name, so it binds whichever language
+    /// declares it; a declaration found only by its file path still counts.
     pub(super) fn resolve_java_imported_reference(
         &mut self,
         r: &ResolveRefIn,
@@ -670,76 +679,29 @@ impl KernelResolver {
         if imports.is_empty() {
             return Ok(None);
         }
-        // Java and Kotlin import each other's declarations (a Kotlin test's
-        // `import …ApiBuilder.get` names a method in a .java file), so both
-        // languages and both extensions count.
         let is_jvm = |language: &str| language == "java" || language == "kotlin";
-        let ends_with_fqn = |file_path: &str, fqn: &str| {
-            let base = fqn.replace('.', "/");
-            [".java", ".kt"].iter().any(|ext| file_path.ends_with(&format!("{base}{ext}")))
-        };
-        // A bare import call names the callee directly, without a member dot before it.
+        // A bare import call names the callee directly, without a member dot
+        // before it: a chained `.get(…)` the extractor reduced to `get` is not
+        // the import's.
         let bare_call_site = if r.reference_kind == "calls" {
             match self.read_file(&r.file_path) {
                 Some(lines) => lines.get((r.line - 1) as usize).is_none_or(|line| {
-                    !line[..js_unit_to_byte(line, r.column.max(0) as usize)].trim_end().ends_with('.')
+                    !line[..js_unit_to_byte(line, r.column.max(0) as usize)]
+                        .trim_end()
+                        .ends_with('.')
                         && js_slice(line, r.column.max(0) as usize)
-                        .strip_prefix(r.reference_name.as_str())
-                        .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$'))
+                            .strip_prefix(r.reference_name.as_str())
+                            .is_some_and(|rest| {
+                                !rest.starts_with(|c: char| {
+                                    c.is_ascii_alphanumeric() || c == '_' || c == '$'
+                                })
+                            })
                 }),
                 None => true,
             }
         } else {
             true
         };
-        // A Kotlin Multiplatform `expect` and its `actual`s share one qualified
-        // name, in files not named after the class (`Version.android.kt`), so
-        // the import is read by qualified name too: what the caller compiles
-        // against is the `expect` in common code, that platform's `actual`
-        // otherwise.
-        for imp in imports {
-            let matches_bare = imp.local_name == r.reference_name;
-            if !matches_bare && !r.reference_name.starts_with(&format!("{}.", imp.local_name)) {
-                continue;
-            }
-            let qualified = imp.source.replace('.', "::");
-            let decls: Vec<Arc<KNode>> = self
-                .nodes_by_qualified_name(&qualified)?
-                .iter()
-                .filter(|n| {
-                    is_jvm(&n.language)
-                        && matches!(n.kind.as_str(), "class" | "interface" | "enum" | "object" | "type_alias")
-                })
-                .cloned()
-                .collect();
-            if decls.len() < 2 {
-                continue;
-            }
-            let owner = super::receivers::pick_jvm_declaration(&decls, r);
-            if matches_bare && r.reference_kind != "calls" {
-                return Ok(Some(owner));
-            }
-            let member = if matches_bare {
-                ""
-            } else {
-                js_slice(&r.reference_name, utf16_len(&imp.local_name) + 1)
-            };
-            let member = member.split('.').next().unwrap_or("");
-            if member.is_empty() {
-                return Ok(Some(owner));
-            }
-            if let Some(hit) = self
-                .nodes_by_qualified_name(&format!("{}::{}", owner.qualified_name, member))?
-                .iter()
-                .find(|n| n.file_path == owner.file_path)
-                .cloned()
-            {
-                return Ok(Some(hit));
-            }
-            if member == owner.name {
-                return Ok(Some(owner));
-            }
-        }
         for imp in imports {
             let matches_bare = imp.local_name == r.reference_name;
             let matches_qualified = r
@@ -751,51 +713,262 @@ impl KernelResolver {
             if matches_bare && !bare_call_site {
                 continue;
             }
+            let member_path: Vec<String> = if matches_bare {
+                Vec::new()
+            } else {
+                js_slice(&r.reference_name, utf16_len(&imp.local_name) + 1)
+                    .split('.')
+                    .map(|s| s.to_string())
+                    .collect()
+            };
+            // An imported type, and what its name reaches: its members and
+            // nested types. An imported function or property (an extension
+            // among them) is left to the name strategies, which know a Kotlin
+            // call's receiver: an untyped chain's last call is no call of it.
+            let named = self.jvm_imported_declarations(&imp.source)?;
+            let declarations: Vec<Arc<KNode>> = named
+                .iter()
+                .filter(|n| JVM_IMPORT_TYPE_KINDS.contains(&n.kind.as_str()))
+                .cloned()
+                .collect();
+            // A Kotlin name can be a function and a type at once (Compose's
+            // `fun AppBar(…)` beside `sealed interface AppBar`): a call of
+            // the name alone is the function's, which the file's own path
+            // still finds.
+            let call_of_function = matches_bare
+                && r.reference_kind == "calls"
+                && named
+                    .iter()
+                    .any(|n| n.kind == "function" || n.kind == "method");
+            if !declarations.is_empty() && !call_of_function {
+                let owner = if declarations.len() == 1 {
+                    declarations[0].clone()
+                } else {
+                    super::receivers::pick_jvm_declaration(&declarations, r)
+                };
+                if let Some(target) =
+                    self.jvm_imported_member(&owner, &member_path, r)?
+                {
+                    return Ok(Some(target));
+                }
+                continue;
+            }
+            // `UtilsKt.helper()` from Java: a top-level Kotlin function.
+            if r.language == "java" && member_path.len() == 1 {
+                let members =
+                    self.kotlin_file_facade_members(&imp.source, &member_path[0])?;
+                if !members.is_empty() {
+                    let target = if members.len() == 1 {
+                        members[0].clone()
+                    } else {
+                        super::receivers::pick_jvm_declaration(&members, r)
+                    };
+                    return Ok(Some(target));
+                }
+            }
+            // A declaration the index holds under another name: found by the
+            // import's path (`com/example/Foo.java` or `.kt`, whichever the
+            // declaring file is), under any source root. Its member, by name.
             let member_name = if matches_bare {
                 imp.local_name.clone()
             } else {
-                js_slice(&r.reference_name, utf16_len(&imp.local_name) + 1)
-                    .to_string()
+                member_path.join(".")
             };
-            let candidates = self.nodes_by_name(&member_name)?;
-            let matching: Vec<Arc<KNode>> = candidates
+            let fqn_path = imp.source.replace('.', "/");
+            let owner_path = imp
+                .source
+                .rfind('.')
+                .map(|dot| imp.source[..dot].replace('.', "/"))
+                .unwrap_or_default();
+            let candidates: Vec<Arc<KNode>> = self
+                .nodes_by_name(&member_name)?
                 .iter()
-                .filter(|n| is_jvm(&n.language) && ends_with_fqn(&n.file_path, &imp.source))
+                .filter(|n| is_jvm(&n.language))
                 .cloned()
                 .collect();
-            if !matching.is_empty() {
-                let best = if matching.len() == 1 {
-                    matching[0].clone()
-                } else {
-                    super::receivers::pick_jvm_declaration(&matching, r)
-                };
-                return Ok(Some(best));
+            let in_file = |node: &KNode, file: &str| {
+                let fp = node.file_path.replace('\\', "/");
+                [".java", ".kt"].iter().any(|ext| {
+                    let suffix = format!("{file}{ext}");
+                    fp.ends_with(&suffix)
+                        && (fp.len() == suffix.len()
+                            || fp.as_bytes()[fp.len() - suffix.len() - 1] == b'/')
+                })
+            };
+            if let Some(hit) =
+                candidates.iter().find(|n| in_file(n, &fqn_path))
+            {
+                return Ok(Some(hit.clone()));
             }
-            // `import static com.example.Foo.bar;` — the FQN tail is the
-            // member, the part before is the owner class. Bare matches only —
-            // a qualified ref already named the member above.
-            if matches_bare {
-                if let Some(dot) = imp.source.rfind('.') {
-                    if dot > 0 {
-                        let owner = &imp.source[..dot];
-                        let owners: Vec<Arc<KNode>> = candidates
-                            .iter()
-                            .filter(|n| is_jvm(&n.language) && ends_with_fqn(&n.file_path, owner))
-                            .cloned()
-                            .collect();
-                        if !owners.is_empty() {
-                            let best = if owners.len() == 1 {
-                                owners[0].clone()
-                            } else {
-                                super::receivers::pick_jvm_declaration(&owners, r)
-                            };
-                            return Ok(Some(best));
-                        }
-                    }
+            if matches_bare && !owner_path.is_empty() {
+                if let Some(hit) =
+                    candidates.iter().find(|n| in_file(n, &owner_path))
+                {
+                    return Ok(Some(hit.clone()));
                 }
             }
         }
         Ok(None)
+    }
+
+    /// The project declarations a Java or Kotlin import names, in either
+    /// language: `import p.Outer.Inner` is `p::Outer::Inner`, the package
+    /// being some prefix of the name. Several when Kotlin Multiplatform's
+    /// `expect` and `actual`s share it; empty when none has it.
+    fn jvm_imported_declarations(&mut self, fqn: &str) -> Res<Vec<Arc<KNode>>> {
+        let parts: Vec<&str> = fqn.split('.').collect();
+        for i in (1..parts.len()).rev() {
+            let qn = format!(
+                "{}::{}",
+                parts[..i].join("."),
+                parts[i..].join("::")
+            );
+            let found: Vec<Arc<KNode>> = self
+                .nodes_by_qualified_name(&qn)?
+                .iter()
+                .filter(|n| n.language == "java" || n.language == "kotlin")
+                .cloned()
+                .collect();
+            if !found.is_empty() {
+                return Ok(found);
+            }
+        }
+        Ok(Vec::new())
+    }
+
+    /// A Kotlin file's top-level functions and properties, as Java sees them:
+    /// the members of a class named for the file, `p.UtilsKt` for
+    /// `p/Utils.kt`.
+    fn kotlin_file_facade_members(
+        &mut self,
+        fqn: &str,
+        member: &str,
+    ) -> Res<Vec<Arc<KNode>>> {
+        let Some(dot) = fqn.rfind('.') else { return Ok(Vec::new()) };
+        let facade = &fqn[dot + 1..];
+        if dot == 0 || !re!(r"^\w+Kt$").is_match(facade) {
+            return Ok(Vec::new());
+        }
+        let file_name = format!("{}.kt", &facade[..facade.len() - 2]);
+        let pkg = &fqn[..dot];
+        Ok(self
+            .nodes_by_qualified_name(&format!("{pkg}::{member}"))?
+            .iter()
+            .filter(|n| {
+                n.language == "kotlin"
+                    && matches!(
+                        n.kind.as_str(),
+                        "function" | "variable" | "constant"
+                    )
+                    && pos_basename(&n.file_path.replace('\\', "/")) == file_name
+            })
+            .cloned()
+            .collect())
+    }
+
+    /// The member a JVM reference names through an imported declaration:
+    /// `make` in `JUtil.make()`, `Nested.deep` in `JUtil.Nested.deep()`. Each
+    /// step but the last is a nested type in the same file; a Kotlin object's
+    /// `INSTANCE` and a class's `Companion`, as Java writes them, are the
+    /// declaration itself. A call to a nested class builds it. Undefined when
+    /// a step names nothing the declaration has, for the name strategies.
+    fn jvm_imported_member(
+        &mut self,
+        owner: &Arc<KNode>,
+        steps: &[String],
+        r: &ResolveRefIn,
+    ) -> Res<Option<Arc<KNode>>> {
+        let built = |this: &mut Self, ty: &Arc<KNode>| -> Res<Arc<KNode>> {
+            if r.language == "kotlin" {
+                if let Some(m) = this
+                    .nodes_by_qualified_name(&format!(
+                        "{}::{}",
+                        ty.qualified_name, ty.name
+                    ))?
+                    .iter()
+                    .find(|n| n.kind == "method" && n.file_path == ty.file_path)
+                {
+                    return Ok(m.clone());
+                }
+            }
+            Ok(ty.clone())
+        };
+        let mut current = owner.clone();
+        for (i, segment) in steps.iter().enumerate() {
+            let last = i == steps.len() - 1;
+            if !last
+                && (segment == "INSTANCE" || segment == "Companion")
+                && current.language == "kotlin"
+                && JVM_IMPORT_TYPE_KINDS.contains(&current.kind.as_str())
+            {
+                continue;
+            }
+            let members: Vec<Arc<KNode>> = self
+                .nodes_by_qualified_name(&format!(
+                    "{}::{}",
+                    current.qualified_name, segment
+                ))?
+                .iter()
+                .filter(|n| n.file_path == current.file_path)
+                .cloned()
+                .collect();
+            if !last {
+                let Some(nested) = members
+                    .iter()
+                    .find(|n| JVM_IMPORT_TYPE_KINDS.contains(&n.kind.as_str()))
+                else {
+                    return Ok(None);
+                };
+                current = nested.clone();
+                continue;
+            }
+            if r.reference_kind != "calls" {
+                return Ok(members.first().cloned());
+            }
+            if let Some(m) = members
+                .iter()
+                .find(|n| n.kind == "method" || n.kind == "function")
+            {
+                return Ok(Some(m.clone()));
+            }
+            if let Some(ty) = members
+                .iter()
+                .find(|n| JVM_IMPORT_TYPE_KINDS.contains(&n.kind.as_str()))
+            {
+                return Ok(Some(built(self, ty)?));
+            }
+            let holder = current.clone();
+            let extension = if r.language == "kotlin"
+                && holder.language == "kotlin"
+            {
+                let candidates = self
+                    .nodes_by_qualified_name(&format!(
+                        "{}::{}",
+                        holder.name, segment
+                    ))?;
+                let mut found = None;
+                for n in candidates.iter() {
+                    if n.kind == "method"
+                        && n.language == "kotlin"
+                        && n.file_path == holder.file_path
+                        && self.kotlin_extension_in_scope(n, r)?
+                    {
+                        found = Some(n.clone());
+                        break;
+                    }
+                }
+                found
+            } else {
+                None
+            };
+            return Ok(extension.or_else(|| members.first().cloned()));
+        }
+        if r.reference_kind == "calls"
+            && JVM_IMPORT_TYPE_KINDS.contains(&current.kind.as_str())
+        {
+            return Ok(Some(built(self, &current)?));
+        }
+        Ok(Some(current))
     }
 
     /// resolveViaImport for a name with no `.` or `/` (a bare name, a C++
@@ -1075,7 +1248,11 @@ impl KernelResolver {
                 for i in (1..parts.len()).rev() {
                     let qn=format!("{}::{}",parts[..i].join("."),parts[i..].join("::"));
                     if let Some(owner)=self.nodes_by_qualified_name(&qn)?.first().cloned() {
-                        let target=if let Some(member)=member {if member.contains('.') {return Ok(None);}self.nodes_by_qualified_name(&format!("{}::{member}",owner.qualified_name))?.first().cloned()}else{Some(owner)};
+                        // A dotted member (`JUtil.Nested.deep()`) is a chain
+                        // through the imported declaration: the JVM import
+                        // walker below reads it.
+                        if member.is_some_and(|m| m.contains('.')) { break; }
+                        let target=if let Some(member)=member {self.nodes_by_qualified_name(&format!("{}::{member}",owner.qualified_name))?.first().cloned()}else{Some(owner)};
                         return Ok(target.map(|node|KCand{node,confidence:0.9,resolved_by:"import"}));
                     }
                 }

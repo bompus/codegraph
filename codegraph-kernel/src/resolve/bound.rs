@@ -1330,6 +1330,21 @@ Ok(self.dart_member_of(type_name, method, r, false)?
             })
             .cloned()
             .collect();
+        // A Kotlin extension, `fun Modes.hidden()` (indexed as
+        // `Modes::hidden`), is a top-level declaration: from another package,
+        // only an import of it or of its package puts it in scope. A member
+        // of the type is always reachable.
+        let matches = if r.language == "kotlin" {
+            let mut kept = Vec::new();
+            for m in matches {
+                if self.kotlin_extension_in_scope(&m, r)? {
+                    kept.push(m);
+                }
+            }
+            kept
+        } else {
+            matches
+        };
         if matches.is_empty() {
             // No walk over a db that may lack supertype edges (see
             // match_bound_type_member): a miss, never a guess.

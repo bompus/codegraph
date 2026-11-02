@@ -1264,7 +1264,30 @@ fn go_bare_result(
         }
         let candidates = self.nodes_by_qualified_name(&format!("{}::{}", pkg, sym))?;
         if candidates.is_empty() {
-            return Ok(None);
+            // `import p.UtilsKt;` in Java names the class Kotlin compiles
+            // `p/Utils.kt`'s top-level functions into: that file, in that
+            // package.
+            if r.language != "java" || !re!(r"^\w+Kt$").is_match(sym) {
+                return Ok(None);
+            }
+            let name = format!("{}.kt", &sym[..sym.len() - 2]);
+            let file = self
+                .nodes_by_name(&name)?
+                .iter()
+                .find(|n| {
+                    n.kind == "file"
+                        && self.nodes_in_file(&n.file_path).is_ok_and(|nodes| {
+                            nodes.iter().any(|d| {
+                                d.kind == "namespace" && d.qualified_name == pkg
+                            })
+                        })
+                })
+                .cloned();
+            return Ok(file.map(|node| KCand {
+                node,
+                confidence: 0.9,
+                resolved_by: "import",
+            }));
         }
         let best = if candidates.len() == 1 {
             candidates[0].clone()
