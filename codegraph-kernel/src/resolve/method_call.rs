@@ -559,6 +559,27 @@ impl KernelResolver {
         Ok(receiver == "it" || declaration.is_some_and(|d| d.contains("->")))
     }
 
+    /// A capitalized type name no project class or interface of the call's
+    /// language family is named (isUndeclaredTypeName): the receiver's
+    /// declared type is external, so the name strategies below must not guess
+    /// a same-named project method.
+    fn undeclared_method_owner(
+        &mut self,
+        name: &str,
+        r: &ResolveRefIn,
+    ) -> Res<bool> {
+        if !name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+            return Ok(false);
+        }
+        Ok(!self.nodes_by_name(name)?.iter().any(|n| {
+            same_language_family(&n.language, &r.language)
+                && (matches!(
+                    n.kind.as_str(),
+                    "class" | "struct" | "union" | "interface"
+                ) || (n.language == "scala" && n.kind == "module"))
+        }))
+    }
+
     /// The un-receiver-typed c/cpp field fallback: every same-language
     /// `field` node carrying `member`'s name, resolved only when the set is
     /// a singleton. Field nodes exist only for callable function-pointer
@@ -1551,6 +1572,15 @@ if inferred.is_none() && r.language == "dart" {
                             && (JS_BUILT_INS.contains(t.as_str())
                                 || TS_PRIMITIVE_TYPES.contains(t.as_str()))
                         {
+                            return Ok(None);
+                        }
+                        // The receiver's declared type is one the project
+                        // doesn't declare (`List<Roshambo> list`, `String s`,
+                        // `val sb = StringBuilder()`), so the method is that
+                        // outside type's: no same-named project method is a
+                        // guess worth making (#3065's Pascal `List.Clear`).
+                        let last = t.rsplit('.').next().unwrap_or(&t).to_string();
+                        if self.undeclared_method_owner(&last, r)? {
                             return Ok(None);
                         }
                     }
