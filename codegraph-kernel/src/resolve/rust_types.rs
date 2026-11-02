@@ -231,12 +231,14 @@ impl KernelResolver {
                 file: w.file.clone(),
                 inline: rust_inline_at(at, s.text()),
                 parent: None,
+                choices: Vec::new(),
             }
         } else {
             RustModule {
                 file: w.file.clone(),
                 inline: Vec::new(),
                 parent: None,
+                choices: Vec::new(),
             }
         };
         for (local, p, m) in self.rust_visible_uses(&w.file, w.at) {

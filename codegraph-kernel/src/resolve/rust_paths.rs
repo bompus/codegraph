@@ -11,6 +11,10 @@ pub(in super::super) struct RustModule {
     /// `super`, and the crate its `crate::` starts from. None for a module
     /// found at its conventional place.
     pub(in super::super) parent: Option<Rc<RustModule>>,
+    /// The files a `#[path]` module's `#[cfg]` alternatives name, when more
+    /// than one does; `file` is the first. What one alternative holds is that
+    /// one's; a name two hold is the build's choice and stays unread.
+    pub(in super::super) choices: Vec<String>,
 }
 
 pub(in super::super) fn rust_children(n: tree_sitter::Node<'_>) -> Vec<tree_sitter::Node<'_>> {
@@ -217,6 +221,7 @@ impl KernelResolver {
             file: file.into(),
             inline,
             parent: None,
+            choices: Vec::new(),
         }
     }
     fn rust_module_body<'a>(
@@ -268,6 +273,7 @@ impl KernelResolver {
                                 file: file.into(),
                                 inline: rust_inline_at(child, text),
                                 parent: None,
+                                choices: Vec::new(),
                             },
                         ));
                     }
@@ -297,6 +303,7 @@ impl KernelResolver {
                     file: p,
                     inline: Vec::new(),
                     parent: None,
+                    choices: Vec::new(),
                 });
             }
         }
@@ -357,6 +364,34 @@ impl KernelResolver {
     }
 
     fn rust_submodule(&mut self, m: &RustModule, name: &str) -> Option<RustModule> {
+        // A `#[cfg]` alternative module: each file is walked the same way,
+        // and a step further down the path that only one alternative holds
+        // is that one's.
+        if !m.choices.is_empty() {
+            let mut found: Vec<RustModule> = Vec::new();
+            for file in &m.choices {
+                let choice = RustModule {
+                    file: file.clone(),
+                    inline: Vec::new(),
+                    parent: None,
+                    choices: Vec::new(),
+                };
+                if let Some(sub) = self.rust_submodule(&choice, name) {
+                    let mut sub = sub;
+                    sub.parent = Some(Rc::new(choice));
+                    found.push(sub);
+                }
+            }
+            found.dedup_by(|a, b| a.file == b.file);
+            return match found.len() {
+                0 => None,
+                1 => found.pop(),
+                _ => {
+                    self.rust_ambiguous_module = true;
+                    None
+                }
+            };
+        }
         // A file module: its `#[path]`, if any; inline modules are handled
         // from the same body below.
         let mut file_mods: Vec<(Option<String>, bool)> = Vec::new();
@@ -397,8 +432,21 @@ impl KernelResolver {
             let path_mods: Vec<&String> =
                 file_mods.iter().filter_map(|(path, _)| path.as_ref()).collect();
             if path_mods.len() > 1 {
-                self.rust_ambiguous_module = true;
-                return None;
+                // `#[cfg]` alternatives name a file each: keep every file.
+                // What one holds is that one's; a name two hold is the
+                // build's choice (rust_cfg_choice_items).
+                let files: Vec<String> =
+                    path_mods.iter().map(|p| pos_resolve(&Self::rust_path_dir(m), p)).collect();
+                if files.iter().any(|f| !self.file_exists(f)) {
+                    self.rust_ambiguous_module = true;
+                    return None;
+                }
+                return Some(RustModule {
+                    file: files[0].clone(),
+                    inline: Vec::new(),
+                    parent: Some(Rc::new(m.clone())),
+                    choices: files,
+                });
             }
             if let Some(path) = path_mods.first() {
                 let file = pos_resolve(&Self::rust_path_dir(m), path);
@@ -409,6 +457,7 @@ impl KernelResolver {
                     file,
                     inline: Vec::new(),
                     parent: Some(Rc::new(m.clone())),
+                    choices: Vec::new(),
                 });
             }
         }
@@ -422,6 +471,7 @@ impl KernelResolver {
                     file: p,
                     inline: Vec::new(),
                     parent: None,
+                    choices: Vec::new(),
                 });
             }
         }
@@ -463,6 +513,7 @@ impl KernelResolver {
                             file: file.clone(),
                             inline: rust_inline_at(n, &text),
                             parent: None,
+                            choices: Vec::new(),
                         };
                         let target = pos_resolve(&Self::rust_path_dir(&declaring), &path);
                         map.entry(target).or_default().push(declaring);
@@ -497,6 +548,7 @@ impl KernelResolver {
             file: site.file.clone(),
             inline: site.inline.clone(),
             parent,
+            choices: Vec::new(),
         })
     }
 
@@ -520,6 +572,7 @@ impl KernelResolver {
                     file: p,
                     inline: Vec::new(),
                     parent: None,
+                    choices: Vec::new(),
                 });
             }
         }
@@ -577,6 +630,7 @@ impl KernelResolver {
                                 file: p,
                                 inline: Vec::new(),
                                 parent: None,
+                                choices: Vec::new(),
                             };
                             i = 1;
                         }
@@ -625,6 +679,9 @@ impl KernelResolver {
         public_only: bool,
         seen: &mut HashSet<String>,
     ) -> Res<Vec<Arc<KNode>>> {
+        if !m.choices.is_empty() {
+            return self.rust_cfg_choice_items(m, name, public_only, seen);
+        }
         let key = format!("{}:{:?}:{name}:{public_only}", m.file, m.inline);
         if seen.len() > 64 || !seen.insert(key) {
             return Ok(Vec::new());
@@ -722,6 +779,38 @@ impl KernelResolver {
         own.dedup_by(|a, b| a.id == b.id);
         Ok(own)
     }
+    /// A name a `#[cfg]` alternative module holds: the one alternative that
+    /// holds it answers; two that disagree are the build's choice, so the
+    /// name stays unread.
+    fn rust_cfg_choice_items(
+        &mut self,
+        m: &RustModule,
+        name: &str,
+        public_only: bool,
+        seen: &mut HashSet<String>,
+    ) -> Res<Vec<Arc<KNode>>> {
+        let mut per_file: Vec<Vec<Arc<KNode>>> = Vec::new();
+        for file in &m.choices {
+            let choice = RustModule {
+                file: file.clone(),
+                inline: Vec::new(),
+                parent: None,
+                choices: Vec::new(),
+            };
+            let items = self.rust_items_in_module(&choice, name, public_only, seen)?;
+            if !items.is_empty() {
+                per_file.push(items);
+            }
+        }
+        if per_file.len() == 1 {
+            return Ok(per_file.pop().unwrap());
+        }
+        if per_file.len() > 1 {
+            self.rust_ambiguous_module = true;
+        }
+        Ok(Vec::new())
+    }
+
     pub(in super::super) fn rust_path_items(
         &mut self,
         path: &[String],
