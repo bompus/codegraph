@@ -5686,6 +5686,52 @@ const MEDIATR_NOTIFICATION_ARG_RE = /^I?(?:Domain)?Notification$|^IDomainEvent$/
 const MEDIATR_CS_EXT = /\.cs$/;
 const MEDIATR_FANOUT_CAP = 80;
 const MEDIATR_HANDLER_DECL_LOOKAHEAD = 4; // lines from a class startLine to find a wrapped base list
+const MEDIATR_CLASS_HEAD_LINES = 16; // a primary constructor can push the base list down
+const MEDIATR_HANDLE_FIRST_PARAM_RE = /\bHandle\s*\(\s*(?:\[[^\]]*\]\s*)?(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*)/;
+
+/** How many leading folders two files share. */
+function sharedFolders(a: string, b: string): number {
+  const left = a.split('/');
+  const right = b.split('/');
+  let n = 0;
+  while (n < left.length - 1 && n < right.length - 1 && left[n] === right[n]) n++;
+  return n;
+}
+
+/**
+ * The handlers a dispatch in `file` can reach, of the several sharing a type's name: a template
+ * repository keeps whole solutions side by side (`src/`, `sample/`), each with its own
+ * `CreateContributorCommand`. `Send` has one handler, so the nearest wins. `Publish` fans out
+ * across a solution's modules, so only a handler in another top-level folder goes.
+ */
+function reachableHandlers(targets: Node[], file: string, verb: string): Node[] {
+  if (targets.length < 2) return targets;
+  const shared = targets.map((t) => sharedFolders(file, t.filePath));
+  const best = Math.max(...shared);
+  if (verb === 'Send') return targets.filter((_, i) => shared[i] === best);
+  return best > 0 ? targets.filter((_, i) => shared[i]! > 0) : targets;
+}
+
+/** The types a class's base list names as generic arguments, its own type parameters and primary constructor aside. */
+function mediatrBaseListTypes(lines: string[], classStart: number): Set<string> {
+  const head = lines.slice(classStart - 1, classStart - 1 + MEDIATR_CLASS_HEAD_LINES).join('\n');
+  const open = head.indexOf('{');
+  const text = (open >= 0 ? head.slice(0, open) : head).replace(/\([^()]*(?:\([^()]*\)[^()]*)*\)/g, ' ');
+  const colon = text.indexOf(':');
+  const types = new Set<string>();
+  if (colon < 0) return types;
+  const own = /<([^<>]*)>/.exec(text.slice(0, colon))?.[1]?.split(',').map((t) => t.trim()) ?? [];
+  for (const m of text.slice(colon + 1).matchAll(/[<,]\s*(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*)/g)) {
+    if (!own.includes(m[1]!)) types.add(m[1]!);
+  }
+  return types;
+}
+
+/** The type a `Handle` method takes first, or null when its head can't be read. */
+function mediatrHandledType(lines: string[], handle: Node): string | null {
+  const head = lines.slice(handle.startLine - 1, handle.startLine + 2).join(' ');
+  return MEDIATR_HANDLE_FIRST_PARAM_RE.exec(head)?.[1] ?? null;
+}
 
 /** The type sent at a MediatR `.Send(arg)`/`.Publish(arg)` site: an inline `new X(…)`, else
  *  `arg` as an identifier resolved within the enclosing method — a `… arg = new X(…)` assignment
@@ -5695,6 +5741,8 @@ function resolveMediatrArgType(arg: string, lines: string[], methodStart: number
   if (inl) return inl[1]!;
   if (!/^[A-Za-z_]\w*$/.test(arg)) return null;
   const assignRe = new RegExp(`\\b${arg}\\b\\s*=\\s*new\\s+([A-Z]\\w*)`);
+  // A mapper's result: `var command = mapper.Map<CreateBooking>(request)`, `.Adapt<X>()`.
+  const mappedRe = new RegExp(`\\b${arg}\\b\\s*=[^;]*?\\.\\s*\\w+<(?:[^<>;]*,\\s*)?(?:\\w+\\.)*([A-Z]\\w*)>\\s*\\(`);
   // `X arg` or `X<…> arg` — the declared type resolves to its erased name
   // (`IdentifiedCommand<T,R> message` → `IdentifiedCommand`, the same erasure
   // `new X<…>` args already use; an interface-typed `IRequest<R> request` →
@@ -5705,6 +5753,8 @@ function resolveMediatrArgType(arg: string, lines: string[], methodStart: number
     const ln = lines[i] ?? '';
     const a = assignRe.exec(ln);
     if (a) return a[1]!; // an explicit `arg = new X` is the most specific — take it
+    const mapped = mappedRe.exec(ln);
+    if (mapped) return mapped[1]!;
     if (!declType) {
       const d = declRe.exec(ln);
       if (d) declType = d[1]!; // a `X arg` declaration — remember, but keep scanning for an assignment
@@ -5739,24 +5789,38 @@ async function mediatrDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield)
     if ((++scannedFiles & 15) === 0) await onYield();
     if (!MEDIATR_CS_EXT.test(file)) continue;
     const content = ctx.readFile(file);
-    if (!content || (!content.includes('IRequestHandler<') && !content.includes('INotificationHandler<'))) continue;
+    if (!content || !content.includes('Handle(')) continue;
     const lines = content.split('\n');
     const nodesInFile = ctx.getNodesInFile(file);
+    const handleMethods = nodesInFile.filter((n) => n.kind === 'method' && n.name === 'Handle');
+    if (handleMethods.length === 0) continue;
+    const addHandler = (type: string, handle: Node): void => {
+      const known = handlers.get(type);
+      if (!known) handlers.set(type, [handle]);
+      else if (!known.includes(handle)) known.push(handle);
+    };
     for (const cls of nodesInFile) {
       if (cls.kind !== 'class') continue;
-      const decl = lines.slice(cls.startLine - 1, cls.startLine - 1 + MEDIATR_HANDLER_DECL_LOOKAHEAD).join('\n');
-      const m = MEDIATR_HANDLER_BASE_RE.exec(decl);
-      if (!m) continue;
-      const type = m[1]!;
       const end = cls.endLine ?? cls.startLine;
-      const handle = nodesInFile.find(
-        (n) => n.kind === 'method' && n.name === 'Handle' && n.startLine >= cls.startLine && n.startLine <= end
-      );
-      if (!handle) continue;
-      let arr = handlers.get(type);
-      if (!arr) { arr = []; handlers.set(type, arr); }
-      arr.push(handle);
-      if (/INotificationHandler\s*</.test(decl)) notificationHandlers.push(handle);
+      const handles = handleMethods.filter((n) => n.startLine >= cls.startLine && n.startLine <= end);
+      if (handles.length === 0) continue;
+      const lookahead = lines.slice(cls.startLine - 1, cls.startLine - 1 + MEDIATR_HANDLER_DECL_LOOKAHEAD).join('\n');
+      // Up to the body: the next lines can be the next class's.
+      const decl = lookahead.split('{', 1)[0]!;
+      const m = MEDIATR_HANDLER_BASE_RE.exec(decl);
+      if (m) addHandler(m[1]!, handles[0]!);
+      // A project often derives its own interfaces from MediatR's
+      // (`ICommandHandler<T>`, `IQueryHandler<T, R>`), or takes them from a
+      // package the index doesn't hold (the `Mediator` source generator,
+      // Ardalis.SharedKernel), so no name list is complete. What every
+      // handler writes is the type twice: in its base list and as the first
+      // parameter of its `Handle`.
+      const baseTypes = mediatrBaseListTypes(lines, cls.startLine);
+      for (const handle of handles) {
+        const type = mediatrHandledType(lines, handle);
+        if (type && baseTypes.has(type)) addHandler(type, handle);
+      }
+      if (/INotificationHandler\s*</.test(decl)) notificationHandlers.push(handles[0]!);
     }
   }
   if (!handlers.size) return [];
@@ -5796,7 +5860,7 @@ async function mediatrDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield)
         if (fan) targets = notificationHandlers;
       }
       if (!targets) continue;
-      for (const target of targets) {
+      for (const target of reachableHandlers(targets, file, verb)) {
         if (target.id === disp.id) continue;
         const key = `${disp.id}>${target.id}`;
         if (seen.has(key)) continue;
