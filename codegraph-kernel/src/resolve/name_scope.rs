@@ -243,15 +243,47 @@ impl KernelResolver {
     }
 }
 
+/// One reference's own line, read and split once: a reference is checked
+/// against every candidate of its name, and reading its line again for each was
+/// most of a Rust or Java index's name matching (rustNameRead / javaNameRead in
+/// name-matcher.ts).
+pub(super) struct RefLine {
+    /// The whole line the reference sits on ("" when it can't be read).
+    pub line: Rc<str>,
+    /// `line` from the reference's column on.
+    pub at: String,
+    /// `line` before the reference's column.
+    pub before: String,
+}
+
 impl KernelResolver {
+    /// The reference's line and its split at the column, kept for the reference.
+    pub(super) fn ref_line(&mut self, r: &ResolveRefIn) -> Rc<RefLine> {
+        let key = (r.file_path.clone(), r.line, r.column);
+        if let Some((known, read)) = &self.ref_line {
+            if *known == key {
+                return read.clone();
+            }
+        }
+        let col = r.column.max(0) as usize;
+        let line = self
+            .read_file(&r.file_path)
+            .and_then(|f| f.get((r.line - 1).max(0) as usize).cloned())
+            .unwrap_or_default();
+        let read = Rc::new(RefLine {
+            at: js_slice(&line, col).to_string(),
+            before: js_prefix(&line, col).to_string(),
+            line: Rc::from(line),
+        });
+        self.ref_line = Some((key, read.clone()));
+        read
+    }
+
     /// The ref's source line, when the reference name sits at its column.
     fn line_at_name(&mut self, r: &ResolveRefIn) -> Option<(String, String)> {
-        let lines = self.read_file(&r.file_path)?;
-        let line = lines.get((r.line - 1).max(0) as usize)?;
-        let col = r.column.max(0) as usize;
-        let at = js_slice(line, col);
-        let after = at.strip_prefix(r.reference_name.as_str())?;
-        Some((js_prefix(line, col).to_string(), after.to_string()))
+        let read = self.ref_line(r);
+        let after = read.at.strip_prefix(r.reference_name.as_str())?;
+        Some((read.before.clone(), after.to_string()))
     }
 
     /// isDotNetTypeRef (name-matcher.ts): a C# / VB.NET reference whose site
@@ -307,17 +339,14 @@ impl KernelResolver {
             return visible;
         }
         if r.language == "rust" && r.reference_kind == "references" {
-            if let Some(lines) = self.read_file(&r.file_path) {
-                if let Some(line) = lines.get((r.line - 1).max(0) as usize) {
-                    let at = js_slice(line, r.column.max(0) as usize);
-                    let via_self = r.reference_name != "Self" && re!(r"^Self\s*::").is_match(at);
-                    let named = at.strip_prefix(&r.reference_name).is_some_and(|tail| !tail.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'));
-                    if via_self || named {
-                        if let Some(hit) = re!(r"^\w+\s*::\s*([A-Z]\w*)").captures(at) {
-                            let variant = hit[1].to_string();
-                            if !self.declares_rust_variant(candidate, &variant) { return false; }
-                        }
-                    }
+            let read = self.ref_line(r);
+            let at = read.at.as_str();
+            let via_self = r.reference_name != "Self" && re!(r"^Self\s*::").is_match(at);
+            let named = at.strip_prefix(&r.reference_name).is_some_and(|tail| !tail.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'));
+            if via_self || named {
+                if let Some(hit) = re!(r"^\w+\s*::\s*([A-Z]\w*)").captures(at) {
+                    let variant = hit[1].to_string();
+                    if !self.declares_rust_variant(candidate, &variant) { return false; }
                 }
             }
         }
@@ -325,10 +354,8 @@ impl KernelResolver {
         let name = r.reference_name.as_str();
         // Bare in the SOURCE: the index keeps `crate::error::Result` by its
         // last segment, and a path is not a prelude lookup.
-        if let Some((before, _)) = self.line_at_name(r) {
-            if re!(r"::\s*$").is_match(&before) {
-                return true;
-            }
+        if re!(r"::\s*$").is_match(&self.ref_line(r).before) {
+            return true;
         }
         if candidate.kind == "enum_member" {
             if r.reference_kind == "references" {

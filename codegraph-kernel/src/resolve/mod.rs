@@ -979,6 +979,9 @@ pub struct KernelResolver {
     file_cache: FileCache,
     /// Trees the iteration and guard inference walk, by language and file.
     tree_cache: TreeCache,
+    /// The last reference's own line read and split (see RefLine): one
+    /// reference is checked against every candidate of its name.
+    ref_line: Option<((String, i64, i64), Rc<name_scope::RefLine>)>,
 }
 
 /// Open `db_path` read-only without ever writing its `-shm` wal-index.
@@ -1250,6 +1253,7 @@ impl KernelResolver {
             python_hierarchies: HashMap::new(),
             python_rebinds: HashMap::new(),
             file_cache: FileCache::new(1024),
+            ref_line: None,
             tree_cache: TreeCache::new(32),
         })
     }
@@ -1267,6 +1271,7 @@ impl KernelResolver {
         self.table.take();
         self.file_cache.clear();
         self.tree_cache.clear();
+        self.ref_line = None;
         self.bindings_cache.clear();
         self.js_objects.clear();
         self.vb = Default::default();
