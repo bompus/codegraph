@@ -13,7 +13,7 @@ import { parseArgs } from 'node:util';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const USAGE = `usage: sync-ab.mjs --corpus DIR --file REL --append TEXT --index DIR --out NEW_DIR
        --arm base=RUNTIME@BUILD --arm cand=RUNTIME@BUILD
-       [--pairs 3] [--controls 2] [--sessions 2] [--band 0.03] [--metric peak|wall|cpu]
+       [--pairs 3] [--controls 2] [--sessions 2] [--band 0] [--metric peak|wall|cpu]
        [--noise FILE] [--save-noise FILE] [--proxies] [--no-relabel] [--allow-work-diff]
        [--max-load 4] [--min-avail-gib 8] [--env KEY=VALUE ...]`;
 
@@ -22,7 +22,7 @@ const { values: o } = parseArgs({
     corpus: { type: 'string' }, file: { type: 'string' }, append: { type: 'string' },
     index: { type: 'string' }, out: { type: 'string' }, arm: { type: 'string', multiple: true },
     pairs: { type: 'string', default: '3' }, controls: { type: 'string', default: '2' },
-    sessions: { type: 'string', default: '2' }, band: { type: 'string', default: '0.03' },
+    sessions: { type: 'string', default: '2' }, band: { type: 'string', default: '0' },
     metric: { type: 'string', default: 'peak' }, noise: { type: 'string' }, 'save-noise': { type: 'string' },
     proxies: { type: 'boolean', default: false }, 'no-relabel': { type: 'boolean', default: false },
     'allow-work-diff': { type: 'boolean', default: false }, 'max-load': { type: 'string', default: '4' },
@@ -276,7 +276,7 @@ for (let s = 1; s <= Number(o.sessions); s++) {
   sessions.push({ pairs, ctl });
   const v = verdicts(sessions);
   if (s === 1 && Number(o.sessions) > 1 && v[o.metric].earlyStop) {
-    console.log(`decided after session 1: every pair is outside the band and twice the control spread on ${o.metric}`);
+    console.log(`decided after session 1: every pair is outside the measured floor and twice the control spread on ${o.metric}`);
     break;
   }
 }

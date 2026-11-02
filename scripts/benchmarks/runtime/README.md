@@ -85,8 +85,9 @@ near-duplicate tables. The order of the two builds alternates within each
 session. A session has `--pairs` before/after pairs (default 3) and
 `--controls` same-build pairs (default 2), whose largest deviation is the
 noise floor. A metric qualifies when every session's median after/before ratio
-lies outside both the `--band` (default 0.03) and that floor, in the same
-direction.
+lies outside the measured noise floor — the larger of the controls' deviation
+and any `--band` declared before the first run; the band defaults to 0, so no
+fixed percentage is added — in the same direction.
 
 It stops early in three cases:
 
@@ -98,7 +99,7 @@ It stops early in three cases:
   it also exits with status 3, unless you pass `--allow-work-diff` for a change
   meant to do less work.
 - **The answer is already clear.** After the first session it stops when every
-  pair lies outside the band and outside twice the control spread on `--metric`
+  pair lies outside the measured floor and outside twice the control spread on `--metric`
   (default `peak`).
 - **The noise floor is already known.** `--noise FILE` reuses the floor that
   `--save-noise` stored for the same host, kernel, runtime version, corpus
