@@ -1574,14 +1574,16 @@ if inferred.is_none() && r.language == "dart" {
                         {
                             return Ok(None);
                         }
-                        // The receiver's declared type is one the project
-                        // doesn't declare (`List<Roshambo> list`, `String s`,
-                        // `val sb = StringBuilder()`), so the method is that
-                        // outside type's: no same-named project method is a
-                        // guess worth making (#3065's Pascal `List.Clear`).
-                        let last = t.rsplit('.').next().unwrap_or(&t).to_string();
-                        if self.undeclared_method_owner(&last, r)? {
-                            return Ok(None);
+                        // A Pascal receiver's declared type the project
+                        // doesn't declare is an outside type: no same-named
+                        // project method is a guess worth making (#3065's
+                        // `List.Clear` on a `TStringList`). Other languages
+                        // keep their own outside-type rules above.
+                        if r.language == "pascal" {
+                            let last = t.rsplit('.').next().unwrap_or(&t).to_string();
+                            if self.undeclared_method_owner(&last, r)? {
+                                return Ok(None);
+                            }
                         }
                     }
                 }
@@ -1937,7 +1939,7 @@ if inferred.is_none() && r.language == "dart" {
             let lua_library = target.len() == 1
                 && matches!(r.language.as_str(), "lua" | "luau")
                 && is_lua_library_call(&object_or_class, &method_name, r, &target[0]);
-            if target.len() == 1 && !narrowed && !scoped_out && target[0].language == r.language && !untyped_unnamed && !lua_library
+            if target.len() == 1 && !narrowed && !(r.language == "kotlin" && scoped_out) && target[0].language == r.language && !untyped_unnamed && !lua_library
                 // A file that gives an object a method of this name itself takes
                 // no lone guess from elsewhere.
                 && !(is_js_family(&r.language)
@@ -1960,7 +1962,7 @@ if inferred.is_none() && r.language == "dart" {
             let ruby_bang_or_predicate = r.language == "ruby"
                 && method_name.ends_with(['!', '?'])
                 && super::call_shape::receiver_link(&object_or_class).starts_with(|c: char| c.is_ascii_lowercase() || c == '_');
-            if (target.len() > 1 || (target.len() == 1 && scoped_out && !narrowed))
+            if (target.len() > 1 || (r.language == "kotlin" && target.len() == 1 && scoped_out && !narrowed))
                 && !(target.len() > 1 && ruby_bang_or_predicate)
             {
                 let receiver_words = split_camel_case(super::call_shape::receiver_link(&object_or_class));
@@ -2372,16 +2374,33 @@ if inferred.is_none() && r.language == "dart" {
             {
                 return probe!(r, "brc:mc-free", self.match_method_call_free(r));
             }
-            // No binding claims the receiver's name — Kotlin's implicit `it`,
-            // a parameter the index never recorded, an unknown variable — so
-            // the ref is no bound call at all: matchMethodCall's name
-            // strategies answer it upstream (the anon-member filter there
-            // keeps an object expression's override out of the running;
-            // `it.ready()` on an unseen `it` is the interface's `ready`). A
-            // name the body itself declares — a named lambda's parameter,
-            // `v -> v.open()` — is bound with or without a row: its refusal
-            // stays terminal.
-            if hit.is_none() && binding.is_none() && !self.body_binds_receiver(root, r)? {
+            // No binding claims a lowercase Kotlin receiver — a parameter the
+            // index never recorded, an unknown variable — so the ref is no
+            // bound call at all: matchMethodCall's name strategies answer it
+            // upstream (the anon-member filter there keeps an object
+            // expression's override out of the running). A name the body
+            // itself declares is bound with or without a row: its refusal
+            // stays terminal. `it` is a lambda's implicit parameter and never
+            // an unbound value.
+            // `it` is a lambda's implicit parameter: it is answered only when
+            // the lambda's call passes a project type. A `let` on a value of
+            // an outside type (`Any`, `Object`) leaves it untyped, and the
+            // name strategies must not guess a project method of that name.
+            let it_untyped = root == "it"
+                && match self.infer_iteration_receiver(root, r)? {
+                    Some(hit) => self.is_undeclared_type_name(
+                        hit.ty.rsplit('.').next().unwrap_or(&hit.ty),
+                        r,
+                    )?,
+                    None => false,
+                };
+            if hit.is_none()
+                && r.language == "kotlin"
+                && root.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+                && !it_untyped
+                && binding.is_none()
+                && !self.body_binds_receiver(root, r)?
+            {
                 return probe!(r, "brc:unbound-recv", self.match_method_call_free(r));
             }
             return Ok(hit);
