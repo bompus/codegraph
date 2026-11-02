@@ -27,6 +27,7 @@ import { detectUnindexedWorktree, unindexedWorktreeNotice } from '../sync/worktr
 import { getTelemetry, ClientInfo } from '../telemetry';
 import { getUpdateNotice } from '../upgrade/update-check';
 import { ExploreSessionState } from './explore-session-state';
+import { IndexVersionWarningState } from './index-version-warning';
 
 /**
  * MCP Server Info — kept on the session because some clients log it. The
@@ -151,6 +152,8 @@ export class MCPSession {
    * the session — a reconnecting client starts clean.
    */
   private readonly exploreSession = new ExploreSessionState();
+  /** One-time stale-index warnings already delivered to this MCP client. */
+  private readonly indexVersionWarnings = new IndexVersionWarningState();
 
   constructor(
     private transport: JsonRpcTransport,
@@ -376,7 +379,12 @@ export class MCPSession {
 
     if (process.env.CODEGRAPH_MCP_DEBUG) process.stderr.write(`[mcp-debug] toolsCall ${toolName} id=${String(request.id)} dispatch\n`);
     const result = await this.engine.getToolHandler().execute(
-      toolName, toolArgs, this.exploreSession, this.exploreMode, this.advertisedMode,
+      toolName,
+      toolArgs,
+      this.exploreSession,
+      this.exploreMode,
+      this.advertisedMode,
+      this.indexVersionWarnings,
     );
     if (process.env.CODEGRAPH_MCP_DEBUG) process.stderr.write(`[mcp-debug] toolsCall ${toolName} id=${String(request.id)} done\n`);
     this.transport.sendResult(request.id, result);
