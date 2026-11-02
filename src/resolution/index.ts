@@ -33,7 +33,7 @@ import { gateSuperSelfCall } from './super-self';
 import { gatePascalCall } from './pascal-scope';
 import { resurrectRefFromDroppedEdge } from './resurrect-ref';
 import { GO_TYPE_KINDS, isGoBareName, isGoUnknownQualified, goTypePositionTarget, goDotImportedSupertype } from './go-type-visibility';
-import { ResolverPool, adaptiveEngageEnabled, minRefsForBulkLoad, minRefsForPool, shouldEngageAdaptively } from './resolver-pool';
+import { POOL_START_WAIT_MS, ResolverPool, adaptiveEngageEnabled, minRefsForBulkLoad, minRefsForPool, poolStartSettled, shouldEngageAdaptively } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
 import { detectFrameworksWithSkips, getResolvingFrameworks } from './frameworks';
 import { clearDeclaredDependencies } from './frameworks/package-deps';
@@ -2472,7 +2472,15 @@ export class ReferenceResolver {
       // needs no post-prerequisite refresh.
       if (supertypesComplete) snapshotComplete = true;
       try {
-        await pool.ready();
+        // A bounded wait: a pool that doesn't come up leaves the run on its
+        // own thread, as it would with no pool (upstream 4e96d759).
+        let started = false;
+        const start = pool.ready().then(
+          () => { started = true; },
+          (err: unknown) => { throw err; },
+        );
+        await poolStartSettled(start);
+        if (!started) throw new Error(`resolver pool did not start within ${POOL_START_WAIT_MS}ms`);
         poolReady = true;
         if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[pool-timing] pool ready after ${Date.now() - t0}ms`);
       } catch (err) {

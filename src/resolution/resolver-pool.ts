@@ -105,6 +105,24 @@ export const ADAPTIVE_ENGAGE_MIN_REFS = 20_000;
 export const ADAPTIVE_ENGAGE_RESOLVE_MS = 400;
 
 /**
+ * The longest a run that starts the pool before its first batch waits for it, in
+ * ms. A full index's workers are up in a second or two; a sync's detect the
+ * project's frameworks for themselves, which can read every source file. Past
+ * this the run goes on on its own thread, as it would with no pool.
+ */
+export const POOL_START_WAIT_MS = 30_000;
+
+/** Waits for a pool's start to settle, however it goes, for at most POOL_START_WAIT_MS. */
+export async function poolStartSettled(start: Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    start.catch(() => undefined),
+    new Promise<void>((resolve) => { timer = setTimeout(resolve, POOL_START_WAIT_MS); }),
+  ]);
+  clearTimeout(timer);
+}
+
+/**
  * Whether the resolve loop should boot the pool mid-run. The fixed ref-count
  * gate (minRefsForPool) cannot see per-ref cost; this projects the remaining
  * main-thread kernel time from the rate the loop has measured so far.
@@ -146,6 +164,8 @@ export class ResolverPool {
   // checkpoint isn't pinned by continuous pool reads.
   private paused = false;
   private failed: Error | null = null;
+  /** Fail the workers still starting: a failure is a pool that will never be ready. */
+  private failStarts: Array<(err: Error) => void> = [];
   private opened = false;
 
   /**
@@ -308,6 +328,7 @@ export class ResolverPool {
         readyResolve = resolve;
         readyReject = reject;
       });
+      this.failStarts.push(readyReject);
       const pw: PoolWorker = { worker, ready, started, busy: 0 };
       worker.on('message', (msg: { type: string; id?: number; message?: string; edges?: Edge[]; ms?: number; skips?: Array<[string, string, string]> } & Partial<ChunkResult>) => {
         if (msg.type === 'ready') {
@@ -371,10 +392,9 @@ export class ResolverPool {
         readyReject(this.failed!);
       });
       worker.on('exit', (code) => {
-        if (code !== 0) {
-          this.fail(new Error(`resolver worker exited with code ${code}`));
-          readyReject(this.failed!);
-        }
+        if (code !== 0) this.fail(new Error(`resolver worker exited with code ${code}`));
+        // Gone before it said ready, it never will. Once it has, this does nothing.
+        readyReject(this.failed ?? new Error('resolver worker exited before it was ready'));
       });
       this.workers.push(pw);
     }
@@ -382,6 +402,7 @@ export class ResolverPool {
 
   private fail(err: Error): void {
     if (!this.failed) this.failed = err;
+    for (const failStart of this.failStarts) failStart(this.failed);
     for (const [, waiter] of this.waiters) waiter.reject(this.failed);
     this.waiters.clear();
     for (const item of this.pendingChunks) item.reject(this.failed);
