@@ -38,6 +38,13 @@ fn platform_supers(name: &str) -> &'static [&'static str] {
 impl KernelResolver {
     fn kotlin_frames(&mut self, file: &str) -> Rc<Vec<KotlinFrame>> {
         if let Some(hit) = self.kotlin_frames_memo.get(file) { return hit.clone(); }
+        // Typing a DSL lambda's receiver can resolve a local bound to a call,
+        // which asks for this same file's frames while they are still being
+        // built (javalin's `(1..n).map { … }` in a property initializer that
+        // calls a function of the same class). An empty set stands in while
+        // the scan runs, so the lookup terminates instead of recursing until
+        // the stack is gone.
+        self.kotlin_frames_memo.insert(file.to_string(), Rc::new(Vec::new()));
         let frames = Rc::new(self.scan_kotlin_frames(file, true));
         self.kotlin_frames_memo.insert(file.to_string(), frames.clone()); frames
     }
