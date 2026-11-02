@@ -1383,13 +1383,29 @@ if inferred.is_none() && r.language == "dart" {
                     return Ok(Some(hit));
                 }
             }
+            // A bare Ruby name that is a method of the class around the call,
+            // taking no arguments and handing back what one class makes
+            // (`@jar ||= Jar.build(…)`), types the call on it.
+            if inferred.is_none() && r.language == "ruby" && !object_or_class.contains('.') {
+                inferred = self.ruby_bare_method_return_type(&object_or_class, r)?;
+            }
             // Ruby: the receiver's class as written (`x = Other::Sub.new`),
             // found by constant lookup from the site, settles the call on it
-            // or its ancestry; the normalized `Sub` could be any `Sub`.
+            // or its ancestry; a known class with no such method is no
+            // namesake's.
             if inferred.is_some() && r.language == "ruby" {
                 if let Some(raw) = self.infer_local_receiver_type(&object_or_class, r, true)? {
-                    if let Some(qn) = self.ruby_lexical_constant(&raw, r)? {
-                        return self.resolve_method_on_qualified_type(&qn, &method_name, r, 0.9, "instance-method");
+                    let scope = self.ruby_scope_at(r)?;
+                    let looked = self.ruby_constant_qn(&raw, &scope)?;
+                    let known = self.nodes_by_qualified_name(&looked)?.iter().any(|n| {
+                        n.language == "ruby" && matches!(n.kind.as_str(), "class" | "module")
+                    });
+                    if known || self.nodes_by_name(raw.rsplit("::").next().unwrap_or(&raw))?.iter().any(|n| {
+                        n.language == "ruby" && matches!(n.kind.as_str(), "class" | "module")
+                    }) {
+                        return Ok(self
+                            .ruby_instance_method_of(&raw, &method_name, r)?
+                            .map(|node| KCand { node, confidence: 0.9, resolved_by: "instance-method" }));
                     }
                 }
             }
@@ -1842,7 +1858,10 @@ if inferred.is_none() && r.language == "dart" {
             if super::call_shape::is_std_method(&r.language, &method_name)
                 && !matches!(object_or_class.as_str(), "self" | "Self" | "this" | "base") {
                 let mut kept=Vec::new();
-                for n in target {if self.dart_receiver_names_owner(super::call_shape::receiver_link(&object_or_class),&n)? {kept.push(n);}}
+                let link = super::call_shape::receiver_link(&object_or_class);
+                for n in target {
+                    if if r.language == "ruby" { ruby_receiver_names_owner(link, &n) } else { self.dart_receiver_names_owner(link, &n)? } { kept.push(n); }
+                }
                 target=kept;
             }
             let target = &target;
@@ -1907,6 +1926,10 @@ if inferred.is_none() && r.language == "dart" {
                 let mut best_score = 0i64;
                 let mut tied = Vec::new();
                 for m in &ordered {
+                    if r.language == "ruby" && super::call_shape::is_std_method("ruby", &method_name)
+                        && !ruby_receiver_names_owner(super::call_shape::receiver_link(&object_or_class), m) {
+                        continue;
+                    }
                     let owner = m.qualified_name.rsplit_once("::").map(|(p, _)| p.rsplit([':', '.']).next().unwrap_or("")).unwrap_or("");
                     let class_words = split_camel_case(owner);
                     let double = re!(r"(?i)\b(?:fake|mock|mocked|stub|dummy|spy)\b");
@@ -2129,7 +2152,10 @@ if inferred.is_none() && r.language == "dart" {
             // method (`def self.m`) when it and `def m` share the qualified
             // name, then the owner's Ruby ancestry (#2834).
             if c.language == "ruby" {
-                if let Some((found, own)) = self.ruby_method_of(&c.qualified_name, method, r, "class")? {
+                // A written class name is a call on the class (`Company.create`,
+                // class methods); a capitalized value receiver is an instance.
+                let kind = if resolved_by == "qualified-name" { "class" } else { "value" };
+                if let Some((found, own)) = self.ruby_method_of(&c.qualified_name, method, r, kind)? {
                     return Ok(Some(KCand { node: found, confidence: if own { confidence } else { 0.8 }, resolved_by }));
                 }
                 continue;
@@ -2694,6 +2720,23 @@ pub(super) fn shares_receiver_word(receiver: &str, method: &KNode) -> bool {
     }
     let owner: HashSet<String> = split_camel_case(owner_qn).iter().map(|w| flat(w)).filter(|w| w.len() > 2).collect();
     split_camel_case(receiver).iter().any(|w| owner.contains(&flat(w)))
+}
+
+/// receiverNamesOwner's Ruby arm: a receiver word names the class's own
+/// last-word only, not a module around it — `Sinatra::Cookies::Jar` is no
+/// `bad_cookies`.
+pub(super) fn ruby_receiver_names_owner(receiver: &str, method: &KNode) -> bool {
+    let Some(cut) = method.qualified_name.rfind("::") else { return false };
+    let owner = &method.qualified_name[..cut];
+    let flat = |w: &str| -> String {
+        w.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase()
+    };
+    let owner_last = re!(r"::|\.").split(owner).last().unwrap_or("");
+    let receiver_last = receiver.rsplit('.').next().unwrap_or("");
+    // The core method name says nothing of a value: only a receiver named
+    // after the owner itself is it — `bad_cookies` is no `Jar`, and
+    // `options` no `InheritableOptions`.
+    flat(receiver_last) == flat(owner_last)
 }
 
 /// isOtherLanguageConstructor (name-matcher.ts): a constructor node of

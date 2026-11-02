@@ -4,6 +4,7 @@
 //! rule only removes candidates; none picks one.
 
 use super::*;
+use super::ruby_paths::ruby_methods_of_kind_first;
 
 const DART_EXTENSION_RANK: u32 = 1000;
 const DART_UNREACHED: u32 = u32::MAX;
@@ -563,57 +564,258 @@ impl KernelResolver {
         if here.kind != "class" {
             return Ok(true);
         }
-        Ok(self.ruby_ancestry(&here.qualified_name)?.contains(&method.qualified_name[..cut]))
+        Ok(self.ruby_ancestry(&here.qualified_name)?.iter().any(|q| q == &method.qualified_name[..cut]))
     }
 
-    /// rubyAncestry: a class's qualified name, its superclasses', and those of
-    /// every module mixed into any of them (at most 60).
-    pub(super) fn ruby_ancestry(&mut self, qn: &str) -> Res<Rc<HashSet<String>>> {
-        if let Some(hit) = self.ruby_ancestry_memo.get(qn) {
+    /// rubyMixinsOf: what one declaration of a Ruby class or module mixes in,
+    /// each list in Ruby's lookup order (the module mixed in last first), and
+    /// its superclass. Read from its own body; a class nested in it has its
+    /// own mixins.
+    pub(super) fn ruby_mixins_of(&mut self, decl: &KNode) -> Res<Rc<RubyMixins>> {
+        if let Some(hit) = self.ruby_mixins_memo.get(&decl.id) {
             return Ok(hit.clone());
         }
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut queue: VecDeque<String> = VecDeque::from([qn.to_string()]);
-        while seen.len() < 60 {
-            let Some(q) = queue.pop_front() else { break };
-            if !seen.insert(q.clone()) {
-                continue;
+        let mut found = RubyMixins::default();
+        if let Some(lines) = self.read_file(&decl.file_path) {
+            let q = decl.qualified_name.clone();
+            let nested: Vec<(i64, i64)> = self
+                .nodes_in_file(&decl.file_path)?
+                .iter()
+                .filter(|n| {
+                    matches!(n.kind.as_str(), "class" | "module")
+                        && n.id != decl.id
+                        && n.start_line > decl.start_line
+                        && n.end_line < decl.end_line
+                })
+                .map(|n| (n.start_line, n.end_line))
+                .collect();
+            let outer = q.rfind("::").map_or("", |i| &q[..i]).to_string();
+            let header = lines.get((decl.start_line - 1).max(0) as usize).map(String::as_str).unwrap_or("");
+            if let Some(sup) = re!(r"^\s*class\s+[A-Za-z0-9_:]+\s*<\s*(::)?([A-Z][A-Za-z0-9_:]*)").captures(header) {
+                let scope = if sup.get(1).is_some() { String::new() } else { outer };
+                found.superclass = Some(self.ruby_constant_qn(&sup[2], &scope)?);
+            }
+            for i in decl.start_line..decl.end_line {
+                let line_no = i + 1;
+                if nested.iter().any(|(start, end)| *start <= line_no && line_no <= *end) {
+                    continue;
+                }
+                let Some(line) = lines.get(i as usize) else { continue };
+                let Some((kind, names)) = ruby_mixin_kind(line) else { continue };
+                let mut qns = Vec::with_capacity(names.len());
+                for name in names {
+                    let target = match name.strip_prefix("::") {
+                        Some(root) => self.ruby_constant_qn(root, "")?,
+                        None => self.ruby_constant_qn(&name, &q)?,
+                    };
+                    qns.push(target);
+                }
+                let list = match kind {
+                    "prepend" => &mut found.prepended,
+                    "extend" => &mut found.extended,
+                    _ => &mut found.included,
+                };
+                // `unshift(...names)`: later lines come before earlier ones.
+                qns.extend(std::mem::take(list));
+                *list = qns;
+            }
+        }
+        let found = Rc::new(found);
+        self.ruby_mixins_memo.insert(decl.id.clone(), found.clone());
+        Ok(found)
+    }
+
+    fn ruby_visit_ancestor(
+        &mut self,
+        q: &str,
+        instance: bool,
+        seen: &mut HashSet<String>,
+        order: &mut Vec<String>,
+    ) -> Res<()> {
+        if seen.contains(q) || seen.len() >= 250 {
+            return Ok(());
+        }
+        seen.insert(q.to_string());
+        let mixins: Vec<Rc<RubyMixins>> = self
+            .nodes_by_qualified_name(q)?
+            .iter()
+            .filter(|d| d.language == "ruby" && matches!(d.kind.as_str(), "class" | "module"))
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|decl| self.ruby_mixins_of(&decl))
+            .collect::<Res<Vec<_>>>()?;
+        for m in &mixins {
+            for p in &m.prepended {
+                self.ruby_visit_ancestor(p, instance, seen, order)?;
+            }
+        }
+        if !order.iter().any(|o| o == q) {
+            order.push(q.to_string());
+        }
+        for m in &mixins {
+            for i in &m.included {
+                self.ruby_visit_ancestor(i, instance, seen, order)?;
+            }
+            if !instance {
+                for e in &m.extended {
+                    self.ruby_visit_ancestor(e, instance, seen, order)?;
+                }
+            }
+        }
+        for m in &mixins {
+            if let Some(s) = &m.superclass {
+                self.ruby_visit_ancestor(s, instance, seen, order)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// rubyAncestry: a class's qualified name, its superclasses', and every
+    /// module mixed into any of them, in the order Ruby looks a method up.
+    /// For what an instance answers, a module the class `extend`s is left out.
+    pub(super) fn ruby_ancestry_ordered(&mut self, qn: &str, instance: bool) -> Res<Rc<Vec<String>>> {
+        let key = if instance { format!("instance {qn}") } else { qn.to_string() };
+        if let Some(hit) = self.ruby_ancestry_memo.get(&key) {
+            return Ok(hit.clone());
+        }
+        let mut seen = HashSet::new();
+        let mut order = Vec::new();
+        self.ruby_visit_ancestor(qn, instance, &mut seen, &mut order)?;
+        let order = Rc::new(order);
+        self.ruby_ancestry_memo.insert(key, order.clone());
+        Ok(order)
+    }
+
+    pub(super) fn ruby_ancestry(&mut self, qn: &str) -> Res<Rc<Vec<String>>> {
+        self.ruby_ancestry_ordered(qn, false)
+    }
+
+    /// The methods `name` the class or module `owner` declares itself.
+    pub(super) fn ruby_methods_named(&mut self, owner: &str, name: &str) -> Res<Vec<Arc<KNode>>> {
+        let mut methods: Vec<Arc<KNode>> = self
+            .nodes_by_qualified_name(&format!("{owner}::{name}"))?
+            .iter()
+            .filter(|n| n.language == "ruby" && n.kind == "method")
+            .cloned()
+            .collect();
+        methods.sort_by_key(|n| n.start_line);
+        Ok(methods)
+    }
+
+    /// The class method `name` a Ruby class answers past its own: up its
+    /// superclasses, a `def self.` of theirs, an instance method of a module
+    /// one of them `extend`s, or of the `ClassMethods` a module they include
+    /// brings along (ActiveSupport::Concern). Never an instance method of a
+    /// module they include, nor a `def self.` of one.
+    pub(super) fn ruby_class_method_of(&mut self, qn: &str, name: &str) -> Res<Option<Arc<KNode>>> {
+        let mut seen = HashSet::new();
+        let mut cls = Some(qn.to_string());
+        while let Some(current) = cls {
+            if !seen.insert(current.clone()) {
+                break;
             }
             let decls: Vec<Arc<KNode>> = self
-                .nodes_by_qualified_name(&q)?
+                .nodes_by_qualified_name(&current)?
                 .iter()
-                .filter(|d| d.language == "ruby" && matches!(d.kind.as_str(), "class" | "module"))
+                .filter(|n| n.language == "ruby" && matches!(n.kind.as_str(), "class" | "module"))
                 .cloned()
                 .collect();
-            for decl in decls {
-                let Some(lines) = self.read_file(&decl.file_path) else { continue };
-                let outer = q.rfind("::").map_or("", |i| &q[..i]).to_string();
-                let header = lines.get((decl.start_line - 1).max(0) as usize).map(String::as_str).unwrap_or("");
-                if let Some(sup) = re!(r"^\s*class\s+[A-Za-z0-9_:]+\s*<\s*(::)?([A-Z][A-Za-z0-9_:]*)").captures(header) {
-                    let scope = if sup.get(1).is_some() { String::new() } else { outer.clone() };
-                    let name = sup[2].to_string();
-                    queue.push_back(self.ruby_constant_qn(&name, &scope)?);
+            if current != qn {
+                if let Some(own) = self.ruby_methods_named(&current, name)?.iter().find(|n| n.is_static).cloned() {
+                    return Ok(Some(own));
                 }
-                let from = (decl.start_line.max(0) as usize).min(lines.len());
-                let to = (decl.end_line.max(0) as usize).min(lines.len());
-                let mixes: Vec<String> = lines[from..to.max(from)]
-                    .iter()
-                    .filter_map(|line| ruby_mixin_list(line))
-                    .collect();
-                for mix in mixes {
-                    for name in re!(r"\s*,\s*").split(&mix) {
-                        let target = match name.strip_prefix("::") {
-                            Some(root) => self.ruby_constant_qn(root, "")?,
-                            None => self.ruby_constant_qn(name, &q)?,
-                        };
-                        queue.push_back(target);
+            }
+            for decl in &decls {
+                let mixins = self.ruby_mixins_of(decl)?;
+                for module in &mixins.extended {
+                    for owner in self.ruby_ancestry_ordered(module, true)?.iter() {
+                        if let Some(m) = self.ruby_methods_named(owner, name)?.iter().find(|n| !n.is_static).cloned() {
+                            return Ok(Some(m));
+                        }
+                    }
+                }
+                for module in &mixins.included {
+                    for owner in self.ruby_ancestry_ordered(module, true)?.iter() {
+                        if let Some(m) = self.ruby_methods_named(&format!("{owner}::ClassMethods"), name)?.iter().find(|n| !n.is_static).cloned() {
+                            return Ok(Some(m));
+                        }
                     }
                 }
             }
+            cls = decls.iter().find_map(|d| self.ruby_mixins_of(d).ok().and_then(|m| m.superclass.clone()));
         }
-        let seen = Rc::new(seen);
-        self.ruby_ancestry_memo.insert(qn.to_string(), seen.clone());
-        Ok(seen)
+        Ok(None)
+    }
+
+    /// rubyAncestorMethod: the method `name` a Ruby class reaches past its
+    /// own, through its real superclass and mixins in Ruby's order.
+    pub(super) fn ruby_ancestor_method(&mut self, qn: &str, name: &str, kind: Option<&str>) -> Res<Option<Arc<KNode>>> {
+        if kind == Some("class") {
+            return self.ruby_class_method_of(qn, name);
+        }
+        for owner in self.ruby_ancestry_ordered(qn, false)?.iter() {
+            if owner == qn {
+                continue;
+            }
+            let methods = self.ruby_methods_named(owner, name)?;
+            let reached = methods.iter().find(|n| !n.is_static).cloned().or_else(|| {
+                self.nodes_by_qualified_name(owner).ok().is_some_and(|ds| ds.iter().any(|d| d.kind == "class"))
+                    .then(|| methods.first().cloned()).flatten()
+            });
+            if let Some(reached) = reached {
+                return Ok(Some(reached));
+            }
+        }
+        Ok(None)
+    }
+
+    /// rubyInstanceMethodOf: the instance method `name` a value of the Ruby
+    /// class written `type_name` answers from its ancestors — the class
+    /// Ruby's constant lookup finds there, then its superclasses and the
+    /// modules they include.
+    pub(super) fn ruby_instance_method_of(&mut self, type_name: &str, name: &str, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        let scope = self.ruby_scope_at(r)?;
+        let looked = self.ruby_constant_qn(type_name, &scope)?;
+        let known = self
+            .nodes_by_qualified_name(&looked)?
+            .iter()
+            .any(|n| n.language == "ruby" && matches!(n.kind.as_str(), "class" | "module"));
+        let classes: Vec<String> = if known {
+            vec![looked]
+        } else {
+            let short = type_name.rsplit("::").next().unwrap_or(type_name);
+            let mut qns: Vec<String> = Vec::new();
+            for n in self.nodes_by_name(short)?.iter() {
+                if n.language == "ruby" && matches!(n.kind.as_str(), "class" | "module") && !qns.contains(&n.qualified_name) {
+                    qns.push(n.qualified_name.clone());
+                }
+            }
+            qns
+        };
+        for qn in classes {
+            for owner in self.ruby_ancestry_ordered(&qn, true)?.iter() {
+                let methods = self.ruby_methods_named(owner, name)?;
+                if let Some(m) = ruby_methods_of_kind_first(methods, "instance").into_iter().next() {
+                    return Ok(Some(m));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// The qualified name of the innermost class or module around `r`.
+    pub(super) fn ruby_scope_at(&mut self, r: &ResolveRefIn) -> Res<String> {
+        let mut inner: Option<Arc<KNode>> = None;
+        for n in self.nodes_in_file(&r.file_path)?.iter() {
+            if n.language != "ruby" || !matches!(n.kind.as_str(), "class" | "module") || n.start_line > r.line || n.end_line < r.line {
+                continue;
+            }
+            if inner.as_ref().is_none_or(|i| (n.end_line - n.start_line) < (i.end_line - i.start_line)) {
+                inner = Some(n.clone());
+            }
+        }
+        Ok(inner.map(|i| i.qualified_name.clone()).unwrap_or_default())
     }
 
     /// The Ruby class or module a constant written at `r` names, by lexical
@@ -689,7 +891,7 @@ impl KernelResolver {
 
     /// rubyConstantQn: the class or module a constant written inside `scope`
     /// names — the nearest enclosing namespace that has it, else the name.
-    fn ruby_constant_qn(&mut self, name: &str, scope: &str) -> Res<String> {
+    pub(super) fn ruby_constant_qn(&mut self, name: &str, scope: &str) -> Res<String> {
         let mut prefix = scope.to_string();
         loop {
             let qn = if prefix.is_empty() { name.to_string() } else { format!("{prefix}::{name}") };
@@ -964,19 +1166,31 @@ impl KernelResolver {
     }
 }
 
-/// The constants an `include` / `extend` / `prepend` line names, comma
-/// separated. A module a call returns (`include RouteSet.new.tap { … }.url_helpers`)
-/// is no mixin of the constant the call starts at: the list ends before a
-/// name that is followed by a `.` or `(`, as a name's own trailing word
-/// characters never do.
-fn ruby_mixin_list(line: &str) -> Option<String> {
-    let m = re!(r"^\s*(?:include|extend|prepend)\s+([A-Z:][A-Za-z0-9_:]*(?:\s*,\s*[A-Z:][A-Za-z0-9_:]*)*)").captures(line)?;
-    let whole = m.get(1)?;
-    let mut names: Vec<&str> = re!(r"\s*,\s*").split(whole.as_str()).collect();
-    let rest = line[whole.end()..].trim_start();
-    if rest.starts_with(['.', '(']) {
-        // Backtracking drops the last name; the one before it is followed by `,`.
+
+
+/// What one declaration of a Ruby class or module adds to its ancestors, each
+/// list in the order Ruby looks there.
+#[derive(Default)]
+pub(super) struct RubyMixins {
+    pub(super) prepended: Vec<String>,
+    pub(super) included: Vec<String>,
+    pub(super) extended: Vec<String>,
+    pub(super) superclass: Option<String>,
+}
+
+/// The keyword and constants an `include` / `extend` / `prepend` line names.
+/// A module a call returns (`include RouteSet.new.tap { … }.url_helpers`) is
+/// no mixin of the constant the call starts at.
+fn ruby_mixin_kind(line: &str) -> Option<(&'static str, Vec<String>)> {
+    let m = re!(r"^\s*(include|extend|prepend)\s+([A-Z:][A-Za-z0-9_:]*(?:\s*,\s*[A-Z:][A-Za-z0-9_:]*)*)(.*)$").captures(line)?;
+    let kind = match &m[1] {
+        "prepend" => "prepend",
+        "extend" => "extend",
+        _ => "include",
+    };
+    let mut names: Vec<String> = re!(r"\s*,\s*").split(&m[2]).map(str::to_string).collect();
+    if m.get(3).is_some_and(|rest| rest.as_str().trim_start().starts_with(['.', '('])) {
         names.pop();
     }
-    (!names.is_empty()).then(|| names.join(","))
+    (!names.is_empty()).then_some((kind, names))
 }

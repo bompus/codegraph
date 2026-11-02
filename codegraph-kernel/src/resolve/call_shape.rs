@@ -189,12 +189,28 @@ const PYTHON_STD_METHODS: &[&str] = &[
     "flush", "group", "groups", "match", "search", "sub", "findall", "fullmatch",
 ];
 
+/// Ruby's core `?` and `!` methods: nearly every receiver answers them, so
+/// the one project method of such a name says nothing about one.
+const RUBY_STD_METHODS: &[&str] = &[
+    "nil?", "is_a?", "kind_of?", "instance_of?", "respond_to?", "frozen?", "equal?", "eql?", "instance_variable_defined?",
+    "between?", "zero?", "positive?", "negative?", "nonzero?", "even?", "odd?", "finite?", "infinite?", "nan?", "integer?",
+    "empty?", "any?", "all?", "none?", "one?", "include?", "member?", "key?", "has_key?", "value?", "has_value?", "cover?",
+    "disjoint?", "intersect?", "subset?", "superset?", "proper_subset?", "proper_superset?",
+    "start_with?", "end_with?", "match?", "ascii_only?", "valid_encoding?", "casecmp?",
+    "eof?", "closed?", "tty?", "exist?", "file?", "directory?", "absolute?", "relative?", "alive?", "lambda?",
+    "blank?", "present?",
+    "merge!", "map!", "collect!", "select!", "filter!", "reject!", "compact!", "flatten!", "uniq!", "sort!", "sort_by!",
+    "reverse!", "rotate!", "shuffle!", "slice!", "transform_keys!", "transform_values!", "gsub!", "sub!", "strip!",
+    "lstrip!", "rstrip!", "chomp!", "chop!", "squeeze!", "upcase!", "downcase!", "capitalize!", "swapcase!", "tr!",
+    "delete!", "next!", "succ!", "encode!", "scrub!", "delete_prefix!", "delete_suffix!",
+];
+
 pub(super) fn is_std_method(language: &str, name: &str) -> bool {
     if language == "vbnet" { return CSHARP_STD_METHODS.iter().any(|m| m.eq_ignore_ascii_case(name)); }
     match language {
         "rust" => RUST_STD_METHODS, "go" => GO_STD_METHODS,
         "kotlin" => KOTLIN_STD_METHODS, "csharp" => CSHARP_STD_METHODS, "dart" => DART_STD_METHODS,
-        "scala" => SCALA_STD_METHODS, "java" => JAVA_STD_METHODS, "python" => PYTHON_STD_METHODS,
+        "scala" => SCALA_STD_METHODS, "java" => JAVA_STD_METHODS, "python" => PYTHON_STD_METHODS, "ruby" => RUBY_STD_METHODS,
         _ => &[],
     }.contains(&name)
 }

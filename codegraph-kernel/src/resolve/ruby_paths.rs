@@ -245,22 +245,102 @@ impl KernelResolver {
             .filter(|n| n.language == "ruby" && n.kind == "method" && !(production && super::resolver_upstream::test_suite_path(&n.file_path)))
             .cloned()
             .collect();
-        if let Some(m) = ruby_methods_of_kind_first(ruby_ordered(own, r), kind).into_iter().next() {
+        let own_pick = if kind == "value" {
+            ruby_ordered(own, r).into_iter().next()
+        } else {
+            ruby_methods_of_kind_first(ruby_ordered(own, r), kind).into_iter().next()
+        };
+        if let Some(m) = own_pick {
             return Ok(Some((m, true)));
         }
-        let ancestry = self.ruby_ancestry(owner_qn)?;
-        let mut ancestors: Vec<&String> = ancestry.iter().filter(|q| q.as_str() != owner_qn).collect();
-        ancestors.sort();
-        for qn in ancestors {
-            let found: Vec<Arc<KNode>> = self
-                .nodes_by_qualified_name(&format!("{qn}::{name}"))?
-                .iter()
-                .filter(|n| n.language == "ruby" && n.kind == "method" && !(production && super::resolver_upstream::test_suite_path(&n.file_path)))
-                .cloned()
-                .collect();
-            if let Some(m) = ruby_methods_of_kind_first(ruby_ordered(found, r), kind).into_iter().next() {
-                return Ok(Some((m, false)));
+        let found = if kind == "class" {
+            self.ruby_class_method_of(owner_qn, name)?
+        } else if kind == "value" {
+            self.ruby_ancestor_method(owner_qn, name, None)?
+        } else {
+            self.ruby_ancestor_method(owner_qn, name, Some("instance"))?
+        };
+        Ok(found.map(|m| (m, false)))
+    }
+
+    /// Whether the calling Ruby method binds `name` itself: a parameter, a
+    /// local assignment above the call, or a block variable.
+    fn ruby_name_is_local(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
+        let Some(lines) = self.read_file(&r.file_path) else { return Ok(false) };
+        let caller = self
+            .nodes_in_file(&r.file_path)?
+            .iter()
+            .filter(|n| {
+                matches!(n.kind.as_str(), "method" | "function")
+                    && n.language == "ruby"
+                    && n.start_line <= r.line
+                    && n.end_line >= r.line
+            })
+            .min_by_key(|n| n.end_line - n.start_line)
+            .cloned();
+        let Some(caller) = caller else { return Ok(false) };
+        let from = (caller.start_line - 1).max(0) as usize;
+        let to = ((r.line - 1).max(0) as usize).min(lines.len());
+        let mut head = lines[from.min(to)..to.min(lines.len())].join("\n");
+        // The call's own line up to the reference: a block's `|cookies|`.
+        if let Some(line) = lines.get(to) {
+            let upto = super::names::js_unit_to_byte(line, r.column.max(0) as usize);
+            head.push('\n');
+            head.push_str(&line[..upto.min(line.len())]);
+        }
+        let word = regex::escape(name);
+        if re!(r"(?m)^\s*def\s+[A-Za-z_]").is_match(&head) {
+            if let Some(c) = re!(r"(?s)def\s+[A-Za-z_]\w*[!?=]?\s*\(([^)]*)\)").captures(&head) {
+                let target = Self::cached_regex(&format!(r"(?-u:\b){word}(?-u:\b)"))?;
+                if target.is_match(&c[1]) {
+                    return Ok(true);
+                }
             }
+        }
+        let assign = Self::cached_regex(&format!(r"(?m)^\s*{word}\s*=\s*(?:[^=]|$)"))?;
+        let block = Self::cached_regex(&format!(r"\|\s*[^|]*?(?-u:\b){word}(?-u:\b)[^|]*?\|"))?;
+        Ok(assign.is_match(&head) || block.is_match(&head))
+    }
+
+    /// The class a bare Ruby method of the enclosing class hands back:
+    /// `cookies` → `Cookies::CookieJar.build(…)` or `CookieJar.new(…)`. Only a
+    /// method taking no arguments, and only a class the project declares.
+    pub(super) fn ruby_bare_method_return_type(&mut self, receiver: &str, r: &ResolveRefIn) -> Res<Option<String>> {
+        if let Some(b) = self.receiver_binding(receiver, r)? {
+            if b.kind != "import" {
+                return Ok(None);
+            }
+        }
+        // A parameter, a block variable or a local of the calling method
+        // binds the name itself: the method of the class is not it.
+        if self.ruby_name_is_local(receiver, r)? {
+            return Ok(None);
+        }
+        let Some(owner) = self.ruby_innermost_namespace(r)? else { return Ok(None) };
+        for qn in self.ruby_ancestry_ordered(&owner.qualified_name, true)?.iter() {
+            let methods = self.ruby_methods_named(qn, receiver)?;
+            let Some(method) = methods.iter().find(|m| !m.is_static) else { continue };
+            let Some(lines) = self.read_file(&method.file_path) else { return Ok(None) };
+            let from = (method.start_line - 1).max(0) as usize;
+            let to = (method.start_line + 7).max(0) as usize;
+            let head = lines[from.min(to)..to.min(lines.len())].join("\n");
+            if let Some(c) = re!(r"(?s)^\s*def\s+[A-Za-z_]\w*[!?=]?\s*\(([^)]*)\)").captures(&head) {
+                if !c[1].trim().is_empty() {
+                    return Ok(None);
+                }
+            } else if !re!(r"(?m)^\s*def\s+[A-Za-z_]\w*[!?=]?\s*(?:\(\s*\))?\s*$").is_match(&head) {
+                return Ok(None);
+            }
+            let body = lines[from.min(to)..((method.end_line.max(0) as usize).clamp(from, lines.len()))].join("\n");
+            let Some(made) = re!(r"(?-u:\b)(\\?[A-Z][A-Za-z0-9_:\\]*)\s*\.\s*(?:build|new)\s*\(").captures(&body).map(|c| c[1].to_string()) else {
+                return Ok(None);
+            };
+            let target = match made.strip_prefix("::") {
+                Some(root) => self.ruby_constant_qn(root, "")?,
+                None => self.ruby_constant_qn(&made, qn)?,
+            };
+            let known = self.nodes_by_qualified_name(&target)?.iter().any(|n| n.language == "ruby" && n.kind == "class");
+            return Ok(known.then_some(made));
         }
         Ok(None)
     }

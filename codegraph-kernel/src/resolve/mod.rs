@@ -851,7 +851,8 @@ pub struct KernelResolver {
     /// Python module-global typing (python_globals.rs).
     py_globals: python_globals::PyGlobalsMemo,
     /// rubyAncestry, by class qualified name.
-    ruby_ancestry_memo: HashMap<String, Rc<HashSet<String>>>,
+    ruby_ancestry_memo: HashMap<String, Rc<Vec<String>>>,
+    ruby_mixins_memo: HashMap<String, Rc<lang_scope::RubyMixins>>,
     /// cfmlChain, by component file.
     cfml_chain_memo: HashMap<String, Rc<HashSet<String>>>,
     /// csharpSupertypesOf, by type name.
@@ -1181,6 +1182,7 @@ impl KernelResolver {
             py_field_facts_memo: HashMap::new(),
             py_globals: Default::default(),
             ruby_ancestry_memo: HashMap::new(),
+            ruby_mixins_memo: HashMap::new(),
             cfml_chain_memo: HashMap::new(),
             csharp_supers_memo: HashMap::new(),
             csharp_static_usings_memo: HashMap::new(),
