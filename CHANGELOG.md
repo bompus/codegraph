@@ -99,6 +99,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Installers can start or reuse a checkout's active watcher without replacing existing writers, and MCP launchers can preserve existing daemons across reconnects with `--preserve-existing`.
 
 - Ordinary watcher startup can initialize a missing project index under daemon ownership and waits for fresh file indexing and queued synthesized edges before reporting readiness.
+- CodeIgniter 3 projects are now understood: every controller method and `routes.php` entry becomes a route, HMVC modules included, and calls through what `$this->load` loads, like `$this->user_model->find($id)`, link to the method they reach, so `codegraph_explore` can follow a request from its route through the model and into the view. Thanks @darkspock.
 
 ### Fixes
 
