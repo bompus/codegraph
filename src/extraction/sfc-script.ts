@@ -24,6 +24,14 @@ export function sfcScriptLanguage(attrs: string, host: Language): Language {
   return 'javascript';
 }
 
+/**
+ * A `<script>` element of a Vue, Svelte or Astro file: group 1 its opening
+ * tag's attributes, `content` its body. A self-closing tag is matched on its
+ * own, with no `content`. Shared by the extractors and the viewer's syntax
+ * regions; it carries the `g` flag, so each loop runs on its own copy.
+ */
+export const SFC_SCRIPT_ELEMENT = /<script(\s[^>]*?)?(?:\/>|>(?<content>[\s\S]*?)<\/script\s*>)/g;
+
 /** The SFC's own file node — the whole file, as the tree-sitter extractor makes one. */
 export function sfcFileNode(filePath: string, source: string, language: Language): Node {
   return {

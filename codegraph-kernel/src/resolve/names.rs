@@ -1266,6 +1266,20 @@ impl KernelResolver {
         }
         if self.is_cross_file_reachable(&best, r)? {
             let proximity = compute_path_proximity(&r.file_path, &best.file_path);
+            // A view's `<script>` calls a global, and the page's script tags
+            // decide which file answers. Two bundles defining the global —
+            // nopCommerce's admin and public `setLocation` — are as near as
+            // each other, so the view links neither (#3128).
+            if is_js_family(&r.language)
+                && re!(r"(?i)\.(?:cshtml|razor)$").is_match(&r.file_path)
+                && pool.iter().any(|c| {
+                    c.id != best.id
+                        && compute_path_proximity(&r.file_path, &c.file_path)
+                            == proximity
+                })
+            {
+                return Ok(None);
+            }
             // Every candidate is a copy of one symbol and this is the caller's
             // own copy: the name itself is not ambiguous, only which copy —
             // so rank it above a proximity guess, below a unique name or the
