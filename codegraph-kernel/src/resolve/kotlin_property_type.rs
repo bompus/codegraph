@@ -5,6 +5,26 @@ use super::*;
 /// result of a call on one — so the caller can refuse a name-only guess.
 pub(super) const KOTLIN_EXTERNAL: &str = "\u{0}external";
 
+/// Library types whose member is one of their type arguments: `uiState.value`
+/// on a `StateFlow<UiState>` is a `UiState`.
+fn kotlin_holder_index(name: &str, member: &str) -> Option<usize> {
+    let holders: &[(&str, &[(&str, usize)])] = &[
+        ("StateFlow", &[("value", 0)]),
+        ("MutableStateFlow", &[("value", 0)]),
+        ("State", &[("value", 0)]),
+        ("MutableState", &[("value", 0)]),
+        ("LiveData", &[("value", 0)]),
+        ("MutableLiveData", &[("value", 0)]),
+        ("Lazy", &[("value", 0)]),
+        ("Pair", &[("first", 0), ("second", 1)]),
+        ("Triple", &[("first", 0), ("second", 1), ("third", 2)]),
+    ];
+    holders
+        .iter()
+        .find(|(ty, _)| *ty == name)
+        .and_then(|(_, members)| members.iter().find(|(m, _)| *m == member).map(|(_, i)| *i))
+}
+
 /// Node kinds that declare a type a receiver can have.
 fn declared_type_kind(kind: &str) -> bool {
     matches!(
@@ -299,7 +319,10 @@ impl KernelResolver {
         depth: u32,
     ) -> Res<Option<KotlinDeclared>> {
         let escaped = regex::escape(name);
-        let typed = Self::cached_regex(&format!(r"\b(?:val|var)\s+{escaped}\s*:\s*([A-Z][\w.]*)"))?;
+        // A package written before the type is dropped by kotlin_type_name.
+        let typed = Self::cached_regex(&format!(
+            r"\b(?:val|var)\s+{escaped}\s*:\s*((?:[a-z_]\w*\.)*[A-Z][\w.]*)"
+        ))?;
         if let Some(m) = typed.captures(text) {
             if let Some(ty) = Self::kotlin_type_name(&m[1]) {
                 return Ok(Some(KotlinDeclared::Type(ty)));
@@ -593,6 +616,37 @@ impl KernelResolver {
             .map(KotlinDeclared::Type))
     }
 
+    /// What `name.member` is when `name` is declared in `text` as a holder of
+    /// `kotlin_holder_index`: the type argument its declaration writes.
+    fn kotlin_held_type(&mut self, text: &str, name: &str, member: &str) -> Option<String> {
+        let m = Self::cached_regex(&format!(
+            r"\b{}\s*:\s*(?:[a-z_]\w*\.)*([A-Z]\w*)\s*<",
+            regex::escape(name)
+        ))
+        .ok()?
+        .captures(text)?;
+        let index = kotlin_holder_index(&m[1], member)?;
+        let args = super::declared_member::angle_arguments(&text[m.get(0).unwrap().start()..]);
+        Self::kotlin_type_name(args.get(index)?)
+    }
+
+    /// The source a Kotlin value `name` of a chain is declared in: `owner`'s
+    /// lines for a property, else the enclosing class's and the lines above the
+    /// call.
+    fn kotlin_declaring_text(&mut self, owner: Option<&Arc<KNode>>, r: &ResolveRefIn) -> String {
+        let file = owner.map(|o| o.file_path.clone()).unwrap_or_else(|| r.file_path.clone());
+        let Some(lines) = self.kotlin_file_lines(&file) else { return String::new() };
+        if let Some(owner) = owner {
+            let from = ((owner.start_line - 1).max(0) as usize).min(lines.len());
+            let to = (owner.end_line.max(0) as usize).clamp(from, lines.len());
+            return lines[from..to].join("\n");
+        }
+        let around = self.kotlin_enclosing_class(r).ok().flatten();
+        let from = around.as_ref().map(|a| ((a.start_line - 1).max(0) as usize).min(lines.len())).unwrap_or(0);
+        let to = (around.as_ref().map(|a| a.end_line).unwrap_or(r.line).max(0) as usize).clamp(from, lines.len());
+        lines[from..to].join("\n")
+    }
+
     /// The declared type of a Kotlin receiver chain `a.b.c` / `this.a.b`: the
     /// first value typed as a single receiver (`this` is the enclosing class,
     /// a type name its object or companion), each next segment as a property
@@ -636,9 +690,25 @@ impl KernelResolver {
             let [only] = classes.as_slice() else { return Ok(None) };
             owner = Some(only.clone());
         }
-        for segment in &segments[1..] {
+        let mut holder: Option<Arc<KNode>> = None;
+        for i in 1..segments.len() {
+            let segment = segments[i];
             if owner.is_none() {
                 let Some(t) = ty.clone() else { return Ok(None) };
+                if t != KOTLIN_EXTERNAL
+                    && kotlin_holder_index(&t, segment).is_some()
+                    && !self.is_project_type(&t, r)?
+                {
+                    // A holder's member is its type argument: `uiState.value`
+                    // on a `StateFlow<UiState>` is a `UiState`.
+                    let text = self.kotlin_declaring_text(holder.as_ref(), r);
+                    ty = match self.kotlin_held_type(&text, segments[i - 1], segment) {
+                        Some(t) => Some(t),
+                        None => return Ok(Some(KotlinDeclared::External)),
+                    };
+                    holder = None;
+                    continue;
+                }
                 if t == KOTLIN_EXTERNAL || !self.is_project_type(&t, r)? {
                     return Ok(Some(KotlinDeclared::External));
                 }
@@ -671,6 +741,7 @@ impl KernelResolver {
                 Some(t) => t,
                 None => self.kotlin_inherited_property_type(segment, &owner_node, r)?,
             };
+            holder = Some(owner_node.clone());
             // A type parameter is no project type: `interface Box<T> { val
             // item: T }` leaves `box.item` untyped rather than reaching a
             // project class that happens to be named `T`.
