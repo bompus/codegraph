@@ -176,7 +176,9 @@ impl KernelResolver {
         // Laravel's testing traits): a trait's method may still be the one
         // meant, an unrelated class's never is. Nothing in the repository
         // binds it, so the caller keeps it only below the trusted confidence.
-        if leaves_repo && self.nodes_by_qualified_name(&owner)?.iter().any(|d| d.kind == "trait") {
+        // Nor a trait's, for a call written `parent::x()`: that is what the
+        // outside parent declares.
+        if via == PhpVia::SelfClass && leaves_repo && self.nodes_by_qualified_name(&owner)?.iter().any(|d| d.kind == "trait") {
             return Ok(PhpScope::UnseenAncestor);
         }
         Ok(PhpScope::Out)
@@ -220,7 +222,7 @@ impl KernelResolver {
 
     /// phpAncestry: every type `start` reaches through `extends` and trait
     /// `use`, and whether it left the repository on the way.
-    fn php_ancestry(&mut self, start: Vec<String>) -> Res<(HashSet<String>, bool)> {
+    pub(super) fn php_ancestry(&mut self, start: Vec<String>) -> Res<(HashSet<String>, bool)> {
         let mut qns: HashSet<String> = HashSet::new();
         let mut queue: VecDeque<String> = start.into();
         let mut leaves_repo = false;
@@ -279,7 +281,7 @@ impl KernelResolver {
 
     /// phpTypeQn: the qualified name (`A\B::C`) a PHP class name written in
     /// `file` refers to.
-    fn php_type_qn(&mut self, name: &str, file: &str) -> String {
+    pub(super) fn php_type_qn(&mut self, name: &str, file: &str) -> String {
         let fqn = if let Some(abs) = name.strip_prefix('\\') {
             abs.to_string()
         } else {
@@ -303,8 +305,10 @@ impl KernelResolver {
         }
     }
 
-    /// phpSupertypeQns: the qualified names a PHP class or trait extends and
-    /// the traits it uses.
+    /// phpSupertypeQns: the qualified names of the traits a PHP class or
+    /// trait uses, then those it extends — the order PHP finds a method in.
+    /// A declaration starts at its attributes, and its ancestors are read
+    /// through the imports of the file declaring it.
     fn php_supertype_qns(&mut self, decl: &KNode) -> Res<Rc<Vec<String>>> {
         if let Some(hit) = self.php_supers_memo.get(&decl.id) {
             return Ok(hit.clone());
@@ -312,18 +316,25 @@ impl KernelResolver {
         let mut names: Vec<String> = Vec::new();
         if let Some(lines) = self.read_file(&decl.file_path) {
             let len = lines.len();
-            let from = ((decl.start_line - 1).max(0) as usize).min(len);
-            let to = ((decl.start_line + 4).max(0) as usize).min(len);
-            let head = lines[from..to.max(from)].join(" ");
-            if let Some(m) = re!(r"(?-u:\b)extends\s+([^{]*?)(?:(?-u:\b)implements(?-u:\b)|\{)").captures(&head) {
-                for t in re!(r"\\?[A-Za-z_][A-Za-z0-9_\\]*").find_iter(&m[1]) {
-                    names.push(t.as_str().to_string());
-                }
+            let start = ((decl.start_line - 1).max(0) as usize).min(len);
+            let end = (decl.end_line.max(0) as usize).clamp(start, len);
+            // A declaration starts at its attributes: `#[ContentEntityType(…)]`
+            // may run for dozens of lines above `class Term extends …`.
+            let named = Self::cached_regex(&format!(
+                r"(?i)(?-u:\b)(?:class|interface|trait|enum)\s+{}(?-u:\b)",
+                regex::escape(&decl.name)
+            ))?;
+            let mut at = start;
+            while at + 1 < end && !named.is_match(lines.get(at).map(String::as_str).unwrap_or("")) {
+                at += 1;
+            }
+            if at + 1 >= end {
+                at = start;
             }
             // `use StringTranslationTrait, MessengerTrait;` at the top of the
             // body — one per line or one list across several.
-            let body_from = (decl.start_line.max(0) as usize).min(len);
-            let body_to = (decl.end_line.min(decl.start_line + 80).max(0) as usize).min(len);
+            let body_from = (at + 1).min(len);
+            let body_to = len.min(at + 81);
             let body_lines = &lines[body_from..body_to.max(body_from)];
             let first_function = body_lines
                 .iter()
@@ -338,11 +349,185 @@ impl KernelResolver {
                     }
                 }
             }
+            let head = lines[at.min(len)..len.min(at + 12)].join(" ");
+            if let Some(m) = re!(r"(?-u:\b)extends\s+([^{]*?)(?:(?-u:\b)implements(?-u:\b)|\{)").captures(&head) {
+                for t in re!(r"\\?[A-Za-z_][A-Za-z0-9_\\]*").find_iter(&m[1]) {
+                    names.push(t.as_str().to_string());
+                }
+            }
         }
         let qns: Vec<String> = names.iter().map(|n| self.php_type_qn(n, &decl.file_path)).collect();
         let qns = Rc::new(qns);
         self.php_supers_memo.insert(decl.id.clone(), qns.clone());
         Ok(qns)
+    }
+
+    /// The method `name` a PHP type declares itself, in its own file.
+    pub(super) fn php_own_method(&mut self, cls: &KNode, name: &str) -> Res<Option<Arc<KNode>>> {
+        let owner = format!("{}::{name}", cls.qualified_name);
+        Ok(self
+            .nodes_in_file(&cls.file_path)?
+            .iter()
+            .find(|n| n.kind == "method" && n.name == name && n.qualified_name == owner)
+            .cloned())
+    }
+
+    /// phpAncestorMethod: the method `name` a PHP type reaches past its own —
+    /// in a trait it uses, then up what it extends, each found the way PHP
+    /// finds a class name. Laravel's `Pivot` takes `getForeignKey` from its
+    /// trait `AsPivot`, not from `Model` above it.
+    pub(super) fn php_ancestor_method(
+        &mut self,
+        decl: &KNode,
+        name: &str,
+        seen: &mut HashSet<String>,
+    ) -> Res<Option<Arc<KNode>>> {
+        let supertypes = self.php_supertype_qns(decl)?;
+        for qn in supertypes.iter() {
+            if !seen.insert(qn.clone()) {
+                continue;
+            }
+            let decls: Vec<Arc<KNode>> = self
+                .nodes_by_qualified_name(qn)?
+                .iter()
+                .filter(|n| n.language == "php" && is_php_type_kind(&n.kind))
+                .cloned()
+                .collect();
+            for up in decls {
+                if let Some(found) = self.php_own_method(&up, name)? {
+                    return Ok(Some(found));
+                }
+                if let Some(found) = self.php_ancestor_method(&up, name, seen)? {
+                    return Ok(Some(found));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// phpTypeMethod: the method `name` of the PHP type qualified `qn`, its own
+    /// or one it reaches. `Some(None)` when the project declares the type and
+    /// it has no such method, `None` when it is no project type.
+    pub(super) fn php_type_method(&mut self, qn: &str, name: &str) -> Res<Option<Option<Arc<KNode>>>> {
+        let key = (qn.to_string(), name.to_string());
+        if let Some(hit) = self.php_type_methods_memo.get(&key) {
+            return Ok(hit.clone());
+        }
+        let decls: Vec<Arc<KNode>> = self
+            .nodes_by_qualified_name(qn)?
+            .iter()
+            .filter(|n| n.language == "php" && is_php_type_kind(&n.kind))
+            .cloned()
+            .collect();
+        let mut found = if decls.is_empty() { None } else { Some(None) };
+        for decl in decls {
+            let mut method = self.php_own_method(&decl, name)?;
+            if method.is_none() {
+                method = self.php_ancestor_method(&decl, name, &mut HashSet::new())?;
+            }
+            if let Some(method) = method {
+                found = Some(Some(method));
+                break;
+            }
+        }
+        self.php_type_methods_memo.insert(key, found.clone());
+        Ok(found)
+    }
+
+    /// Whether the PHP file names `cls` by its short name: its own namespace or
+    /// a `use` that imports it. A variable named after a class the file can't
+    /// name is named after a word.
+    pub(super) fn php_file_names_class(&mut self, cls: &KNode, file: &str) -> Res<bool> {
+        let Some(source) = self.read_file(file) else { return Ok(false) };
+        let scope = source.php_file_scope();
+        let fqn = cls.qualified_name.replace("::", "\\").to_ascii_lowercase();
+        let short = if scope.namespace.is_empty() {
+            cls.name.to_ascii_lowercase()
+        } else {
+            format!("{}\\{}", scope.namespace, cls.name).to_ascii_lowercase()
+        };
+        if fqn == short {
+            return Ok(true);
+        }
+        Ok(scope.uses.values().any(|used| used.to_ascii_lowercase() == fqn))
+    }
+
+    /// phpUnnamedClassMethod: the method a variable named after a PHP class
+    /// reaches when the calling file can't name that class, so that only a
+    /// word ties them: the class's own, or what it inherits when it is the one
+    /// class of that name.
+    pub(super) fn php_unnamed_class_method(
+        &mut self,
+        cls: &KNode,
+        name: &str,
+        only_of_name: bool,
+    ) -> Res<Option<Arc<KNode>>> {
+        if let Some(own) = self.php_own_method(cls, name)? {
+            return Ok(Some(own));
+        }
+        if only_of_name {
+            return self.php_ancestor_method(cls, name, &mut HashSet::new());
+        }
+        Ok(None)
+    }
+
+    /// phpFacadeMethod: the method a Laravel facade hands a static call on to —
+    /// the class `getFacadeAccessor` returns, as in `return ParallelTesting::class;`.
+    pub(super) fn php_facade_method(&mut self, facade: &KNode, name: &str) -> Res<Option<Arc<KNode>>> {
+        if !self.php_supertype_qns(facade)?.iter().any(|qn| qn.ends_with("::Facade")) {
+            return Ok(None);
+        }
+        let Some(accessor) = self.php_own_method(facade, "getFacadeAccessor")? else { return Ok(None) };
+        let Some(lines) = self.read_file(&facade.file_path) else { return Ok(None) };
+        let from = ((accessor.start_line - 1).max(0) as usize).min(lines.len());
+        let to = (accessor.end_line.max(0) as usize).clamp(from, lines.len());
+        let text = lines[from..to].join("\n");
+        let Some(named) = re!(r"(?-u:\b)return\s+(\\?[A-Za-z_][A-Za-z0-9_\\]*)::class\s*;")
+            .captures(&text)
+            .map(|c| c[1].to_string())
+        else {
+            return Ok(None);
+        };
+        let qn = self.php_type_qn(&named, &facade.file_path);
+        Ok(self.php_type_method(&qn, name)?.flatten())
+    }
+
+    /// Eloquent's static methods that hand back a model of the class they are
+    /// called on: `$post = PostStringPrimaryKey::query()->create([…])`.
+    pub(super) fn php_model_factory_local_type(&mut self, receiver: &str, r: &ResolveRefIn) -> Res<Option<String>> {
+        if !re!(r"^\w+$").is_match(receiver) {
+            return Ok(None);
+        }
+        let Some(lines) = self.read_file(&r.file_path) else { return Ok(None) };
+        let from = (self.enclosing_scope_start_line(&r.file_path, &r.language, r.line)? - 1).max(0) as usize;
+        let to = ((r.line - 1).max(0) as usize).min(lines.len());
+        let variable = format!("${receiver}");
+        let pattern = Self::cached_regex(
+            r"^\s*(?:(?:\$\w+\s*=\s*)*)(\\?[A-Z][\w\\]*)::(?:query\(\)\s*->\s*)?(?:create|forceCreate|firstOrCreate|firstOrNew|updateOrCreate|find|findOrFail)\s*\(",
+        )?;
+        for i in (from..=to).rev() {
+            let Some(line) = lines.get(i) else { continue };
+            let Some(at) = line.find(&variable) else { continue };
+            if !line[..at].trim().is_empty() {
+                continue;
+            }
+            let Some(value) = re!(r"^\s*=\s*([^=].*)$").captures(&line[at + variable.len()..]) else { continue };
+            let Some(named) = pattern.captures(&value[1]).map(|c| c[1].to_string()) else { return Ok(None) };
+            let qn = self.php_type_qn(&named, &r.file_path);
+            let decls: Vec<Arc<KNode>> = self
+                .nodes_by_qualified_name(&qn)?
+                .iter()
+                .filter(|n| n.language == "php" && n.kind == "class")
+                .cloned()
+                .collect();
+            for decl in decls {
+                if self.php_ancestry(vec![decl.qualified_name.clone()])?.0.iter().any(|q| q.ends_with("::Model")) {
+                    return Ok(Some(named));
+                }
+            }
+            return Ok(None);
+        }
+        Ok(None)
     }
 
     /// isThisCallInOwnFile: is `r` written as `this.<name>(` in the file

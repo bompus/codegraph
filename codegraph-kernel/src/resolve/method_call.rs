@@ -605,6 +605,12 @@ impl KernelResolver {
                 else {
                     return Ok(McShape::Done(None));
                 };
+                // The one type the file names, its own method or what it
+                // reaches through its real parents and traits.
+                let qn = self.php_type_qn(&inferred, &r.file_path);
+                if let Some(method) = self.php_type_method(&qn, &php_method)?.flatten() {
+                    return Ok(McShape::Done(Some(KCand { node: method, confidence: 0.9, resolved_by: "instance-method" })));
+                }
                 // The declared type as the file names it, through its
                 // namespace or `use` (`use Lib\Store as Cache;` makes `Cache`
                 // `Lib\Store`): that one type, not every same-named class.
@@ -906,6 +912,10 @@ impl KernelResolver {
             }
             if r.language == "objc" && inferred.is_none() {
                 inferred = self.objc_member_receiver_type(&object_or_class, r)?;
+            }
+            // A local an Eloquent model's static factory gives is that model.
+            if inferred.is_none() && r.language == "php" && dotted {
+                inferred = self.php_model_factory_local_type(&object_or_class, r)?;
             }
             if inferred.is_none() && r.language == "python" && !object_or_class.contains('.') {
                 if let Some(hit) = self.python_global_receiver_call(&object_or_class, &method_name, r)? { return Ok(Some(hit)); }
@@ -1300,6 +1310,8 @@ if inferred.is_none() && r.language == "dart" {
         }
         let mut java_declared: Option<super::java_receiver_type::JavaDeclared> = None;
         let mut local_inferred = false;
+        // A PHP declaration read for the receiver: its name names no class.
+        let mut php_declared_receiver = false;
         if inferable {
             if r.language == "go" {
                 if let Some(verdict) = self.go_asserted_member(&object_or_class, &method_name, r)? { return Ok(verdict); }
@@ -1401,6 +1413,23 @@ if inferred.is_none() && r.language == "dart" {
                 // method is the only project method it has.
                 if r.language == "csharp" && t.chars().next().is_some_and(|c| c.is_ascii_lowercase()) {
                     return self.unique_csharp_extension_method(&t, &method_name, r);
+                }
+                // A PHP type is the class its name means in the file, and its
+                // supertypes are read from source: the first pass has no
+                // `extends` edges yet, so `EntityInterface $entity` found no
+                // `access()` and went on to guess.
+                if r.language == "php" {
+                    let qn = self.php_type_qn(&t, &r.file_path);
+                    let on_type = self.php_type_method(&qn, &method_name)?;
+                    if let Some(method) = on_type.as_ref().and_then(|m| m.as_ref()) {
+                        return Ok(Some(KCand { node: method.clone(), confidence: 0.9, resolved_by: "instance-method" }));
+                    }
+                    if on_type.is_some() {
+                        php_declared_receiver = true;
+                        let leaves = self.php_ancestry(vec![qn.clone()])?.1;
+                        let has_call = self.php_type_method(&qn, "__call")?.flatten().is_some();
+                        if !leaves && !has_call { return Ok(None); }
+                    }
                 }
                 let Some(mut t) = self.inferred_member_type_bound(&t, r)? else { return Ok(None) };
                 if is_esm_family(&r.language) && awaited_file.is_none() && t.ends_with(']') {
@@ -1710,7 +1739,7 @@ if inferred.is_none() && r.language == "dart" {
         // Strategy 2 — capitalized receiver (`permissionEngine` →
         // `PermissionEngine`) against the same class scan.
         let capitalized = capitalize_first(&object_or_class);
-        if capitalized != object_or_class && !vb_value_receiver {
+        if capitalized != object_or_class && !vb_value_receiver && !php_declared_receiver {
             if let Some(hit) = self.class_method_scan(&capitalized, &method_name, r, 0.8, "instance-method")? {
                 if r.language != "csharp" || hit.node.id != r.from_node_id
                     || self.same_owner_receiver_proven(&hit.node, r) {
@@ -2066,7 +2095,17 @@ if inferred.is_none() && r.language == "dart" {
         let candidates = if r.language == "vbnet" { self.vb_prefer(candidates, r) } else { candidates };
         let type_ref=r.clone().naming(class_name,"references");
         let mut visible=Vec::new();for c in candidates {if self.language_type_visible(&c,&type_ref)? {visible.push(c);}}
-        let candidates=visible;
+        let mut candidates=visible;
+        // A PHP class name is the one its namespace or a `use` gives it.
+        if r.language == "php" && candidates.len() > 1 {
+            let mut named = Vec::new();
+            let mut rest = Vec::new();
+            for c in candidates {
+                if self.php_file_names_class(&c, &r.file_path)? { named.push(c); } else { rest.push(c); }
+            }
+            named.extend(rest);
+            candidates = named;
+        }
         for c in &candidates {
             let class_like = matches!(c.kind.as_str(), "class" | "struct" | "union" | "interface")
                 || (c.language == "scala" && c.kind == "module");
@@ -2090,6 +2129,30 @@ if inferred.is_none() && r.language == "dart" {
                 }
                 continue;
             }
+            // A PHP class name is found the way PHP finds one: its own method
+            // or what its real parents and traits declare, and a class the
+            // calling file can't name is only a word.
+            if c.language == "php" {
+                if resolved_by == "qualified-name" {
+                    if let Some(forwarded) = self.php_facade_method(c, method)? {
+                        return Ok(Some(KCand { node: forwarded, confidence: 0.85, resolved_by: "qualified-name" }));
+                    }
+                }
+                let named = self.php_file_names_class(c, &r.file_path)?;
+                let only_of_name = candidates.iter().filter(|x| x.language == "php" && is_class_like(&x.kind)).count() == 1;
+                let found = if named || resolved_by == "qualified-name" {
+                    match self.php_own_method(c, method)? {
+                        Some(own) => Some(own),
+                        None => self.php_ancestor_method(c, method, &mut HashSet::new())?,
+                    }
+                } else {
+                    self.php_unnamed_class_method(c, method, only_of_name)?
+                };
+                if let Some(found) = found {
+                    return Ok(Some(KCand { node: found, confidence, resolved_by }));
+                }
+                continue;
+            }
             let in_file = self.nodes_in_file(&c.file_path)?;
             if let Some(mn) = in_file
                 .iter()
@@ -2106,6 +2169,12 @@ if inferred.is_none() && r.language == "dart" {
             {
                 return Ok(Some(KCand { node: mn.clone(), confidence, resolved_by }));
             }
+        }
+        // A PHP class method the named class doesn't declare is no bare-name
+        // namesake's: the facade and the real ancestry above answered, or
+        // nothing did.
+        if r.language == "php" {
+            return Ok(None);
         }
         for c in &candidates {
             if c.language == r.language && is_class_like(&c.kind) {
@@ -2204,6 +2273,11 @@ if inferred.is_none() && r.language == "dart" {
             }
             let hit = probe!(r, "brc:match_method_call", self.match_method_call(r)?);
             if hit.is_none() && r.language == "go" && self.take_go_mc_untyped() {
+                return probe!(r, "brc:mc-free", self.match_method_call_free(r));
+            }
+            // A PHP variable receiver reaches matchMethodCall's one pass,
+            // whose name strategies and declared-type arms the free arm holds.
+            if hit.is_none() && r.language == "php" {
                 return probe!(r, "brc:mc-free", self.match_method_call_free(r));
             }
             // A Kotlin receiver a property or chain types, or one nothing

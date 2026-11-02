@@ -864,6 +864,9 @@ pub struct KernelResolver {
     csharp_project_memo: HashMap<String, Option<String>>,
     /// csharpDeclaredArity, by type node id.
     csharp_arity_memo: HashMap<String, usize>,
+    /// phpTypeMethod, by (qualified name, method): `Some(None)` when the type
+    /// is the project's and has no such method, `None` when it is no type.
+    php_type_methods_memo: HashMap<(String, String), Option<Option<Arc<KNode>>>>,
     /// objcSupertypesOf, by class name.
     objc_supers_memo: HashMap<String, Rc<Vec<String>>>,
     /// objcHierarchyAt, by the sender's class name.
@@ -1184,6 +1187,7 @@ impl KernelResolver {
             csharp_global_statics: None,
             csharp_project_memo: HashMap::new(),
             csharp_arity_memo: HashMap::new(),
+            php_type_methods_memo: HashMap::new(),
             objc_supers_memo: HashMap::new(),
             objc_hierarchy_memo: HashMap::new(),
             manifest_own_memo: HashMap::new(),

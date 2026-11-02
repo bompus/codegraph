@@ -5,16 +5,11 @@
  * tests' PSR-7 `$response->getHeaderLine()` went to a test double's method,
  * symfony/console's `$e->getMessage()` to a progress bar's.
  *
- * This fork is stricter: a PHP member call needs receiver evidence (a declared
- * or inferred type, an `instanceof` branch, an import), and a parameter or
- * local nothing types gets no method-name guess at all (the Phase 2b evidence
- * gate, docs/design/resolution-binding-model-plan.md). None of the three calls
- * below resolves by name, so the wrong `getMessage` edge stays absent and the
- * two receiver-named guesses upstream keeps are not made either.
- *
- * The test records that decision rather than guarding the port: it passes on
- * the kernel before upstream #2152 was ported too, because the evidence gate
- * already refuses these calls and the ported PHP arm of strategy 3 is dormant.
+ * The receiver-named guesses are kept: `$page` is the one project class `Page`
+ * and `save` is the `Entity` it extends, `$avatars` is `UserAvatars`'s own
+ * method. A name no project class provides, like `$e` for the external
+ * `\Exception`, still links nothing, so the wrong `getMessage` edge stays
+ * absent.
  */
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import * as fs from 'fs';
@@ -94,6 +89,6 @@ describe('PHP calls through an untyped receiver', () => {
       .map((e) => cg.getNode(e.target)!.qualifiedName)
       .sort();
     expect(targets).not.toContain('App\\Helper::ProgressBar::getMessage');
-    expect(targets).toEqual([]);
+    expect(targets).toEqual(['App\\Models::Entity::save', 'App\\Uploads::UserAvatars::assignToUser']);
   });
 });

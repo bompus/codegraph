@@ -102,6 +102,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+ In PHP, a call on a variable now reaches the method its class really has. A declared type or a class the file can name is found through the file's namespace and `use` imports, group imports included, and its parents through the same names, past any attributes above the class and with a trait before the parent, so Drupal's `$entity->access()` no longer lands on a views plugin's `HandlerBase`, a `parent::__construct()` above a parent from outside the project no longer lands on an unrelated trait, and Laravel's `$this->events->dispatch()` reaches the events dispatcher rather than the bus. A Laravel facade now hands a static call to the class its `getFacadeAccessor()` names, and a local an Eloquent model's `create()` or `find()` gives is that model.
+
  In Python, a function handed on before its name is rebound, like `view = wrap(view)`, now always links to that function, where it could lose the link when a later call of the same name was resolved first, so the graph of the same project could differ between runs.
 
 - In Swift, a call now links to the overload that fits when two differ only in taking a closure: `didStop.write(true)` reaches `write(_ value:)` and `write { $0 = value }` reaches `write(_ closure:)`. A trailing closure now counts among the arguments too, so `clearCache { … }` inside `clearCache() async` reaches `clearCache(completion:)` instead of itself. Re-index Swift projects after upgrading.
