@@ -1429,6 +1429,11 @@ if inferred.is_none() && r.language == "dart" {
                         let leaves = self.php_ancestry(vec![qn.clone()])?.1;
                         let has_call = self.php_type_method(&qn, "__call")?.flatten().is_some();
                         if !leaves && !has_call { return Ok(None); }
+                    } else if t.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                        // A PHP type written by name is the class the file's
+                        // namespace or `use` gives it; a bare name of another
+                        // namespace's class is no project guess (Phase 2b).
+                        return Ok(None);
                     }
                 }
                 let Some(mut t) = self.inferred_member_type_bound(&t, r)? else { return Ok(None) };
