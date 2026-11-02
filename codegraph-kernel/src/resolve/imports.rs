@@ -601,6 +601,34 @@ impl KernelResolver {
         Ok(None)
     }
 
+    /// isStatedDefaultExport (import-resolver.ts): whether `node` is what its
+    /// own file says it default-exports — a stated `export default`, a
+    /// single-file component, the name `module.exports` is set to, or a
+    /// declaration file's answer. Anything else is the guess at the module's
+    /// first export.
+    fn is_stated_default_export(&mut self, node: &KNode) -> Res<bool> {
+        if !is_js_family(&node.language) { return Ok(node.kind == "component"); }
+        if is_declaration_file(&node.file_path) { return Ok(true); }
+        let idx = self.file_export_index(&node.file_path)?;
+        if idx.default_component.as_ref().is_some_and(|c| c.id == node.id)
+            || idx.default_binding.as_ref().is_some_and(|d| d.id == node.id)
+            || idx.by_name.get("default").is_some_and(|d| d.id == node.id)
+        {
+            return Ok(true);
+        }
+        Ok(self.common_js_default_name(&node.file_path)?.as_deref() == Some(node.name.as_str()))
+    }
+
+    /// commonJsDefaultExport (import-resolver.ts): the name `module.exports = X`
+    /// sets, when X is a bare identifier.
+    fn common_js_default_name(&mut self, file: &str) -> Res<Option<String>> {
+        let Some(src) = self.read_file(file) else { return Ok(None) };
+        let text = src.text();
+        if !text.contains("module.exports") { return Ok(None); }
+        let re = Self::cached_regex(r"(?m)module\.exports\s*=\s*([A-Za-z_$][\w$]*)\s*(?:;|$)")?;
+        Ok(re.captures(text).map(|m| m[1].to_string()))
+    }
+
     /// resolveJavaImportedReference (import-resolver.ts) — the bare arm
     /// (`matchesBare` ⇒ memberName = localName) plus the static-import owner
     /// fallback, both over the FQN→file-suffix disambiguation.
@@ -1068,6 +1096,34 @@ impl KernelResolver {
                 target = self.find_exported_symbol(&resolved_path, &want, &r.language, &mut visited, 0)?;
             }
             let target = if target.is_none() && r.language == "python" { self.python_module_symbol(&resolved_path,want.member_name.as_deref().unwrap_or(&want.exported_name),0,&mut HashSet::new())? } else { target };
+            // `named.second()` through a default binding (`require('./m')`, a
+            // default import of a CommonJS module): what the module exports as
+            // `second`. Where the module states no default the name it exports
+            // comes first, and a member it does not export links nothing — the
+            // receiver isn't known, so there is nothing to name.
+            let through_default = is_member && imp.is_default && is_esm_import_language(&r.language);
+            let guessed = through_default
+                && !match &target {
+                    Some(t) => self.is_stated_default_export(t)?,
+                    None => false,
+                };
+            let exported_member = if through_default {
+                let member = &r.reference_name[imp.local_name.len() + 1..];
+                let want = ExportWant {
+                    is_default: false,
+                    is_namespace: true,
+                    exported_name: imp.exported_name.clone(),
+                    member_name: Some(member.to_string()),
+                };
+                self.find_exported_symbol(&resolved_path, &want, &r.language, &mut visited, 0)?
+            } else {
+                None
+            };
+            if guessed {
+                if let Some(node) = &exported_member {
+                    return Ok(Some(KCand { node: node.clone(), confidence: 0.9, resolved_by: "import" }));
+                }
+            }
             let Some(target) = target
             else {
                 // `import api from './api'` where the module ends in
@@ -1120,6 +1176,16 @@ impl KernelResolver {
                 // task function (#2040). Unknown members stay unresolved.
                 if r.language == "python" {
                     return Ok(None);
+                }
+                // `module.exports = main; module.exports.extra = …`, then
+                // `m.extra()`.
+                if let Some(node) = &exported_member {
+                    return Ok(Some(KCand { node: node.clone(), confidence: 0.9, resolved_by: "import" }));
+                }
+                // A member of the guess at a module's first export is no member
+                // of the module: the receiver isn't known, so nothing to name.
+                if guessed {
+                    continue;
                 }
                 // resolveImportedInstanceMember returns null for non-const/var
                 // targets before reading anything — for them the decline rule
