@@ -237,6 +237,13 @@ function appendHardFilters(hard: HardFilters | undefined, params: (string | numb
   return sql;
 }
 
+/** Whether a name passes a query's `name:` filters (case-folded substring, OR'd). */
+function passesNameFilters(name: string, hard: HardFilters): boolean {
+  if (hard.names.length === 0) return true;
+  const lowered = name.toLowerCase();
+  return hard.names.some((n) => lowered.includes(n.toLowerCase()));
+}
+
 function rowToNode(row: NodeRow): Node {
   return {
     id: row.id,
@@ -1958,7 +1965,7 @@ export class QueryBuilder {
       ? (this._fts5Available !== false ? this.searchNodesFTS(text, { kinds, languages, limit, offset }, hard) : [])
       // Over-fetch by 5× when running filter-only (no text) so scoring has
       // more than `limit` candidates to rank.
-      : this.searchAllByFilters({ kinds, languages, limit: limit * 5 }, hard);
+      : this.searchAllByFilters({ kinds, languages, limit: limit * 5, offset }, hard);
 
     // If no FTS results, try LIKE-based substring search
     if (results.length === 0 && text.length >= 2) {
@@ -2067,10 +2074,10 @@ export class QueryBuilder {
    * what was asked for.
    */
   private searchAllByFilters(
-    options: { kinds?: NodeKind[]; languages?: Language[]; limit: number },
+    options: { kinds?: NodeKind[]; languages?: Language[]; limit: number; offset: number },
     hard?: HardFilters
   ): SearchResult[] {
-    const { kinds, languages, limit } = options;
+    const { kinds, languages, limit, offset } = options;
     let sql = 'SELECT * FROM nodes WHERE 1=1';
     const params: (string | number)[] = [];
     if (kinds && kinds.length > 0) {
@@ -2082,8 +2089,8 @@ export class QueryBuilder {
       params.push(...languages);
     }
     sql += appendHardFilters(hard, params);
-    sql += ' ORDER BY name LIMIT ?';
-    params.push(limit);
+    sql += ' ORDER BY name LIMIT ? OFFSET ?';
+    params.push(limit, offset);
     const rows = this.shapeStmt(sql).all(...params) as NodeRow[];
     return rows.map((row) => ({ node: rowToNode(row), score: 1 }));
   }
@@ -2127,13 +2134,19 @@ export class QueryBuilder {
     // a project with many similar names (`getUser1`, `getUser2`...)
     // could fan out far beyond `limit` queries before the inner-loop
     // limit kicks in.
+    // With `path:`/`name:` filters the cap could be spent on names whose
+    // symbols all lie outside them, ahead of the one that matches (#2254), so
+    // a filtered search looks names up until it has `limit` results, skipping
+    // without a lookup each name `name:` rules out. Every lookup is an index
+    // seek on one name.
     const FUZZY_FOLLOWUP_CAP = Math.max(limit * 2, 50);
-    const cappedCandidates = candidates.slice(0, FUZZY_FOLLOWUP_CAP);
+    const cappedCandidates = hard ? candidates : candidates.slice(0, FUZZY_FOLLOWUP_CAP);
 
     const results: SearchResult[] = [];
     const seen = new Set<string>();
     for (const c of cappedCandidates) {
       if (results.length >= limit) break;
+      if (hard && hard.names.length > 0 && !passesNameFilters(c.name, hard)) continue;
       let sql = 'SELECT * FROM nodes WHERE name = ?';
       const params: (string | number)[] = [c.name];
       if (kinds && kinds.length > 0) {
