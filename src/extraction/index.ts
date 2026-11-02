@@ -2864,7 +2864,10 @@ export class ExtractionOrchestrator {
 
         if (skipped) {
           // Not a source file after all — counted as done, stored as nothing.
+          // Counted as skipped too: the scan found it, and a file no tally
+          // holds reads as one the run lost, so the index was called PARTIAL.
           processed++;
+          filesSkipped++;
           onProgress?.({ phase: 'parsing', current: processed, total });
           continue;
         }
