@@ -752,6 +752,9 @@ pub struct KernelResolver {
     c_static_memo: HashMap<String, bool>,
     /// cppMemberMacroArguments, by class declaration id.
     cpp_macro_arguments_memo: HashMap<String, Rc<Vec<String>>>,
+    /// A C++ alias declaration's own text, by node id (cpp_alias_text): one
+    /// alias is asked about by every reference that names it.
+    cpp_alias_text_memo: HashMap<String, Option<String>>,
     /// cppProjectScopeNames: every name a C or C++ qualifier may start with in this project.
     cpp_scope_names: Option<Rc<HashSet<String>>>,
     rust_trait_memo: HashMap<String, bool>,
@@ -1134,6 +1137,7 @@ impl KernelResolver {
             js_host_receiver_only: HashMap::new(),
             c_static_memo: HashMap::new(),
             cpp_macro_arguments_memo: HashMap::new(),
+            cpp_alias_text_memo: HashMap::new(),
             cpp_scope_names: None,
             rust_trait_memo: HashMap::new(),
             rust_typed_refs: HashSet::new(),

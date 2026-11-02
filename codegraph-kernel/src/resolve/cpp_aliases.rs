@@ -77,6 +77,15 @@ fn alias_rhs(text: &str, name: &str) -> Option<String> {
 
 impl KernelResolver {
     fn cpp_alias_text(&mut self, node: &KNode) -> Option<String> {
+        if let Some(hit) = self.cpp_alias_text_memo.get(&node.id) {
+            return hit.clone();
+        }
+        let text = self.cpp_alias_text_uncached(node);
+        self.cpp_alias_text_memo.insert(node.id.clone(), text.clone());
+        text
+    }
+
+    fn cpp_alias_text_uncached(&mut self, node: &KNode) -> Option<String> {
         let source = self.read_file(&node.file_path)?;
         let mut lines = source.get((node.start_line - 1).max(0) as usize..node.end_line.max(0) as usize)?.to_vec();
         let whole = lines.join("\n");
