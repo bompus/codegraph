@@ -15,6 +15,39 @@ pub struct PythonImportBinding {
     pub binding: Option<String>,
 }
 
+/// `sys.stdlib_module_names`, less the private `_x` modules. A folder only a
+/// script has on its path never takes one of these: `from html import escape` in
+/// `django/utils/text.py` is the stdlib's, though `django/utils/html.py` beside
+/// it defines `escape`. CPython's own `test` package isn't one, as Python leaves
+/// it out too, so `from test import TestCase` stays open to a project's runner.
+const PYTHON_STDLIB_MODULES: &[&str] = &[
+    "__future__", "abc", "annotationlib", "antigravity", "argparse", "array", "ast", "asyncio", "atexit",
+    "base64", "bdb", "binascii", "bisect", "builtins", "bz2", "cProfile", "calendar", "cmath", "cmd", "code",
+    "codecs", "codeop", "collections", "colorsys", "compileall", "compression", "concurrent", "configparser",
+    "contextlib", "contextvars", "copy", "copyreg", "csv", "ctypes", "curses", "dataclasses", "datetime",
+    "dbm", "decimal", "difflib", "dis", "doctest", "email", "encodings", "ensurepip", "enum", "errno",
+    "faulthandler", "fcntl", "filecmp", "fileinput", "fnmatch", "fractions", "ftplib", "functools", "gc",
+    "genericpath", "getopt", "getpass", "gettext", "glob", "graphlib", "grp", "gzip", "hashlib", "heapq",
+    "hmac", "html", "http", "idlelib", "imaplib", "importlib", "inspect", "io", "ipaddress", "itertools",
+    "json", "keyword", "linecache", "locale", "logging", "lzma", "mailbox", "marshal", "math", "mimetypes",
+    "mmap", "modulefinder", "msvcrt", "multiprocessing", "netrc", "nt", "ntpath", "nturl2path", "numbers",
+    "opcode", "operator", "optparse", "os", "pathlib", "pdb", "pickle", "pickletools", "pkgutil", "platform",
+    "plistlib", "poplib", "posix", "posixpath", "pprint", "profile", "profiling", "pstats", "pty", "pwd",
+    "py_compile", "pyclbr", "pydoc", "pydoc_data", "pyexpat", "queue", "quopri", "random", "re", "readline",
+    "reprlib", "resource", "rlcompleter", "runpy", "sched", "secrets", "select", "selectors", "shelve",
+    "shlex", "shutil", "signal", "site", "smtplib", "socket", "socketserver", "sqlite3", "ssl", "stat",
+    "statistics", "string", "stringprep", "struct", "subprocess", "symtable", "sys", "sysconfig", "syslog",
+    "tabnanny", "tarfile", "tempfile", "termios", "textwrap", "this", "threading", "time", "timeit",
+    "tkinter", "token", "tokenize", "tomllib", "trace", "traceback", "tracemalloc", "tty", "turtle",
+    "turtledemo", "types", "typing", "unicodedata", "unittest", "urllib", "uuid", "venv", "warnings", "wave",
+    "weakref", "webbrowser", "winreg", "winsound", "wsgiref", "xml", "xmlrpc", "zipapp", "zipfile",
+    "zipimport", "zlib", "zoneinfo",
+];
+
+fn python_stdlib_module(name: &str) -> bool {
+    PYTHON_STDLIB_MODULES.contains(&name)
+}
+
 #[derive(Default)]
 pub(super) struct PythonModules {
     files: HashSet<String>,
@@ -82,13 +115,17 @@ impl PythonModules {
             self.local.insert(root, reach);
         }
     }
-    fn resolve(&self, spec: &str, from: &str) -> Option<String> {
+    /// `(found, may_fallback)`: `may_fallback` is true only when the root
+    /// search reached its end with no hit, the one case where the
+    /// ancestor-script fallback may answer (an ambiguous or shadowed name
+    /// must not).
+    fn resolve_with(&self, spec: &str, from: &str) -> (Option<String>, bool) {
         if spec.is_empty()
             || !spec
                 .chars()
                 .all(|c| c == '.' || c == '_' || c.is_alphanumeric())
         {
-            return None;
+            return (None, false);
         }
         let importer = parent(from);
         let dots = spec.bytes().take_while(|b| *b == b'.').count();
@@ -98,20 +135,20 @@ impl PythonModules {
                 if base.is_empty()
                     || self.packages.contains(base) && !self.packages.contains(parent(base))
                 {
-                    return None;
+                    return (None, false);
                 }
                 base = parent(base);
             }
             let rest = &spec[dots..];
             return if rest.is_empty() {
                 let init = join(base, "__init__.py");
-                self.files.contains(&init).then_some(init)
+                (self.files.contains(&init).then_some(init), false)
             } else {
-                self.under(base, &rest.replace('.', "/"))
+                (self.under(base, &rest.replace('.', "/")), false)
             };
         }
         let rel = spec.replace('.', "/");
-        let head = spec.split('.').next()?;
+        let head = spec.split('.').next().unwrap_or(spec);
         let mut containing = Vec::new();
         let mut dir = importer;
         loop {
@@ -130,12 +167,12 @@ impl PythonModules {
         let mut concrete_local = false;
         for root in &containing {
             if let Some(hit) = self.under(root, &rel) {
-                return Some(hit);
+                return (Some(hit), false);
             }
             concrete_local |= self.at(&join(root, head)).is_some();
         }
         if concrete_local {
-            return None;
+            return (None, false);
         }
         let eligible = |root: &String| {
             !containing.contains(root)
@@ -157,9 +194,9 @@ impl PythonModules {
             .collect();
         if !concrete.is_empty() {
             return if concrete.len() == 1 {
-                self.under(concrete[0], &rel)
+                (self.under(concrete[0], &rel), false)
             } else {
-                None
+                (None, false)
             };
         }
         let hits: HashSet<_> = roots
@@ -168,10 +205,13 @@ impl PythonModules {
             .filter_map(|r| self.under(r, &rel))
             .collect();
         if hits.len() == 1 {
-            hits.into_iter().next()
+            (hits.into_iter().next(), false)
         } else {
-            None
+            (None, hits.is_empty())
         }
+    }
+    fn resolve(&self, spec: &str, from: &str) -> Option<String> {
+        self.resolve_with(spec, from).0
     }
 }
 
@@ -352,7 +392,77 @@ impl KernelResolver {
         spec: &str,
         from: &str,
     ) -> Res<Option<String>> {
-        Ok(self.python_module_index()?.resolve(spec, from))
+        let index = self.python_module_index()?;
+        let (found, may_fallback) = index.resolve_with(spec, from);
+        if found.is_some() || !may_fallback {
+            return Ok(found);
+        }
+        self.python_module_above_script(spec, from, &index)
+    }
+
+    /// The module in a folder above a script that no root provides: `from test
+    /// import TestCase` in `modules/vs/tests/with_a.py`, with the runner
+    /// `modules/vs/test.py` whose folder is first on `sys.path`. Nothing in the
+    /// tree says that folder is a root, and a name like `test` or `utils` may
+    /// just as well be the stdlib's, so what proves the module is what the
+    /// importer takes from it: every name must be one the file defines at
+    /// module level. A plain `import utils` or a star import takes no name, so
+    /// it proves nothing and stays unresolved. Nearest folder first; a package
+    /// is no root, so it is passed over.
+    fn python_module_above_script(
+        &mut self,
+        spec: &str,
+        from: &str,
+        index: &PythonModules,
+    ) -> Res<Option<String>> {
+        // A folder only a script has on its path never takes a stdlib name:
+        // `from html import escape` in `django/utils/text.py` is the stdlib's,
+        // though `django/utils/html.py` beside it defines `escape`.
+        if python_stdlib_module(spec.split('.').next().unwrap_or(spec)) {
+            return Ok(None);
+        }
+        let rel = spec.replace('.', "/");
+        let taken: Vec<String> = self
+            .import_mappings(from)?
+            .iter()
+            .filter(|imp| imp.source == spec && !imp.is_namespace)
+            .map(|imp| imp.exported_name.clone())
+            .collect();
+        if taken.is_empty() {
+            return Ok(None);
+        }
+        let importer_dir = parent(from).to_string();
+        let mut dir = importer_dir.clone();
+        while !dir.is_empty() {
+            // The importer's own folder is on its path even when it holds an
+            // `__init__.py` (a script run from there); a package above it is not.
+            if dir != importer_dir && index.packages.contains(&dir) {
+                dir = parent(&dir).to_string();
+                continue;
+            }
+            if let Some(file) = index.under(&dir, &rel) {
+                // A module that imports its own name wraps the real one, which
+                // that name then means; a file is never its own answer.
+                if self.import_mappings(&file)?.iter().any(|imp| imp.source == spec) {
+                    dir = parent(&dir).to_string();
+                    continue;
+                }
+                let defined: HashSet<String> = self
+                    .nodes_in_file(&file)?
+                    .iter()
+                    .filter(|n| {
+                        matches!(n.kind.as_str(), "function" | "class" | "variable" | "constant")
+                            && !n.qualified_name.contains("::")
+                    })
+                    .map(|n| n.name.clone())
+                    .collect();
+                if taken.iter().all(|name| defined.contains(name)) {
+                    return Ok(Some(file));
+                }
+            }
+            dir = parent(&dir).to_string();
+        }
+        Ok(None)
     }
 }
 
@@ -387,6 +497,68 @@ impl KernelResolver {
     #[cfg_attr(feature = "addon", napi)]
     pub fn clear_python_module_caches(&mut self) {
         self.py_globals = Default::default();
+    }
+    /// What an edit of these Python files can move through
+    /// `python_module_above_script`: such a module binds only while it defines
+    /// the names its importers take, so an edit links or unlinks them though no
+    /// file appeared or vanished. Import nodes are named by their specifier, so
+    /// each folder above a module asks for the spelling that reaches it from
+    /// there: a file in a package folder, or a file anywhere below a plain
+    /// folder that isn't a root. An edit nobody imports that way re-opens
+    /// nothing, however many other importers the module has.
+    #[cfg_attr(feature = "addon", napi)]
+    pub fn python_script_module_scope(
+        &mut self,
+        edited_files: Vec<String>,
+    ) -> Result<PythonReopenScope> {
+        let index = self.build_python_modules().map_err(Error::from)?;
+        let mut targets = Vec::new();
+        let mut leaves = Vec::new();
+        for raw in edited_files {
+            let file = raw.replace('\\', "/");
+            if !file.ends_with(".py") {
+                continue;
+            }
+            let module = file
+                .strip_suffix("/__init__.py")
+                .or_else(|| (file == "__init__.py").then_some(""))
+                .or_else(|| file.strip_suffix(".py"))
+                .unwrap_or(&file)
+                .to_string();
+            let mut dir = parent(&module).to_string();
+            while !dir.is_empty() {
+                let specifier = module[dir.len() + 1..].replace('/', ".");
+                if python_stdlib_module(specifier.split('.').next().unwrap_or(&specifier)) {
+                    dir = parent(&dir).to_string();
+                    continue;
+                }
+                let importers: Vec<String> = self
+                    .nodes_by_name(&specifier)?
+                    .iter()
+                    .filter(|n| n.kind == "import" && n.file_path.ends_with(".py"))
+                    .map(|n| parent(&n.file_path).to_string())
+                    .collect();
+                let reached = if index.packages.contains(&dir) {
+                    importers.iter().any(|d| d == &dir)
+                } else {
+                    !index.project.contains(&dir)
+                        && !index.local.contains_key(&dir)
+                        && importers.iter().any(|d| d.starts_with(&format!("{dir}/")))
+                };
+                if !reached {
+                    dir = parent(&dir).to_string();
+                    continue;
+                }
+                leaves.push(module.rsplit('/').next().unwrap_or(&module).to_string());
+                targets.push(file);
+                break;
+            }
+        }
+        Ok(PythonReopenScope {
+            target_files: targets,
+            source_dirs: Vec::new(),
+            module_leaves: leaves,
+        })
     }
     #[cfg_attr(feature = "addon", napi)]
     pub fn python_package_reopen_scope(

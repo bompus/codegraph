@@ -1179,6 +1179,11 @@ export class ReferenceResolver {
     return this.withPythonKernel((kernel) => kernel.pythonPackageReopenScope(changedFiles));
   }
 
+  /** What a sync must re-open after these Python files were edited (see `pythonScriptModuleScope`). */
+  getPythonScriptModuleScope(editedFiles: string[]) {
+    return this.withPythonKernel((kernel) => kernel.pythonScriptModuleScope(editedFiles));
+  }
+
   getPythonPackageImporters(initFiles: string[]): Map<string, Map<string, string | null>> {
     return this.withPythonKernel((kernel) => {
       const result = new Map<string, Map<string, string | null>>();
@@ -1518,12 +1523,14 @@ export class ReferenceResolver {
               ? [...workspaces.entriesByDir.entries()].map(([dir, e]) => ({
                   dir,
                   exports: e.exports ? [...e.exports.entries()].map(([key, values]) => ({ key, values })) : [],
+                  browser: e.browser ? [...e.browser.entries()].map(([key, values]) => ({ key, values })) : undefined,
                   main: e.main ?? [],
                 }))
               : undefined,
             scopedByName: workspaces.scopedByName
               ? [...workspaces.scopedByName.entries()].map(([dir, names]) => ({ dir, names: toKv(names) }))
               : undefined,
+            nestedRoots: workspaces.nestedRoots,
           }
         : undefined,
       goModules: this.getGoModules().map(m => ({ modulePath: m.modulePath, dir: path.relative(this.projectRoot, m.rootDir).split(path.sep).join('/') })),

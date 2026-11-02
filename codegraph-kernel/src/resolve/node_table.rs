@@ -555,6 +555,8 @@ pub(super) struct FileExportIndexK {
 pub(super) struct WorkspaceEntriesK {
     /// `exports` key → targets, best first (ordered like the map was read).
     pub(super) exports: Vec<(String, Vec<String>)>,
+    /// The same keys' `browser` condition targets, best first.
+    pub(super) browser: Vec<(String, Vec<String>)>,
     /// source/module/main/types/typings targets, best first.
     pub(super) main: Vec<String>,
 }
@@ -568,6 +570,8 @@ pub(super) struct WorkspaceK {
     pub(super) entries_by_dir: HashMap<String, WorkspaceEntriesK>,
     /// Manifest directory → path-dependency name → package directory.
     pub(super) scoped_by_name: HashMap<String, HashMap<String, String>>,
+    /// Folders below the root that declare workspaces of their own.
+    pub(super) nested_roots: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------

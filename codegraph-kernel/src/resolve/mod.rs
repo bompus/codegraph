@@ -114,6 +114,8 @@ pub struct KernelPackageEntriesIn {
     pub dir: String,
     /// `exports` key (`.`, `./widgets`, `./schema/*`) → its targets, best first.
     pub exports: Vec<KernelKvList>,
+    /// The same keys' `browser` condition targets, best first.
+    pub browser: Option<Vec<KernelKvList>>,
     /// source/module/main/types/typings targets, best first.
     pub main: Vec<String>,
 }
@@ -139,6 +141,9 @@ pub struct KernelWorkspaceIn {
     pub entries_by_dir: Option<Vec<KernelPackageEntriesIn>>,
     /// Manifest directory → `file:`/`link:`/`portal:` dependency name → package dir.
     pub scoped_by_name: Option<Vec<KernelScopedPackageIn>>,
+    /// Folders below the root whose manifest declares workspaces of its own:
+    /// a monorepo inside the repository, with an install of its own.
+    pub nested_roots: Option<Vec<String>>,
 }
 
 #[cfg_attr(feature = "addon", napi(object))]
@@ -679,6 +684,9 @@ use self::names::*;
 use self::object_literal::LiteralProperty;
 use self::prefilter::*;
 
+/// What a `package.json` says: its `name`, and every dependency name.
+pub(in crate::resolve) type PackageManifest = (Option<String>, HashSet<String>);
+
 #[cfg_attr(feature = "addon", napi)]
 pub struct KernelResolver {
     // Option so close() can drop the Connection deterministically — see
@@ -856,6 +864,14 @@ pub struct KernelResolver {
     /// manifest_own_packages, by directory.
     manifest_own_memo: HashMap<String, Rc<HashSet<String>>>,
     manifest_external_memo: HashMap<String, Rc<HashSet<String>>>,
+    /// packageManifest (upstream ambient-modules.ts), by directory.
+    pkg_manifest_memo: HashMap<String, Option<Rc<PackageManifest>>>,
+    /// packageFolder, by directory.
+    pkg_folder_memo: HashMap<String, String>,
+    /// tsAliasedType, by (file, type name).
+    ts_aliased_memo: HashMap<(String, String), Option<Arc<KNode>>>,
+    /// The members a JS file assigns to an object itself (`X.prototype.m = …`).
+    js_assigned_members: HashMap<String, Rc<HashSet<String>>>,
     /// lexicalScopeOf, by candidate id: the scoping function body's lines.
     lexical_scope_memo: HashMap<String, Option<(i64, i64)>>,
     /// jsDeclarationReachable's candidate-side walk, by (candidate id,
@@ -1035,6 +1051,12 @@ impl KernelResolver {
                                         .into_iter()
                                         .map(|kv| (kv.key, kv.values))
                                         .collect(),
+                                    browser: e
+                                        .browser
+                                        .unwrap_or_default()
+                                        .into_iter()
+                                        .map(|kv| (kv.key, kv.values))
+                                        .collect(),
                                     main: e.main,
                                 },
                             )
@@ -1055,6 +1077,7 @@ impl KernelResolver {
                         .collect()
                 })
                 .unwrap_or_default(),
+            nested_roots: w.nested_roots.unwrap_or_default(),
         });
         // context.getCppIncludeDirs?.() ?? [] — the TS side resolves
         // compile_commands.json + convention heuristics and passes the list;
@@ -1156,6 +1179,10 @@ impl KernelResolver {
             objc_hierarchy_memo: HashMap::new(),
             manifest_own_memo: HashMap::new(),
             manifest_external_memo: HashMap::new(),
+            pkg_manifest_memo: HashMap::new(),
+            pkg_folder_memo: HashMap::new(),
+            ts_aliased_memo: HashMap::new(),
+            js_assigned_members: HashMap::new(),
             lexical_scope_memo: HashMap::new(),
             js_decl_scope_memo: HashMap::new(),
             bare_name_memo: None,

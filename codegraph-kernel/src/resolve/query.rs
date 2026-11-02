@@ -596,6 +596,32 @@ impl KernelResolver {
                 default_binding = candidates.first().map(|n| (*n).clone());
             }
         }
+        // CommonJS export assignments: `exports.NAME = <rhs>` /
+        // `module.exports.NAME = <rhs>` export NAME, holding whatever the
+        // right-hand side names — a function of another name included.
+        if nodes.iter().find(|n| n.kind == "file").is_some_and(|n| is_js_family(&n.language)) {
+            if let Some(src) = self.read_file(file_path) {
+                let text = src.text();
+                if text.contains("exports") {
+                    if let Ok(re) = Self::cached_regex(r#"(?m)^\s*(?:module\.)?exports(?:\.([A-Za-z_$][\w$]*)|\[\s*['"]([A-Za-z_$][\w$]*)['"]\s*\])\s*=\s*([^;\n]+)"#) {
+                        for caps in re.captures_iter(text) {
+                            let Some(name) = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str().to_string()) else { continue };
+                            let rhs = caps[3].trim();
+                            let target = Self::cached_regex(r"^(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(").ok()
+                                .and_then(|r| r.captures(rhs)).map(|m| m[1].to_string())
+                                .or_else(|| Self::cached_regex(r"^class\s+([A-Za-z_$][\w$]*)").ok().and_then(|r| r.captures(rhs)).map(|m| m[1].to_string()))
+                                .or_else(|| Self::cached_regex(r"^([A-Za-z_$][\w$]*)\s*$").ok().and_then(|r| r.captures(rhs)).map(|m| m[1].to_string()))
+                                .unwrap_or_else(|| name.clone());
+                            if let Some(node) = nodes.iter().find(|n| n.name == target
+                                && matches!(n.kind.as_str(), "function" | "class" | "constant" | "variable" | "method"))
+                            {
+                                by_name.entry(name).or_insert_with(|| node.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
         // Local export clauses: `export { impl as alias }` binds the renamed
         // name to the real declaration.
         if !rows.is_empty() {
@@ -624,6 +650,17 @@ impl KernelResolver {
     /// findExportedSymbol (import-resolver.ts) — bounded, cycle-safe export
     /// walk over direct exports, named re-exports and wildcard barrels.
     /// Top-level (fresh-visited) results are memoized like the TS WeakMap.
+    /// commonJsDefaultExport's `module.exports = require('./x')`: the module a
+    /// file forwards its whole exports from.
+    fn common_js_requirement(&mut self, file: &str, language: &str) -> Res<Option<String>> {
+        let Some(src) = self.read_file(file) else { return Ok(None) };
+        let text = src.text();
+        if !text.contains("module.exports") { return Ok(None); }
+        let re = Self::cached_regex(r#"(?m)^\s*(?:exports\s*=\s*)?module\.exports\s*=\s*(?:exports\s*=\s*)?require\(\s*['"]([^'"]+)['"]\s*\)"#)?;
+        let Some(source) = re.captures(text).map(|m| m[1].to_string()) else { return Ok(None) };
+        self.resolve_import_path(&source, file, language)
+    }
+
     pub(super) fn find_exported_symbol(
         &mut self,
         file_path: &str,
@@ -674,6 +711,12 @@ impl KernelResolver {
         } else if want.is_namespace && want.member_name.is_some() {
             if let Some(d) = export_index.by_name.get(want.member_name.as_deref().unwrap()) {
                 return self.memo_symbol_opt(memo_key, Some(d.clone()));
+            }
+            // `module.exports = require('./lib/m')` forwards the whole module.
+            if let Some(next) = self.common_js_requirement(file_path, language)? {
+                if let Some(forwarded) = self.find_exported_symbol(&next, want, language, visited, depth + 1)? {
+                    return self.memo_symbol_opt(memo_key, Some(forwarded));
+                }
             }
         } else if let Some(d) = export_index.by_name.get(&want.exported_name) {
             return self.memo_symbol_opt(memo_key, Some(d.clone()));

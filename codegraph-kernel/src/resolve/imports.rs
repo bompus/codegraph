@@ -109,7 +109,14 @@ impl KernelResolver {
             }
         }
         let name = Self::longest_package_name(import_path, ws.by_name.keys())?;
-        Some((name.to_string(), ws.by_name[name].clone()))
+        let dir = ws.by_name[name].clone();
+        // A bare import from inside a nested workspace install doesn't reach
+        // the outer workspace's packages: package managers don't nest
+        // workspaces.
+        if leaves_workspace_root(from_file, &dir, &ws.nested_roots) {
+            return None;
+        }
+        Some((name.to_string(), dir))
     }
 
     /// resolveWorkspaceImport (workspace-packages.ts): sourceEntries first,
@@ -138,7 +145,7 @@ impl KernelResolver {
 
     /// workspaceImportTargets (workspace-packages.ts): what the package's
     /// manifest declares for the import, and its directory form.
-    fn workspace_import_targets(&self, import_path: &str, from_file: &str) -> Option<WorkspaceTargets> {
+    pub(super) fn workspace_import_targets(&self, import_path: &str, from_file: &str) -> Option<WorkspaceTargets> {
         let ws = self.workspaces.as_ref()?;
         let (name, dir) = self.match_workspace_package(import_path, from_file)?;
         let subpath = &import_path[name.len()..]; // '' or '/widgets'
@@ -153,7 +160,13 @@ impl KernelResolver {
             Some(entry) => vec![entry],
             None => self.declared_workspace_entries(dir.as_str(), subpath),
         };
-        Some(WorkspaceTargets { declared, directory, package_dir: dir })
+        let browser = self
+            .workspaces
+            .as_ref()
+            .and_then(|ws| ws.entries_by_dir.get(dir.as_str()))
+            .map(|entries| exported_targets(&entries.browser, &format!(".{subpath}")))
+            .unwrap_or_default();
+        Some(WorkspaceTargets { declared, browser, directory, package_dir: dir })
     }
 
     /// declaredEntries: the targets a package's manifest declares for
@@ -227,6 +240,11 @@ impl KernelResolver {
             }
         }
         None
+    }
+
+    /// Whether `file` reads the browser's page (see is_browser_code_source).
+    fn is_browser_code(&mut self, file: &str) -> bool {
+        self.read_file(file).is_some_and(|src| is_browser_code_source(src.text()))
     }
 
     /// applyAliases (path-aliases.ts): candidate paths relative to
@@ -355,6 +373,18 @@ impl KernelResolver {
             // else the member's directory where extension/index permutations
             // find its barrel, else the source its build output mirrors.
             if let Some(targets) = self.workspace_import_targets(import_path, from_file) {
+                // A file that reads the page takes the entry's `browser`
+                // condition (react's fixtures, built for the browser).
+                if !targets.browser.is_empty() && self.is_browser_code(from_file) {
+                    for target in &targets.browser {
+                        if let Some(hit) = self
+                            .indexed_target(target, language)
+                            .or_else(|| self.built_source_of(target, &targets.package_dir, language))
+                        {
+                            return Ok(Some(hit));
+                        }
+                    }
+                }
                 if let Some(declared) = self.declared_workspace_entry(&targets, language) {
                     return Ok(Some(declared));
                 }
@@ -601,6 +631,34 @@ impl KernelResolver {
         Ok(None)
     }
 
+    /// isStatedDefaultExport (import-resolver.ts): whether `node` is what its
+    /// own file says it default-exports — a stated `export default`, a
+    /// single-file component, the name `module.exports` is set to, or a
+    /// declaration file's answer. Anything else is the guess at the module's
+    /// first export.
+    fn is_stated_default_export(&mut self, node: &KNode) -> Res<bool> {
+        if !is_js_family(&node.language) { return Ok(node.kind == "component"); }
+        if is_declaration_file(&node.file_path) { return Ok(true); }
+        let idx = self.file_export_index(&node.file_path)?;
+        if idx.default_component.as_ref().is_some_and(|c| c.id == node.id)
+            || idx.default_binding.as_ref().is_some_and(|d| d.id == node.id)
+            || idx.by_name.get("default").is_some_and(|d| d.id == node.id)
+        {
+            return Ok(true);
+        }
+        Ok(self.common_js_default_name(&node.file_path)?.as_deref() == Some(node.name.as_str()))
+    }
+
+    /// commonJsDefaultExport (import-resolver.ts): the name `module.exports = X`
+    /// sets, when X is a bare identifier.
+    fn common_js_default_name(&mut self, file: &str) -> Res<Option<String>> {
+        let Some(src) = self.read_file(file) else { return Ok(None) };
+        let text = src.text();
+        if !text.contains("module.exports") { return Ok(None); }
+        let re = Self::cached_regex(r"(?m)module\.exports\s*=\s*([A-Za-z_$][\w$]*)\s*(?:;|$)")?;
+        Ok(re.captures(text).map(|m| m[1].to_string()))
+    }
+
     /// resolveJavaImportedReference (import-resolver.ts) — the bare arm
     /// (`matchesBare` ⇒ memberName = localName) plus the static-import owner
     /// fallback, both over the FQN→file-suffix disambiguation.
@@ -748,11 +806,34 @@ impl KernelResolver {
     }
 
     /// isBoundToOutOfRepoImport (import-resolver.ts): for a bare name in a
-    /// migrated language only the ESM arm can fire.
-    pub(super) fn is_bound_to_out_of_repo_import(&mut self, r: &ResolveRefIn) -> Res<bool> {
+    /// migrated language only the ESM arm can fire. `target` is what a
+    /// strategy found, when the caller has it (the Python arm reads it).
+    pub(super) fn is_bound_to_out_of_repo_import(&mut self, r: &ResolveRefIn, target: Option<&KNode>) -> Res<bool> {
         // Qualified refs resolve by path, not through a bare import binding.
         if r.reference_name.contains("::") || r.reference_name.contains('.') {
             return Ok(false);
+        }
+        // Python: every import binding the name is absolute and names a
+        // module Python's search doesn't find in the project. A class in a
+        // file the import path names stays (the search can miss a module on
+        // a `sys.path` the program sets up itself), as does a class of the
+        // referring file, which may rebind the name.
+        if r.language == "python" {
+            if target.is_some_and(|t| t.file_path == r.file_path) {
+                return Ok(false);
+            }
+            let mappings = self.import_mappings(&r.file_path)?;
+            let mut found = false;
+            for imp in mappings.iter().filter(|m| m.local_name == r.reference_name) {
+                found = true;
+                if imp.source.starts_with('.')
+                    || self.resolve_import_path(&imp.source, &r.file_path, "python")?.is_some()
+                    || target.is_some_and(|t| is_in_python_module_path(&t.file_path, &imp.source))
+                {
+                    return Ok(false);
+                }
+            }
+            return Ok(found);
         }
         // Rust: a `use` path rooted at a stdlib crate ships outside the repo
         // by definition. Deliberately NOT "the module path doesn't resolve":
@@ -1053,7 +1134,6 @@ impl KernelResolver {
                     .find_python_module_file(&imp.source, &r.file_path)?
                     .map(|n| n.file_path.clone());
             }
-            let Some(resolved_path) = resolved_path else { continue };
             let want = ExportWant {
                 is_default: imp.is_default,
                 is_namespace: imp.is_namespace,
@@ -1075,6 +1155,44 @@ impl KernelResolver {
                     None
                 },
             };
+            // A `declare module` the import's file can see describes the
+            // module ahead of a package whose module is only a declaration
+            // file; a module of the repository's own packages is what runs
+            // (findImportedExport in import-resolver.ts). `ts_ambient_lookup`
+            // applies both rules. A declaration file whose built source beside
+            // it exports the name is that implementation's, not the stub's.
+            if is_esm_family(&r.language) {
+                let mut real_export = false;
+                if let Some(path) = &resolved_path {
+                    if is_declaration_file(path) {
+                        if let Some(stem) = [".d.ts", ".d.mts", ".d.cts"].iter().find_map(|suffix| path.strip_suffix(suffix)) {
+                            let alternatives: &[&str] = if path.ends_with(".d.mts") { &[".mts", ".mjs"] }
+                                else if path.ends_with(".d.cts") { &[".cts", ".cjs"] }
+                                else { &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"] };
+                            for extension in alternatives {
+                                let implementation = format!("{stem}{extension}");
+                                if self.file_exists(&implementation)
+                                    && self.find_exported_symbol(&implementation, &want, &r.language, &mut HashSet::new(), 0)?.is_some()
+                                {
+                                    real_export = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if !real_export {
+                    let ambient_name = if imp.is_namespace {
+                        r.reference_name.rsplit('.').next().unwrap_or(&r.reference_name).to_string()
+                    } else {
+                        imp.exported_name.clone()
+                    };
+                    if let Some(node) = self.ts_ambient_lookup(&imp.source, &ambient_name, imp.is_default, r)? {
+                        return Ok(Some(KCand { node, confidence: 0.9, resolved_by: "import" }));
+                    }
+                }
+            }
+            let Some(resolved_path) = resolved_path else { continue };
             let mut visited = HashSet::new();
             let mut target = None;
             if r.reference_kind == "calls" && is_js_family(&r.language) {
@@ -1094,6 +1212,34 @@ impl KernelResolver {
                 target = self.find_exported_symbol(&resolved_path, &want, &r.language, &mut visited, 0)?;
             }
             let target = if target.is_none() && r.language == "python" { self.python_module_symbol(&resolved_path,want.member_name.as_deref().unwrap_or(&want.exported_name),0,&mut HashSet::new())? } else { target };
+            // `named.second()` through a default binding (`require('./m')`, a
+            // default import of a CommonJS module): what the module exports as
+            // `second`. Where the module states no default the name it exports
+            // comes first, and a member it does not export links nothing — the
+            // receiver isn't known, so there is nothing to name.
+            let through_default = is_member && imp.is_default && is_esm_import_language(&r.language);
+            let guessed = through_default
+                && !match &target {
+                    Some(t) => self.is_stated_default_export(t)?,
+                    None => false,
+                };
+            let exported_member = if through_default {
+                let member = &r.reference_name[imp.local_name.len() + 1..];
+                let want = ExportWant {
+                    is_default: false,
+                    is_namespace: true,
+                    exported_name: imp.exported_name.clone(),
+                    member_name: Some(member.to_string()),
+                };
+                self.find_exported_symbol(&resolved_path, &want, &r.language, &mut visited, 0)?
+            } else {
+                None
+            };
+            if guessed {
+                if let Some(node) = &exported_member {
+                    return Ok(Some(KCand { node: node.clone(), confidence: 0.9, resolved_by: "import" }));
+                }
+            }
             let Some(target) = target
             else {
                 // `import api from './api'` where the module ends in
@@ -1146,6 +1292,16 @@ impl KernelResolver {
                 // task function (#2040). Unknown members stay unresolved.
                 if r.language == "python" {
                     return Ok(None);
+                }
+                // `module.exports = main; module.exports.extra = …`, then
+                // `m.extra()`.
+                if let Some(node) = &exported_member {
+                    return Ok(Some(KCand { node: node.clone(), confidence: 0.9, resolved_by: "import" }));
+                }
+                // A member of the guess at a module's first export is no member
+                // of the module: the receiver isn't known, so nothing to name.
+                if guessed {
+                    continue;
                 }
                 // resolveImportedInstanceMember returns null for non-const/var
                 // targets before reading anything — for them the decline rule
@@ -1952,10 +2108,10 @@ impl KernelResolver {
         if !is_static_member_container(&container.kind) {
             return Ok(None);
         }
-        let member = js_slice(&r.reference_name, utf16_len(local_name) + 1)
-            .split('.')
-            .next()
-            .unwrap_or("");
+        let chain = js_slice(&r.reference_name, utf16_len(local_name) + 1);
+        let mut parts = chain.split('.');
+        let member = parts.next().unwrap_or("");
+        let rest: Vec<&str> = parts.collect();
         if member.is_empty() {
             return Ok(None);
         }
@@ -1969,6 +2125,17 @@ impl KernelResolver {
         if candidates.is_empty() {
             return Ok(None);
         }
+        // A Python reference keeps its whole chain, and it reads the chain's
+        // last link: `Foo.bar.fset()` is no call of `bar`, nor
+        // `Foo.Inner.objects.create()` a new `Inner`, but `Foo.Inner.run()` is
+        // `Inner`'s `run`.
+        if r.language == "python" && !rest.is_empty() {
+            let next = candidates.iter().find(|n| is_static_member_container(&n.kind)).cloned();
+            let Some(next) = next else { return Ok(None) };
+            let mut inner = r.clone();
+            inner.reference_name = format!("{}.{}", member, rest.join("."));
+            return self.resolve_static_member(&next, &inner, member);
+        }
         if r.reference_kind == "calls" {
             if let Some(callable) = candidates
                 .iter()
@@ -1981,8 +2148,60 @@ impl KernelResolver {
     }
 }
 
-fn is_declaration_file(path: &str) -> bool {
+/// leavesWorkspaceRoot (workspace-packages.ts): whether `target`, a project
+/// path, lies outside the nested workspace root `file` is under, if it is
+/// under one.
+pub(super) fn leaves_workspace_root(file: &str, target: &str, roots: &[String]) -> bool {
+    let file = file.replace('\\', "/");
+    let mut root = "";
+    for dir in roots {
+        if dir.len() > root.len() && file.starts_with(&format!("{dir}/")) {
+            root = dir;
+        }
+    }
+    !root.is_empty() && !target.replace('\\', "/").starts_with(&format!("{root}/"))
+}
+
+/// Whether a file reads the browser's page, so that the `browser` condition of
+/// an import is the one it runs with: `document.title`, `window.location`.
+pub(super) fn is_browser_code_source(source: &str) -> bool {
+    let text = crate::resolve::awaited::blank_string_contents(&crate::resolve::awaited::strip_ts_comments(source));
+    let bytes = text.as_bytes();
+    for needle in ["document", "window"] {
+        let mut from = 0;
+        while let Some(at) = text[from..].find(needle) {
+            let start = from + at;
+            let end = start + needle.len();
+            let before = start.checked_sub(1).map(|i| bytes[i]);
+            let boundary = before.is_none_or(|b| !(b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b == b'.'));
+            let after = bytes.get(end).copied();
+            let follows = after == Some(b'.') || after == Some(b'[') || after.is_some_and(|b| b.is_ascii_whitespace());
+            if boundary && follows {
+                // Skip whitespace before `.`/`[`.
+                let mut i = end;
+                while bytes.get(i).is_some_and(|b| b.is_ascii_whitespace()) {
+                    i += 1;
+                }
+                if bytes.get(i) == Some(&b'.') || bytes.get(i) == Some(&b'[') {
+                    return true;
+                }
+            }
+            from = end;
+        }
+    }
+    false
+}
+
+pub(super) fn is_declaration_file(path: &str) -> bool {
     [".d.ts", ".d.mts", ".d.cts"].iter().any(|ext| path.ends_with(ext))
+}
+
+/// Whether `file` is the module `dotted` or inside it, under any root:
+/// `lib/x/helpers/base.py` for `helpers.base`.
+fn is_in_python_module_path(file: &str, dotted: &str) -> bool {
+    let tail = format!("/{}", dotted.replace('.', "/"));
+    let at = format!("/{file}");
+    at.contains(&format!("{tail}/")) || at.ends_with(&format!("{tail}.py")) || at.ends_with(&format!("{tail}.pyi"))
 }
 
 /// isCfmlTemplatePath: the name a CFML include carries — a path with a
@@ -2029,9 +2248,11 @@ fn indexed_spelling(file_path: &str, language: &str) -> String {
 
 /// WorkspaceImportTargets (workspace-packages.ts): where an import of a
 /// project package lands before any file is probed.
-struct WorkspaceTargets {
+pub(super) struct WorkspaceTargets {
     /// The entries the package declares for the import, best first.
     declared: Vec<String>,
+    /// The entries the package declares for a browser, best first.
+    browser: Vec<String>,
     /// The package's directory plus the import's subpath, extension-less.
     directory: String,
     /// The package's directory.

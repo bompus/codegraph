@@ -760,7 +760,7 @@ if super::lang_scope::is_dart_member_read(r) {
             };
             cand.node = ty;
         }
-        if self.is_bound_to_out_of_repo_import(r)? {
+        if self.is_bound_to_out_of_repo_import(r, Some(&cand.node))? {
             return Ok(None);
         }
         // One embedded bare that only a package the file dot-imports
@@ -938,6 +938,16 @@ if super::lang_scope::is_dart_member_read(r) {
     }
 
     fn resolve_ref_scoped(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
+        // A Python call on an element of a collection is the project's one
+        // method of the name in a module the file has in hand, or nothing: the
+        // collection's name says nothing of the element's class, and no name
+        // a list or a dict has is it.
+        if r.language == "python" && r.reference_kind == "calls" && re!(r"\]\.\w+$").is_match(&r.reference_name) {
+            return Ok(match self.match_python_element_call(r)? {
+                Some(c) => self.finish_pre_framework(r, c)?,
+                None => ResolveOutcome::unresolved(),
+            });
+        }
         let attribute = if r.language == "python" && r.reference_kind == "calls" {
             Some(self.resolve_python_attribute(r.clone())?)
         } else { None };
@@ -979,6 +989,22 @@ if super::lang_scope::is_dart_member_read(r) {
                     pascal_scope::CAST_TARGET_KINDS.contains(&t.kind.as_str())
                 }) {
                     outcome.edge_kind = Some("references".to_string());
+                }
+            }
+        }
+        // A guess by name stops at a monorepo's own edge: the tests of a
+        // nested workspace install see neither the outer root's packages nor
+        // its globals (crossesWorkspaceRoot).
+        if outcome.status == "resolved" && is_js_family(&r.language)
+            && matches!(outcome.resolved_by.as_deref(), Some("exact-match" | "fuzzy" | "function-ref"))
+        {
+            if let Some(tid) = outcome.target_node_id.clone() {
+                if let Some(target) = self.node_by_id(&tid)? {
+                    if let Some(ws) = self.workspaces.as_ref() {
+                        if crate::resolve::imports::leaves_workspace_root(&r.file_path, &target.file_path, &ws.nested_roots) {
+                            outcome = ResolveOutcome::unresolved();
+                        }
+                    }
                 }
             }
         }

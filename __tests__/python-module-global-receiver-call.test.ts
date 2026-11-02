@@ -81,9 +81,9 @@ describe('a Python call through a module-level instance (#2582)', () => {
 
   it.each([
     ['a multi-line base list', 'class Base:\n    def run(self):\n        return 1\n\n\nclass A(\n    Base,\n):\n    pass\n', 'Base::run@svc.py'],
-    ['a subscripted base with no indexed inheritance edge', 'from typing import Generic, TypeVar\n\nT = TypeVar("T")\n\n\nclass Base(Generic[T]):\n    def run(self):\n        return 1\n\n\nclass A(Base[int]):\n    pass\n', null],
+    ['a subscripted base', 'from typing import Generic, TypeVar\n\nT = TypeVar("T")\n\n\nclass Base(Generic[T]):\n    def run(self):\n        return 1\n\n\nclass A(Base[int]):\n    pass\n', 'Base::run@svc.py'],
     ['a member-like line in another method', 'class A:\n    def run(self):\n        return 1\n\n    def other(self):\n        return dict(\n            run=1,\n        )\n', 'A::run@svc.py'],
-  ])('resolves only indexed inheritance through %s', async (_label, classes, expected) => {
+  ])('keeps the name-matched edge through %s', async (_label, classes, expected) => {
     const code = `${classes}\n\n_svc = A()\n\n\ndef use():\n    _svc.run()\n`;
     expect(await calls({ 'svc.py': code }, 'use')).toEqual(expected === null ? [] : [expected]);
   });

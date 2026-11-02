@@ -573,20 +573,15 @@ impl KernelResolver {
         if module.is_empty() || module.starts_with('.') {
             return Ok(false);
         }
-        Ok(!self.python_module_in_project(&module)?)
+        Ok(!self.python_module_in_project(&module, &r.file_path)?)
     }
 
-    /// Whether any project file is `a/b/c.py` or `a/b/c/__init__.py` for
-    /// module `a.b.c` (suffix-matched, like PY_MODULE_LOCAL upstream).
-    fn python_module_in_project(&mut self, module: &str) -> Res<bool> {
-        let rel = module.replace('.', "/");
-        let last_seg = module.rsplit('.').next().unwrap_or(module);
-        let file = format!("{rel}.py");
-        if self.nodes_by_name(&format!("{last_seg}.py"))?.iter().any(|n| n.kind == "file" && is_path_or_tail(&n.file_path, &file)) {
-            return Ok(true);
-        }
-        let init = format!("{rel}/__init__.py");
-        Ok(self.nodes_by_name("__init__.py")?.iter().any(|n| n.kind == "file" && is_path_or_tail(&n.file_path, &init)))
+    /// Whether the import resolver finds a project module for `a.b.c` as
+    /// `from_file` imports it, the answer the import edge would use (the
+    /// package roots decide; a file that merely ends in `requests/__init__.py`
+    /// — a copy nested in a test fixture — is not the `requests` it names).
+    fn python_module_in_project(&mut self, module: &str, from_file: &str) -> Res<bool> {
+        Ok(self.resolve_import_path(module, from_file, "python")?.is_some())
     }
 }
 
