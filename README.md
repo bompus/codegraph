@@ -809,7 +809,7 @@ codegraph explore <query>         # Compact map by default (--mode map|snippets|
 codegraph context <task...>       # Context for a task: relevant symbols, relationships and code (--format markdown|json, --max-nodes, --no-code)
 codegraph sessions <words...>     # Search Claude Code, Codex, Cursor/T3, OpenCode, AGY, Devin, and Grok transcripts and commit messages for this project (--role, --since <days>, --until <date>, --session, --any, --full, --context <n>, --project <path...> (experimental), --json; same output as codegraph_sessions)
 codegraph node <symbol|file>      # One symbol's source + callers, or read a file with line numbers (same output as codegraph_node)
-codegraph files [path]            # Show file structure (--format, --filter, --max-depth, --json)
+codegraph files [path]            # Show file structure (--format, --filter, --max-depth, --tests, --json)
 codegraph callers <symbol>        # Find what calls a function/method (--limit, --json)
 codegraph callees <symbol>        # Find what a function/method calls (--limit, --json)
 codegraph impact <symbol>         # Analyze what code is affected by changing a symbol (--depth, --json)
