@@ -102,6 +102,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+ In TypeScript and Flow, a parameter, local or field typed by an alias of a class, like `bridge: BackendBridge` with `type BackendBridge = Bridge<A, B>`, now calls that class's methods, through a nullable alias and an alias of an alias too. Before, such a call linked to nothing.
+
  In JavaScript and TypeScript, a member of a module loaded with `require('./x')` or a default import, like `utils.clean()` or `named.second()`, now links to what that module exports under the name. Before, a CommonJS module of `exports.x = …` assignments or `module.exports = { … }`, and an ES module with no default of its own, sent every such call to the first function it declares, or linked nothing, and a name the module doesn't export linked there too. `module.exports = X` beside an `exports.y = function …` now means `X`, so `new Mocha()` no longer lands on a neighbour of `Mocha`.
 
 - In Python, a call on a class whose base comes from outside the project, like `Color.name_of()` with `class Color(Enum)` after `from enum import Enum`, or with `class Color(enum.Enum)`, no longer links to a method of a project class that only shares the base's name. Re-index Python projects after upgrading.

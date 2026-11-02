@@ -3,6 +3,7 @@
 //! names it (tsKnownTypeCall, tsMethodUpChain, tsNamedType and
 //! tsOutsideTypeDeclaration of upstream's name-matcher.ts).
 
+use super::awaited::strip_ts_comments;
 use super::fields::TS_BASE_WALK_DEPTH;
 use super::*;
 
@@ -213,6 +214,77 @@ impl KernelResolver {
         Ok(found)
     }
 
+    /// The one type a TS or Flow alias's value names, as written: `Bridge` of
+    /// `Bridge<A, B>`, `Bridge | null` or Flow's `?Bridge`. None for anything
+    /// else (a union of two types, an object type, a function type, `Bridge[]`).
+    fn ts_alias_value_name(&mut self, alias: &KNode) -> Option<String> {
+        let lines = self.read_file(&alias.file_path)?;
+        let from = ((alias.start_line - 1).max(0) as usize).min(lines.len());
+        let to = (alias.end_line.max(0) as usize).clamp(from, lines.len());
+        if from == to { return None; }
+        let mut extent: Vec<&str> = lines[from..to].iter().map(String::as_str).collect();
+        let last = extent.len() - 1;
+        extent[last] = js_prefix(extent[last], alias.end_column.max(0) as usize);
+        let text = strip_ts_comments(&extent.join("\n"));
+        let text = js_slice(&text, alias.start_column.max(0) as usize);
+        // What is outside every `<…>`, past the `=` of the declaration itself:
+        // a type parameter may have a default of its own, `type T<A = string> = …`.
+        let mut depth = 0i32;
+        let mut value: Option<String> = None;
+        let chars: Vec<char> = text.chars().collect();
+        for (i, ch) in chars.iter().enumerate() {
+            match *ch {
+                '<' => depth += 1,
+                '>' if chars.get(i.wrapping_sub(1)).copied() != Some('=') => depth -= 1,
+                _ if depth > 0 => {}
+                _ if value.is_some() => value.as_mut().unwrap().push(*ch),
+                '=' if chars.get(i + 1).copied() != Some('>') => value = Some(String::new()),
+                _ => {}
+            }
+            if depth < 0 { return None; }
+        }
+        let raw = value?;
+        let parts: Vec<&str> = raw.trim_end_matches(|c: char| c == ';' || c.is_whitespace())
+            .split('|').map(str::trim)
+            .filter(|p| !p.is_empty() && *p != "null" && *p != "undefined")
+            .collect();
+        if parts.len() != 1 { return None; }
+        let name = parts[0].trim_start_matches('?').trim_start();
+        if !re!(r"^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$").is_match(name) { return None; }
+        Some(name.to_string())
+    }
+
+    /// The class or interface a type alias `file` declares stands for:
+    /// `export type BackendBridge = Bridge<BackendEvents, FrontendEvents>`,
+    /// through an alias of an alias, each name read the way the alias's own
+    /// file reads it.
+    fn ts_aliased_type(&mut self, name: &str, file: &str, at: &ResolveRefIn, depth: usize) -> Res<Option<Arc<KNode>>> {
+        let key = (file.to_string(), name.to_string());
+        if let Some(hit) = self.ts_aliased_memo.get(&key) { return Ok(hit.clone()); }
+        let mut found = None;
+        let alias = self.nodes_in_file(file)?.iter().find(|n| n.name == name && n.kind == "type_alias").cloned();
+        let written = match &alias {
+            Some(alias) if depth < 4 => self.ts_alias_value_name(alias),
+            _ => None,
+        };
+        if let (Some(alias), Some(written)) = (&alias, written) {
+            // `type Box<T> = T | null` holds whatever its argument is.
+            if !self.ts_class_type_parameter(alias, &written) {
+                match self.ts_named_type_in(&written, &alias.file_path, &alias.language, &alias.id, at)? {
+                    TsNamedType::Node(named) => found = Some(named),
+                    TsNamedType::Outside => {}
+                    TsNamedType::Missing => {
+                        let last = written.rsplit('.').next().unwrap_or(&written).to_string();
+                        let imported = self.ts_imported_type_file(&written, &at.clone().at(alias))?;
+                        found = self.ts_aliased_type(&last, imported.as_deref().unwrap_or(&alias.file_path), at, depth + 1)?;
+                    }
+                }
+            }
+        }
+        self.ts_aliased_memo.insert(key, found.clone());
+        Ok(found)
+    }
+
     /// tsMethodUpChain: the method `name` of the TS/JS class or interface
     /// `cls`: its own, or else the nearest supertype's up its head's
     /// `extends` (then `implements`), each found the way its subtype's file
@@ -289,7 +361,13 @@ impl KernelResolver {
             // An import may rename it: `export { MessageSender as MessagingService }`.
             None => match self.ts_named_type_in(type_name, &at.file_path, &at.language, "", at)? {
                 TsNamedType::Node(named) => named,
-                _ => return Ok(None),
+                // A type alias stands for the one class or interface its value
+                // names: `type BackendBridge = Bridge<A, B>`.
+                TsNamedType::Missing => match self.ts_aliased_type(type_name, file, at, 0)? {
+                    Some(named) => named,
+                    None => return Ok(None),
+                },
+                TsNamedType::Outside => return Ok(None),
             },
         };
         let (found, complete) = self.ts_method_up_chain(&known, method, at, 0)?;
