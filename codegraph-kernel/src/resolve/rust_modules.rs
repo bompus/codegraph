@@ -152,7 +152,7 @@ impl KernelResolver {
         }
         let mut at = r.clone();
         at.reference_name = head.clone();
-        self.is_bound_to_out_of_repo_import(&at)
+        self.is_bound_to_out_of_repo_import(&at, None)
     }
 
     /// resolveRustModuleFile (import-resolver.ts): map module segments to
