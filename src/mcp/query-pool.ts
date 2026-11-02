@@ -51,6 +51,9 @@ export interface PoolWorker {
 /** Default linger before a queued call is answered with busy-guidance. */
 const DEFAULT_BUSY_TIMEOUT_MS = 45_000; // < the ~60s MCP client request timeout
 
+/** How long a retired idle worker gets to close and exit before it is terminated. */
+const RETIRE_TIMEOUT_MS = 5_000;
+
 /** Hard ceiling on pool size regardless of core count / env. */
 const MAX_POOL_SIZE = 16;
 
@@ -169,6 +172,8 @@ export interface QueryPoolOptions {
   createWorker?: () => PoolWorker;
   /** Idle time before a worker beyond the first is retired; 0 never retires. */
   idleRetireMs?: number;
+  /** How long a retired worker gets to close and exit by itself before it is terminated. Default 5s. */
+  retireTimeoutMs?: number;
   /** How long destroy() waits on a worker still starting up (tests shorten it). Default 15s. */
   startSettleMs?: number;
   /**
@@ -242,7 +247,11 @@ export class QueryPool {
   /** When each idle worker became idle, for retirement. */
   private idleSince = new Map<PoolWorker, number>();
   private readonly idleRetireMs: number;
+  private readonly retireTimeoutMs: number;
   private retireTimer?: ReturnType<typeof setInterval>;
+  // Retired workers asked to exit, with the timer that terminates one that
+  // hasn't by retireTimeoutMs and what destroy() waits on.
+  private retiring = new Map<PoolWorker, { cap: NodeJS.Timeout; gone: Promise<void>; settle: () => void }>();
   private readonly startSettleMs: number;
   private readonly warmFloor: number;
 
@@ -253,6 +262,7 @@ export class QueryPool {
     this.maxRetries = opts.maxRetries ?? 1;
     this.createWorker = opts.createWorker ?? (() => new Worker(WORKER_FILE, { workerData: { root: this.root } }));
     this.idleRetireMs = opts.idleRetireMs ?? resolveIdleRetireMs();
+    this.retireTimeoutMs = opts.retireTimeoutMs ?? RETIRE_TIMEOUT_MS;
     if (this.idleRetireMs > 0) {
       this.retireTimer = setInterval(() => this.retireIdle(), Math.max(1_000, this.idleRetireMs / 4));
       this.retireTimer.unref?.();
@@ -286,7 +296,7 @@ export class QueryPool {
    * Terminate workers idle for `idleRetireMs`, oldest idle first. A pool with a
    * default project keeps one warm; a pool without one retires them all, since
    * {@link warm} starts another on the next call that names a project.
-   * A retired worker leaves `workers` before it is terminated, so its exit is
+   * A retired worker leaves `workers` before it is retired, so its exit is
    * not counted as a crash (onWorkerGone ignores workers it no longer owns).
    */
   private retireIdle(now = Date.now()): void {
@@ -300,10 +310,44 @@ export class QueryPool {
       this.workers.delete(w);
       this.idle = this.idle.filter((x) => x !== w);
       this.idleSince.delete(w);
-      try { void w.terminate(); } catch { /* already gone */ }
+      this.retire(w);
     }
     // An empty pool is cold again: serve in-process until the next worker is ready.
     if (this.workers.size === 0) this.everReady = false;
+  }
+
+  /**
+   * Ask an idle worker to exit by itself rather than terminating it: it closes
+   * its connections and collects garbage first, so no marking is in flight when
+   * its thread ends (see worker-teardown.ts — terminating a worker mid-mark
+   * crashed the process on Windows). One that hasn't gone by `retireTimeoutMs`
+   * is terminated, through the pool's start-aware path.
+   */
+  private retire(w: PoolWorker): void {
+    const terminate = (): void => {
+      void this.terminateStarted(w).then(() => this.retired(w));
+    };
+    const cap = setTimeout(terminate, this.retireTimeoutMs);
+    cap.unref?.();
+    let settle!: () => void;
+    const gone = new Promise<void>((resolve) => { settle = resolve; });
+    this.retiring.set(w, { cap, gone, settle });
+    try {
+      w.postMessage({ type: 'close' });
+    } catch {
+      // A worker that can't take the message is gone already: terminate it now.
+      this.retired(w);
+      terminate();
+    }
+  }
+
+  /** A retiring worker has exited (or was terminated): stop its cap and release destroy(). */
+  private retired(w: PoolWorker): void {
+    const retirement = this.retiring.get(w);
+    if (!retirement) return;
+    clearTimeout(retirement.cap);
+    this.retiring.delete(w);
+    retirement.settle();
   }
 
   /** Put a worker back on the idle stack and note when it went idle. */
@@ -383,7 +427,7 @@ export class QueryPool {
     this.starts.set(w, { settled, settle });
     w.on('message', (m) => this.onMessage(w, (m ?? {}) as WorkerMessage));
     w.on('error', () => { this.startSettled(w); this.onWorkerGone(w); });
-    w.on('exit', (code) => { this.startSettled(w); if (code !== 0) this.onWorkerGone(w); });
+    w.on('exit', (code) => { this.startSettled(w); this.retired(w); if (code !== 0) this.onWorkerGone(w); });
   }
 
   private onMessage(w: PoolWorker, m: WorkerMessage): void {
@@ -516,7 +560,8 @@ export class QueryPool {
   /**
    * Terminate all workers and answer any outstanding calls gracefully. A worker
    * still starting up is terminated once it has started (see
-   * WORKER_START_SETTLE_MS); outstanding calls are answered first.
+   * WORKER_START_SETTLE_MS); outstanding calls are answered first. A retired
+   * worker still on its way out is waited for, not left to end with the process.
    */
   async destroy(): Promise<void> {
     if (this.destroyed) return;
@@ -531,6 +576,9 @@ export class QueryPool {
     }
     this.inflight.clear();
     this.queue = [];
-    await Promise.all(ws.map((w) => this.terminateStarted(w)));
+    await Promise.all([
+      ...ws.map((w) => this.terminateStarted(w)),
+      ...[...this.retiring.values()].map((retirement) => retirement.gone),
+    ]);
   }
 }

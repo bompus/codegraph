@@ -46,11 +46,18 @@ class FakeWorker implements PoolWorker {
   }
   emitMessage(m: unknown): void { this.msgCb?.(m); }
   emitError(): void { this.errorCb?.(new Error('worker failed')); }
-  emitExit(): void { this.exitCb?.(13); }
+  emitExit(code = 13): void { this.exitCb?.(code); }
   private reply(id: number, result: ToolResult): void {
     if (this.alive) this.msgCb?.({ type: 'result', id, result });
   }
   postMessage(msg: unknown): void {
+    // The pool retires an idle worker by asking it to close; a real one closes
+    // its connections, collects, and exits 0 (see query-worker-close.test.ts).
+    if ((msg as { type?: string })?.type === 'close') {
+      this.alive = false;
+      setTimeout(() => this.exitCb?.(0), 0);
+      return;
+    }
     const m = msg as CallMsg;
     if (!m || m.type !== 'call') return;
     const action = this.behavior(m);
@@ -339,6 +346,84 @@ describe('QueryPool', () => {
     await sleep(5);
     expect(rootless.pool.ready).toBe(true);
     await rootless.pool.destroy();
+  });
+
+  it('asks an idle worker to close itself, and terminates only one that will not', async () => {
+    class RetireWorker extends FakeWorker {
+      closeMessages = 0;
+      terminateCalls = 0;
+      constructor(private obeys: boolean) { super(() => ({ result: ok('idle') })); }
+      override postMessage(msg: unknown): void {
+        if ((msg as { type?: string })?.type === 'close') {
+          this.closeMessages++;
+          if (this.obeys) super.postMessage(msg); // the base fake closes and exits 0
+          return;
+        }
+        super.postMessage(msg);
+      }
+      override terminate(): Promise<number> { this.terminateCalls++; return super.terminate(); }
+    }
+    const spawned: RetireWorker[] = [];
+    const pool = new QueryPool({
+      root: '/x', size: 2, idleRetireMs: 1_000, retireTimeoutMs: 40,
+      createWorker: () => { const w = new RetireWorker(true); spawned.push(w); return w; },
+    });
+    try {
+      await sleep(5);
+      expect(pool.liveWorkers).toBe(2);
+      (pool as unknown as { retireIdle(now: number): void }).retireIdle(Date.now() + 60_000);
+      expect(pool.liveWorkers).toBe(1); // one stays warm for the default project
+      const retired = spawned.find((w) => w.closeMessages > 0)!;
+      expect(retired).toBeDefined();
+      expect(retired.terminateCalls).toBe(0); // asked, not killed
+      await sleep(60); // past the cap: the worker exited by itself, so no terminate
+      expect(retired.terminateCalls).toBe(0);
+
+      // A worker that ignores `close` is terminated once the cap passes.
+      const stubbornPool = new QueryPool({
+        root: '/x', size: 2, idleRetireMs: 1_000, retireTimeoutMs: 20,
+        createWorker: () => { const w = new RetireWorker(false); spawned.push(w); return w; },
+      });
+      try {
+        await sleep(5);
+        (stubbornPool as unknown as { retireIdle(now: number): void }).retireIdle(Date.now() + 60_000);
+        const stubborn = spawned.filter((w) => w.closeMessages > 0).pop()!;
+        expect(stubborn.closeMessages).toBe(1);
+        expect(stubborn.terminateCalls).toBe(0); // not before the cap
+        await sleep(60);
+        expect(stubborn.terminateCalls).toBe(1);
+      } finally {
+        await stubbornPool.destroy();
+      }
+    } finally {
+      await pool.destroy();
+    }
+  });
+
+  it('destroy waits for a retirement in flight rather than leaving it to the process', async () => {
+    class SlowRetireWorker extends FakeWorker {
+      closeMessages = 0;
+      constructor() { super(() => ({ result: ok('idle') })); }
+      override postMessage(msg: unknown): void {
+        if ((msg as { type?: string })?.type === 'close') { this.closeMessages++; return; } // exits only when told
+        super.postMessage(msg);
+      }
+    }
+    const spawned: SlowRetireWorker[] = [];
+    const pool = new QueryPool({
+      root: '/x', size: 2, idleRetireMs: 1_000, retireTimeoutMs: 60_000,
+      createWorker: () => { const w = new SlowRetireWorker(); spawned.push(w); return w; },
+    });
+    await sleep(5);
+    (pool as unknown as { retireIdle(now: number): void }).retireIdle(Date.now() + 60_000);
+    const retiring = spawned.find((w) => w.closeMessages > 0)!;
+    let destroyed = false;
+    const done = pool.destroy().then(() => { destroyed = true; });
+    await sleep(20);
+    expect(destroyed).toBe(false); // still waiting on the worker
+    retiring.emitExit(0);
+    await done;
+    expect(destroyed).toBe(true);
   });
 
   it('retires a failed cold start and serves queued work on its replacement', async () => {
