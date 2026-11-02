@@ -772,6 +772,21 @@ export class FileWatcher {
   }
 
   /**
+   * Call one of the host's {@link WatchOptions} callbacks. They are diagnostics:
+   * one that throws is logged and changes nothing here. A sync runs from a timer,
+   * so a throw would have no caller and end the host's process as an unhandled
+   * rejection. It would also read as a failed sync, or skip the stop that a
+   * degrade owes.
+   */
+  private callHost(name: string, call: () => void): void {
+    try {
+      call();
+    } catch (err) {
+      logWarn(`File watcher ${name} callback threw`, { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /**
    * Disable live watching after a terminal runtime failure
    * (watch-resource exhaustion, lock contention past the retry budget, or a
    * persistent generic sync failure past the retry budget).
@@ -784,7 +799,7 @@ export class FileWatcher {
     this.degradedByLock = byLock;
     this.recoveringFromLock = false;
     logWarn('File watcher disabled', { projectRoot: this.projectRoot, reason, ...context });
-    this.onDegraded?.(reason);
+    this.callHost('onDegraded', () => this.onDegraded?.(reason));
     this.stop();
   }
 
@@ -1030,7 +1045,7 @@ export class FileWatcher {
           this.pendingFiles.delete(filePath);
         }
       }
-      this.onSyncComplete?.(result);
+      this.callHost('onSyncComplete', () => this.onSyncComplete?.(result));
     } catch (err) {
       if (!scoped) this.needsFullScan = true;
       if (err instanceof LockUnavailableError) {
@@ -1061,7 +1076,7 @@ export class FileWatcher {
           error: error.message,
           retryCount: this.syncFailureRetryCount,
         });
-        this.onSyncError?.(error);
+        this.callHost('onSyncError', () => this.onSyncError?.(error));
         // A persistent (deterministic) sync failure — a broken extractor on a
         // specific file, DB corruption, SQLITE_FULL, an OOM in resolution —
         // would otherwise retry forever at the debounce cadence, spamming logs
