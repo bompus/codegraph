@@ -26,6 +26,9 @@ fun com.example.Qualified.qext() {}
 suspend fun suspender(): Unit { helper() }
 
 private internal fun visFn() {}
+private val hiddenTop = 1
+internal var sharedTop = 2
+
 
 fun inferred() = helper()
 
@@ -304,5 +307,22 @@ class SiblingAccessorK {
     init {
         val fromInit = compute()
         register(fromInit)
+    }
+}
+
+class ReceiverChainK(private val engine: EngineK) {
+    fun chains() {
+        engine.pump.drain()
+        this.engine.drain()
+        engine?.pump?.drain()
+        engine
+            .pump
+            .drain()
+        engine.a.b.c.drain()
+        engine.a.b.c.d.drain()
+        engine!!.pump.drain()
+        (engine).pump.drain()
+        engine.pump().drain()
+        super.toString().length.toString()
     }
 }

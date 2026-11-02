@@ -68,11 +68,12 @@ impl KernelResolver {
         receiver: &str,
         pats: &'static [ReceiverPattern],
         preserve: bool,
+        language: &str,
     ) -> Res<Option<String>> {
         if utf16_len_exceeds(line, 10_000) {
             return Ok(None);
         }
-        self.infer_match_text(line, receiver, pats, preserve)
+        self.infer_match_text(line, receiver, pats, preserve, language)
     }
 
     /// infer_match_line without the long-line cap: resolveImportedInstanceMember
@@ -83,6 +84,7 @@ impl KernelResolver {
         receiver: &str,
         pats: &'static [ReceiverPattern],
         preserve: bool,
+        language: &str,
     ) -> Res<Option<String>> {
         for pat in pats {
             let mut from = 0;
@@ -147,9 +149,18 @@ impl KernelResolver {
                         continue;
                     }
                 }
-                match self.normalize_inferred_type_name(m1)? {
+                let normalized = if language == "java" {
+                    Self::java_type_name(m1)
+                } else {
+                    self.normalize_inferred_type_name(m1)?
+                };
+                match normalized {
                     Some(t) => {
-                        return Ok(Some(if preserve { m1.to_string() } else { t }));
+                        return Ok(Some(if preserve && language != "java" {
+                            m1.to_string()
+                        } else {
+                            t
+                        }));
                     }
                     None => break,
                 }
@@ -204,7 +215,7 @@ impl KernelResolver {
                 // An unknown replacement must not revive an earlier type;
                 // nested scopes' assignments never participate in this lookup.
                 return match lines.get((binding.line - 1).max(0) as usize) {
-                    Some(line) => self.infer_match_line(line, receiver, pats, preserve),
+                    Some(line) => self.infer_match_line(line, receiver, pats, preserve, &site.language),
                     None => Ok(None),
                 };
             }
@@ -236,7 +247,7 @@ impl KernelResolver {
                     break;
                 }
                 let line = &lines[i as usize];
-                if let Some(t) = self.infer_match_line(line, &scan_receiver, pats, preserve)? {
+                if let Some(t) = self.infer_match_line(line, &scan_receiver, pats, preserve, &site.language)? {
                     hit = Some(t);
                     break;
                 }
@@ -259,7 +270,7 @@ impl KernelResolver {
         }
         if component_scoped {
             for line in lines.iter().skip(call_idx + 1) {
-                if let Some(t) = self.infer_match_line(line, &scan_receiver, pats, preserve)? {
+                if let Some(t) = self.infer_match_line(line, &scan_receiver, pats, preserve, &site.language)? {
                     return Ok(Some(t));
                 }
             }
@@ -325,7 +336,7 @@ impl KernelResolver {
                     for (index, pattern) in patterns.iter().enumerate() {
                         if contains_receiver(*pattern) {
                             let end = patterns.get(index + 1).map_or(declaration.end_byte(), |n| n.start_byte());
-                            return self.infer_match_text(&text[pattern.start_byte()..end], receiver, pats, preserve);
+                            return self.infer_match_text(&text[pattern.start_byte()..end], receiver, pats, preserve, &site.language);
                         }
                     }
                 }
@@ -338,7 +349,7 @@ impl KernelResolver {
                         let binds_receiver = children.windows(2).any(|pair|
                             pair[0].kind() == "value_binding_pattern" && pair[1].kind() == "simple_identifier"
                             && &text[pair[1].start_byte()..pair[1].end_byte()] == receiver);
-                        if binds_receiver { return self.infer_match_text(header, receiver, pats, preserve); }
+                        if binds_receiver { return self.infer_match_text(header, receiver, pats, preserve, &site.language); }
                     }
                 }
             }
@@ -362,7 +373,7 @@ impl KernelResolver {
                     } else if matches!(parameter.kind(), "parameter" | "lambda_parameter") {
                         let name = named_children(parameter).into_iter().rfind(|n| n.kind() == "simple_identifier");
                         if name.is_some_and(|name| &text[name.start_byte()..name.end_byte()] == receiver) {
-                            return self.infer_match_text(&text[parameter.start_byte()..parameter.end_byte()], receiver, pats, preserve);
+                            return self.infer_match_text(&text[parameter.start_byte()..parameter.end_byte()], receiver, pats, preserve, &site.language);
                         }
                     }
                 }
@@ -621,7 +632,7 @@ impl KernelResolver {
         for i in (0..=ai).rev() {
             let line = &lines[i];
             if !line.is_empty() && !utf16_len_exceeds(line, 10_000) {
-                if let Some(t) = self.infer_match_line(line, &vn, pats, false)? {
+                if let Some(t) = self.infer_match_line(line, &vn, pats, false, "php")? {
                     return Ok(Some(t));
                 }
             }
@@ -1120,7 +1131,7 @@ fn go_bare_result(
         let best = if candidates.len() == 1 {
             candidates[0].clone()
         } else {
-            pick_closest_jvm_candidate(&candidates, &r.file_path)
+            pick_jvm_declaration(&candidates, r)
         };
         Ok(Some(KCand {
             node: best,
@@ -1219,6 +1230,100 @@ pub(super) fn pick_closest_jvm_candidate(candidates: &[Arc<KNode>], from_path: &
         }
     }
     best.clone()
+}
+
+/// The source set a file is in: `androidMain` of
+/// `lib/src/androidMain/kotlin/a/Util.kt`; None outside any `src/<set>/`.
+fn kmp_source_set(file_path: &str) -> Option<String> {
+    re!(r"(?:^|/)src/([^/]+)/")
+        .captures(file_path)
+        .map(|m| m[1].to_string())
+}
+
+/// What a source set builds for: `android` of `androidMain` and
+/// `androidUnitTest`, `common` of `commonTest`.
+fn kmp_build_target(set: &str) -> String {
+    re!(r"(?:Main|(?:Unit|Instrumented|Device|Host)?Test)$")
+        .replace(set, "")
+        .to_string()
+}
+
+/// Kotlin Multiplatform targets that build for the JVM.
+fn kmp_jvm_target(target: &str) -> bool {
+    re!(r"^(?:android|jvm|desktop)").is_match(target)
+}
+
+fn jvm_actual(node: &KNode) -> bool {
+    node.decorators
+        .as_ref()
+        .is_some_and(|ds| ds.iter().any(|d| d == "actual"))
+}
+
+/// Which of a declaration's same-named Kotlin Multiplatform declarations a JVM
+/// reference reaches. A file compiled for common code sees the `expect`, so
+/// commonMain and commonTest keep the nearest declaration, the `expect` on a
+/// tie. Anything built for a platform sees the `actual`: Kotlin of that
+/// target's source sets its own (an androidUnitTest the androidMain one) or
+/// that of a target it builds on (`iosArm64Main` from `iosMain`), and with
+/// neither the `expect`, as an intermediate source set does. Java, and a Kotlin
+/// module with no source sets of its own, run against JVM bytecode, where no
+/// `expect` exists. Of the JVM's targets the one its path names, else not
+/// Android's.
+pub(super) fn pick_jvm_declaration(candidates: &[Arc<KNode>], r: &ResolveRefIn) -> Arc<KNode> {
+    let actuals: Vec<&Arc<KNode>> = candidates.iter().filter(|n| jvm_actual(n)).collect();
+    if actuals.is_empty() || actuals.len() == candidates.len() {
+        return pick_closest_jvm_candidate(candidates, &r.file_path);
+    }
+    let set = kmp_source_set(&r.file_path);
+    let target = set.as_deref().map(kmp_build_target);
+    let target_of = |n: &KNode| kmp_build_target(&kmp_source_set(&n.file_path).unwrap_or_default());
+    if target.as_deref().is_some_and(|t| t.starts_with("common"))
+        || (target.is_none() && r.language != "java")
+    {
+        return pick_closest_jvm_candidate(candidates, &r.file_path);
+    }
+    let own: Vec<Arc<KNode>> = actuals
+        .iter()
+        .filter(|n| target.as_deref() == Some(target_of(n).as_str()))
+        .map(|n| (*n).clone())
+        .collect();
+    if !own.is_empty() {
+        return pick_closest_jvm_candidate(&own, &r.file_path);
+    }
+    if r.language == "java" || matches!(target.as_deref(), Some("main" | "test") | Some("")) {
+        let jvm: Vec<Arc<KNode>> = actuals
+            .iter()
+            .filter(|n| kmp_jvm_target(&target_of(n)))
+            .map(|n| (*n).clone())
+            .collect();
+        let android = re!(r"(?i)android").is_match(&r.file_path);
+        let named: Vec<Arc<KNode>> = jvm
+            .iter()
+            .filter(|n| target_of(n).starts_with("android") == android)
+            .cloned()
+            .collect();
+        let pool = if !named.is_empty() {
+            named
+        } else if !jvm.is_empty() {
+            jvm
+        } else {
+            actuals.iter().map(|n| (*n).clone()).collect()
+        };
+        return pick_closest_jvm_candidate(&pool, &r.file_path);
+    }
+    let above: Vec<Arc<KNode>> = actuals
+        .iter()
+        .filter(|n| {
+            let t = target_of(n);
+            !t.is_empty() && target.as_deref().is_some_and(|target| target.starts_with(&t))
+        })
+        .map(|n| (*n).clone())
+        .collect();
+    if above.is_empty() {
+        pick_closest_jvm_candidate(candidates, &r.file_path)
+    } else {
+        pick_closest_jvm_candidate(&above, &r.file_path)
+    }
 }
 
 fn go_result_from_node(resolver: &mut KernelResolver, node: &KNode) -> Option<String> {

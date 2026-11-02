@@ -148,3 +148,9 @@ class MarkdownPaths {
     loadDoc("docs/deep/nested.markdown");
   }
 }
+interface TortureConsts {
+  int MAX = 10;
+  Helper HELPER = new Helper();
+  String NAME = "x", OTHER = "y";
+  Runnable TASK = new Runnable() { public void run() { go(); } };
+}

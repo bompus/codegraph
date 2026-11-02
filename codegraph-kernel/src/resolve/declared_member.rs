@@ -2,7 +2,7 @@
 use super::*;
 
 fn class_kind(kind: &str) -> bool { matches!(kind, "class" | "struct" | "interface" | "enum" | "record" | "trait") }
-fn angle_arguments(text: &str) -> Vec<String> {
+pub(super) fn angle_arguments(text: &str) -> Vec<String> {
     let Some(open) = text.find('<') else { return vec![] };
     let mut depth = 0usize;
     let mut out = Vec::new();
@@ -71,7 +71,7 @@ impl KernelResolver {
         }
         self.declared_member_memo.insert(key, found.clone()); Ok(found)
     }
-    fn declared_parameter_bound(&mut self, name: &str, cls: &KNode) -> Res<Option<Option<String>>> {
+    pub(super) fn declared_parameter_bound(&mut self, name: &str, cls: &KNode) -> Res<Option<Option<String>>> {
         let head = self.declaration_head(cls, 5);
         let head = head.split('{').next().unwrap_or("");
         let name = regex::escape(name);

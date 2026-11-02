@@ -302,6 +302,12 @@ Hooks PRESENT (port each exactly):
      Walker rule: port branch 1 only; a `defer:` on has_error covers the
      rest. (The parity suite still needs a fun-interface fixture asserting
      the kernel defers and the wasm arm serves the pinned output.)
+     *(2026-09-24: superseded for `fun interface` — the kernel's extract now
+     blanks the `fun` of a `fun interface` declaration before parsing,
+     offset-preserving, so such a file parses cleanly and the recovery
+     branches no longer fire for it. The old misparse also lost the
+     declaration AFTER the `fun interface` when a doc comment sat between
+     them.)*
 - **resolveBody (kotlin.ts:219-241)** — find by TYPE among namedChildren:
   first `ERROR` child whose child(0) is `{` (the fun-interface parent-body
   case — unreachable on non-erroring files, keep for wasm-parity of the TS

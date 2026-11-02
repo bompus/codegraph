@@ -400,6 +400,26 @@ impl KernelResolver {
     }
 
     /// isVisibleAcrossFiles (name-matcher.ts).
+    /// Whether `candidate` is a member of a `private` type in its file — a
+    /// Kotlin test's `private class Clock { fun now() = value }`: the method
+    /// is public, the class is not, so nothing outside the file can name
+    /// `now`. Found by line range among the file's own nodes, memoised per
+    /// node.
+    fn is_inside_private_type(&mut self, candidate: &KNode) -> Res<bool> {
+        if let Some(hit) = self.private_owner_memo.get(&candidate.id) {
+            return Ok(*hit);
+        }
+        let inside = self.nodes_in_file(&candidate.file_path)?.iter().any(|n| {
+            n.id != candidate.id
+                && matches!(n.kind.as_str(), "class" | "interface" | "struct" | "enum" | "namespace")
+                && n.visibility.as_deref() == Some("private")
+                && n.start_line <= candidate.start_line
+                && n.end_line >= candidate.end_line
+        });
+        self.private_owner_memo.insert(candidate.id.clone(), inside);
+        Ok(inside)
+    }
+
     pub(super) fn is_visible_across_files(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
         self.is_visible_across_files_for(candidate, r, true)
     }
@@ -486,7 +506,12 @@ impl KernelResolver {
                 || self.rust_path_declared_inside(&r.file_path, &candidate.file_path));
         }
         if private_is_file_local(lang) {
-            return Ok(candidate.visibility.as_deref() != Some("private"));
+            // Only Kotlin's private type keeps its members in its file: a
+            // Scala `private[pkg] class` (or one with a private constructor)
+            // is the package's, and a C# private nested class serves every
+            // file of its partial class.
+            return Ok(candidate.visibility.as_deref() != Some("private")
+                && !(lang == "kotlin" && self.is_inside_private_type(candidate)?));
         }
         // An R test file runs in an environment of its own (testthat): its
         // top-level `c <- ggplot(…)` is not what the package's `c(…)` calls
@@ -2562,15 +2587,42 @@ impl KernelResolver {
         if scoped.is_empty() {
             return Ok(None);
         }
-        let same_file: Vec<Arc<KNode>> = scoped
+        // Of the members a Java `Type::method` could name, those of a `Type`
+        // the file can see, as for a bare type name: elasticsearch's
+        // `Template::lifecycle` under `import …metadata.Template` is that
+        // class's method, not the accessor of a record `Template` nested
+        // elsewhere.
+        let members: Vec<Arc<KNode>> = if r.language == "java" && scoped.len() > 1 {
+            let type_ref = r.clone().naming(&r.reference_name[..sep], "references");
+            let mut visible = Vec::new();
+            for n in scoped {
+                let owner_qn = n.qualified_name.rsplit_once("::").map(|(o, _)| o.to_string()).unwrap_or_default();
+                let owner = self
+                    .nodes_by_qualified_name(&owner_qn)?
+                    .iter()
+                    .find(|t| t.file_path == n.file_path && super::language_type_scope::visible_type(&t.kind))
+                    .cloned();
+                match owner {
+                    Some(owner) if !self.language_type_visible(&owner, &type_ref)? => {}
+                    _ => visible.push(n),
+                }
+            }
+            visible
+        } else {
+            scoped
+        };
+        if members.is_empty() {
+            return Ok(None);
+        }
+        let same_file: Vec<Arc<KNode>> = members
             .iter()
             .filter(|n| n.file_path == r.file_path)
             .cloned()
             .collect();
-        if same_file.is_empty() && scoped.len() > 1 {
+        if same_file.is_empty() && members.len() > 1 {
             return Ok(None);
         }
-        let pool = if same_file.is_empty() { scoped } else { same_file };
+        let pool = if same_file.is_empty() { members } else { same_file };
         // `<=` reduce keeps the first minimum — min_by_key does the same.
         let target = pool.iter().min_by_key(|n| n.start_line).unwrap().clone();
         Ok(Some(KCand {

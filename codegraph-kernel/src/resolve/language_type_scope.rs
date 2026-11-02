@@ -5,12 +5,12 @@ use super::*;
 pub(crate) struct LanguageTypeScope {
     pub(super) package: String,
     namespaces: Vec<String>,
-    imports: HashSet<String>,
-    demand: HashSet<String>,
+    pub(super) imports: HashSet<String>,
+    pub(super) demand: HashSet<String>,
     package_object: Option<String>,
     has_package_object: bool,
 }
-fn visible_type(kind: &str) -> bool {
+pub(super) fn visible_type(kind: &str) -> bool {
     matches!(
         kind,
         "class"
@@ -28,7 +28,7 @@ fn visible_type(kind: &str) -> bool {
 pub(super) type ScalaBlockScope = (Rc<SourceFile>, Option<(i64, i64)>);
 
 impl KernelResolver {
-    fn language_file_scope(&mut self, file: &str, language: &str) -> Res<Rc<LanguageTypeScope>> {
+    pub(super) fn language_file_scope(&mut self, file: &str, language: &str) -> Res<Rc<LanguageTypeScope>> {
         if let Some(hit) = self.language_type_scope_memo.get(file) {
             return Ok(hit.clone());
         }
@@ -427,6 +427,65 @@ impl KernelResolver {
         Some(names)
     }
 
+    /// The Java types a supertype `name` in `from`'s header can mean: those its
+    /// file has in reach (its own, its package's, imported) when it has any,
+    /// else every type of the name. elasticsearch's `InternalGeoGrid
+    /// implements GeoGrid` is its own package's interface, and so inherits
+    /// nothing from a record `GeoGrid` nested in another package.
+    fn java_supertype_decls(&mut self, name: &str, from: &KNode) -> Res<Vec<Arc<KNode>>> {
+        let all: Vec<Arc<KNode>> = self
+            .nodes_by_name(name)?
+            .iter()
+            .filter(|t| t.language == "java" && visible_type(&t.kind))
+            .cloned()
+            .collect();
+        if all.len() < 2 {
+            return Ok(all);
+        }
+        let here = self.language_file_scope(&from.file_path, "java")?;
+        let mut in_reach: Vec<Arc<KNode>> = Vec::new();
+        for t in &all {
+            if t.file_path == from.file_path {
+                in_reach.push(t.clone());
+                continue;
+            }
+            let scope = self.language_file_scope(&t.file_path, "java")?;
+            let pkg = scope.package.clone();
+            if pkg == here.package {
+                in_reach.push(t.clone());
+                continue;
+            }
+            let segs: Vec<&str> = t.qualified_name.split("::").collect();
+            let path: Vec<&str> = if !pkg.is_empty() && segs.first() == Some(&pkg.as_str()) {
+                segs[1..].to_vec()
+            } else {
+                segs.clone()
+            };
+            let fqn = std::iter::once(pkg.as_str())
+                .chain(path.iter().copied())
+                .filter(|p| !p.is_empty())
+                .collect::<Vec<_>>()
+                .join(".");
+            let owner_fqn = fqn.rsplit_once('.').map(|(o, _)| o.to_string()).unwrap_or_default();
+            let outer_import = if path.len() > 1 {
+                std::iter::once(pkg.as_str())
+                    .chain(std::iter::once(path[0]))
+                    .filter(|p| !p.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(".")
+            } else {
+                String::new()
+            };
+            if here.imports.contains(&fqn)
+                || here.demand.contains(&owner_fqn)
+                || (!outer_import.is_empty() && here.imports.contains(&outer_import))
+            {
+                in_reach.push(t.clone());
+            }
+        }
+        Ok(if in_reach.is_empty() { all } else { in_reach })
+    }
+
     fn type_ancestor_names(&mut self, n: &KNode) -> Res<Rc<HashSet<String>>> {
         if let Some(hit) = self.language_type_ancestors_memo.get(&n.qualified_name) {
             return Ok(hit.clone());
@@ -467,12 +526,16 @@ impl KernelResolver {
                         if !seen.insert(name.to_string()) {
                             continue;
                         }
-                        queue.extend(
+                        let bases: Vec<Arc<KNode>> = if n.language == "java" {
+                            self.java_supertype_decls(name, &decl)?
+                        } else {
                             self.nodes_by_name(name)?
                                 .iter()
                                 .filter(|d| d.language == n.language && visible_type(&d.kind))
-                                .map(|d| d.qualified_name.clone()),
-                        );
+                                .cloned()
+                                .collect()
+                        };
+                        queue.extend(bases.iter().map(|d| d.qualified_name.clone()));
                     }
                 }
             }
@@ -567,6 +630,14 @@ impl KernelResolver {
         {
             return Ok(true);
         }
+        // Through a package it is that package's: `java.io.Reader` is no
+        // `Writeable.Reader` the class inherits.
+        if self
+            .java_qualifier_before(r)
+            .is_some_and(|w| w.chars().next().is_some_and(|c| c.is_ascii_lowercase()))
+        {
+            return Ok(false);
+        }
         if n.kind == "enum_member" {
             return Ok(n.file_path == r.file_path
                 || Self::cached_regex(&format!(
@@ -596,7 +667,43 @@ impl KernelResolver {
         if re!(r"\.\s*new\s+").is_match(&line) {
             return Ok(true);
         }
+        // What is written right before this very reference decides, not what
+        // the line holds elsewhere: `java.io.Reader` is no `Writeable.Reader`
+        // the class inherits, and `Bucket.Reader` is the one nested in Bucket.
+        if let Some(written) = self.java_qualifier_before(r) {
+            if self.java_nested_in_qualifier(&r.reference_name, &written)? {
+                return Ok(false);
+            }
+        }
         self.nested_type_visible(n, r)
+    }
+
+    /// What's written right before this very reference, when its column is on
+    /// the name: `java.util`, `Bucket`.
+    fn java_qualifier_before(&mut self, r: &ResolveRefIn) -> Option<String> {
+        let lines = self.read_file(&r.file_path)?;
+        let line = lines.get((r.line - 1).max(0) as usize)?;
+        let col = super::names::js_unit_to_byte(line, r.column.max(0) as usize).min(line.len());
+        if !line[col..].starts_with(&r.reference_name) {
+            return None;
+        }
+        // A type annotation may sit between (jsoup's `Range.@Nullable Spans`).
+        let flat = re!(r"([A-Za-z_$][\w$.]*)\s*\.\s*(?:@[\w.]+(?:\([^)]*\))?\s*)*$");
+        // Walk back over as much of the line as the pattern can need.
+        let start = super::names::js_unit_to_byte(line, col.saturating_sub(240));
+        flat.captures(&line[start..col]).map(|m| m[1].to_string())
+    }
+
+    /// Whether a type of `name` is nested in the type `qualifier` ends in.
+    fn java_nested_in_qualifier(&mut self, name: &str, qualifier: &str) -> Res<bool> {
+        let owner = qualifier.rsplit('.').next().unwrap_or(qualifier).to_string();
+        Ok(self.nodes_by_name(name)?.iter().any(|n| {
+            if n.language != "java" || !visible_type(&n.kind) {
+                return false;
+            }
+            let segs: Vec<&str> = n.qualified_name.split("::").collect();
+            segs.len() > 1 && segs[segs.len() - 2] == owner
+        }))
     }
 
     pub(super) fn java_outside_import(&mut self, r: &ResolveRefIn) -> Res<bool> {

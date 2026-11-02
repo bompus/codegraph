@@ -1279,6 +1279,60 @@ public class Handler {
       );
     });
 
+    it('Kotlin import disambiguates same-name classes in non-eponymous files (#314)', async () => {
+      // The Kotlin twist on #314: the class lives in a file NOT named after
+      // it (`Converters.kt`, the idiomatic Kotlin layout), so the file-path
+      // suffix heuristic (`com/example/b/FooConverter.kt`) can't match — only
+      // the namespace `qualifiedName` (`com.example.b::FooConverter`, from the
+      // package directive) disambiguates.
+      const aDir = path.join(tempDir, 'module-a/src/main/kotlin/com/example/a');
+      const bDir = path.join(tempDir, 'module-b/src/main/kotlin/com/example/b');
+      const webDir = path.join(tempDir, 'web/src/main/kotlin/com/example/web');
+      fs.mkdirSync(aDir, { recursive: true });
+      fs.mkdirSync(bDir, { recursive: true });
+      fs.mkdirSync(webDir, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(aDir, 'Converters.kt'),
+        `package com.example.a
+class FooConverter { fun convert(x: String): String { return "a:" + x } }
+`
+      );
+      fs.writeFileSync(
+        path.join(bDir, 'Converters.kt'),
+        `package com.example.b
+class FooConverter { fun convert(x: String): String { return "b:" + x } }
+`
+      );
+      // Caller imports the module-b converter; module-a is lexically first in
+      // the candidate list, so a correct result proves the import wins.
+      fs.writeFileSync(
+        path.join(webDir, 'Handler.kt'),
+        `package com.example.web
+
+import com.example.b.FooConverter
+
+class Handler {
+  private val fooConverter: FooConverter = FooConverter()
+  fun use(): String { return fooConverter.convert("input") }
+}
+`
+      );
+
+      cg = await CodeGraph.init(tempDir, { index: true });
+
+      const use = cg
+        .getNodesByKind('method')
+        .find((n) => n.qualifiedName.endsWith('Handler::use'));
+      expect(use).toBeDefined();
+      const calls = cg.getOutgoingEdges(use!.id).filter((e) => e.kind === 'calls');
+      expect(calls.length).toBeGreaterThanOrEqual(1);
+
+      const target = cg.getNode(calls[0]!.target);
+      expect(target?.name).toBe('convert');
+      expect(target?.qualifiedName).toBe('com.example.b::FooConverter::convert');
+    });
+
     it('C# extracts references from method/property/field types (#381)', async () => {
       // Pre-#381, every C# project produced ZERO `references` edges:
       // csharp.ts was missing returnField, and the type-leaf walker
@@ -4244,6 +4298,134 @@ object Main {
       cg = await CodeGraph.init(tempDir, { index: true });
       // Bar has no onlyOther() — must not mis-attach to the same-named Other::onlyOther.
       expect(callerNamesOf('Other::onlyOther')).toEqual([]);
+    });
+
+    describe('Scala Outer.Inner(args) apply vs a Java constructor', () => {
+      function write(rel: string, body: string): void {
+        fs.mkdirSync(path.dirname(path.join(tempDir, rel)), { recursive: true });
+        fs.writeFileSync(path.join(tempDir, rel), body);
+      }
+      function edgesFrom(name: string): { kind: string; qn: string; lang: string }[] {
+        const from = cg.getNodesByKind('method').find((n) => n.name === name);
+        if (!from) return [];
+        return cg
+          .getOutgoingEdges(from.id)
+          .filter((e) => e.kind !== 'contains' && e.kind !== 'references')
+          .map((e) => {
+            const t = cg.getNode(e.target)!;
+            return { kind: e.kind, qn: t.qualifiedName, lang: t.language };
+          });
+      }
+
+      beforeEach(() => {
+        write('java/com/acme/http/WebSocket.java', `package com.acme.http;
+public abstract class WebSocket {
+  public static WebSocket fromString(String s) { return null; }
+  public static class Accepted {
+    public Accepted(String flow) {}
+  }
+}
+`);
+        // A second Java class sharing the method names, so the receiver-word
+        // strategy (not a unique-name shortcut) is what decides.
+        write('java/com/acme/http/Other.java', `package com.acme.http;
+public class Other {
+  public static Other fromString(String s) { return null; }
+  public static class Accepted {
+    public Accepted(String flow) {}
+  }
+}
+`);
+      });
+
+      it('resolves WebSocket.Accepted(...) to the Scala case class, never the Java constructor', async () => {
+        write('scala/app/WebSocket.scala', `package app
+trait WebSocket
+object WebSocket {
+  final case class Accepted[In, Out](flow: String, sub: Option[String])
+}
+`);
+        write('scala/app/Use.scala', `package app
+class Use {
+  def accept(): Unit = { WebSocket.Accepted("f", None) }
+}
+`);
+        cg = await CodeGraph.init(tempDir, { index: true });
+        const out = edgesFrom('accept');
+        expect(out.filter((e) => e.lang === 'java')).toEqual([]);
+        expect(out).toContainEqual({ kind: 'instantiates', qn: 'WebSocket::Accepted', lang: 'scala' });
+      });
+
+      it('does not take a Java constructor from a return-type annotation read as the receiver type', async () => {
+        // `def f(): WebSocket = WebSocket.Accepted(...)` — the local-declaration
+        // pattern reads `WebSocket = WebSocket.Accepted` as the receiver's type.
+        write('scala/app/WebSocket.scala', `package app
+trait WebSocket
+object WebSocket {
+  final case class Accepted(flow: String) extends WebSocket
+}
+`);
+        write('scala/app/Use.scala', `package app
+class Use {
+  def accept(flow: String): WebSocket = WebSocket.Accepted(flow)
+}
+`);
+        cg = await CodeGraph.init(tempDir, { index: true });
+        const out = edgesFrom('accept');
+        expect(out.filter((e) => e.lang === 'java')).toEqual([]);
+        expect(out).toContainEqual({ kind: 'instantiates', qn: 'WebSocket::Accepted', lang: 'scala' });
+      });
+
+      it('still resolves a Scala call to a real Java static method', async () => {
+        write('scala/app/Use.scala', `package app
+class Use {
+  def load(): Unit = { WebSocket.fromString("y") }
+}
+`);
+        cg = await CodeGraph.init(tempDir, { index: true });
+        expect(edgesFrom('load')).toContainEqual({ kind: 'calls', qn: 'com.acme.http::WebSocket::fromString', lang: 'java' });
+      });
+
+      it('resolves Outer.Inner(...) to a nested Scala object that defines apply', async () => {
+        // A Scala `object` is indexed as a `module`, not a class.
+        write('scala/app/WebSocket.scala', `package app
+object WebSocket {
+  object Accepted {
+    def apply(flow: String): String = flow
+  }
+}
+`);
+        write('scala/app/Use.scala', `package app
+class Use {
+  def accept(): Unit = { WebSocket.Accepted("f") }
+}
+`);
+        cg = await CodeGraph.init(tempDir, { index: true });
+        const out = edgesFrom('accept');
+        expect(out.filter((e) => e.lang === 'java')).toEqual([]);
+        expect(out).toContainEqual({ kind: 'calls', qn: 'WebSocket::Accepted', lang: 'scala' });
+      });
+
+      it('prefers the case class over its companion object declared first', async () => {
+        write('scala/app/WebSocket.scala', `package app
+object WebSocket {
+  object Accepted {
+    def apply(): Accepted = Accepted("default")
+  }
+  final case class Accepted(flow: String)
+}
+`);
+        write('scala/app/Use.scala', `package app
+class Use {
+  def accept(): Unit = { WebSocket.Accepted("f") }
+}
+`);
+        cg = await CodeGraph.init(tempDir, { index: true });
+        const out = edgesFrom('accept');
+        expect(out.filter((e) => e.lang === 'java')).toEqual([]);
+        expect(out).toContainEqual({ kind: 'instantiates', qn: 'WebSocket::Accepted', lang: 'scala' });
+        expect(out).not.toContainEqual({ kind: 'calls', qn: 'WebSocket::Accepted', lang: 'scala' });
+      });
     });
   });
 

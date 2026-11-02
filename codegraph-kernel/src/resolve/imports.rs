@@ -634,6 +634,54 @@ impl KernelResolver {
         } else {
             true
         };
+        // A Kotlin Multiplatform `expect` and its `actual`s share one qualified
+        // name, in files not named after the class (`Version.android.kt`), so
+        // the import is read by qualified name too: what the caller compiles
+        // against is the `expect` in common code, that platform's `actual`
+        // otherwise.
+        for imp in imports {
+            let matches_bare = imp.local_name == r.reference_name;
+            if !matches_bare && !r.reference_name.starts_with(&format!("{}.", imp.local_name)) {
+                continue;
+            }
+            let qualified = imp.source.replace('.', "::");
+            let decls: Vec<Arc<KNode>> = self
+                .nodes_by_qualified_name(&qualified)?
+                .iter()
+                .filter(|n| {
+                    is_jvm(&n.language)
+                        && matches!(n.kind.as_str(), "class" | "interface" | "enum" | "object" | "type_alias")
+                })
+                .cloned()
+                .collect();
+            if decls.len() < 2 {
+                continue;
+            }
+            let owner = super::receivers::pick_jvm_declaration(&decls, r);
+            if matches_bare && r.reference_kind != "calls" {
+                return Ok(Some(owner));
+            }
+            let member = if matches_bare {
+                ""
+            } else {
+                js_slice(&r.reference_name, utf16_len(&imp.local_name) + 1)
+            };
+            let member = member.split('.').next().unwrap_or("");
+            if member.is_empty() {
+                return Ok(Some(owner));
+            }
+            if let Some(hit) = self
+                .nodes_by_qualified_name(&format!("{}::{}", owner.qualified_name, member))?
+                .iter()
+                .find(|n| n.file_path == owner.file_path)
+                .cloned()
+            {
+                return Ok(Some(hit));
+            }
+            if member == owner.name {
+                return Ok(Some(owner));
+            }
+        }
         for imp in imports {
             let matches_bare = imp.local_name == r.reference_name;
             let matches_qualified = r
@@ -652,10 +700,18 @@ impl KernelResolver {
                     .to_string()
             };
             let candidates = self.nodes_by_name(&member_name)?;
-            for node in candidates.iter() {
-                if is_jvm(&node.language) && ends_with_fqn(&node.file_path, &imp.source) {
-                    return Ok(Some(node.clone()));
-                }
+            let matching: Vec<Arc<KNode>> = candidates
+                .iter()
+                .filter(|n| is_jvm(&n.language) && ends_with_fqn(&n.file_path, &imp.source))
+                .cloned()
+                .collect();
+            if !matching.is_empty() {
+                let best = if matching.len() == 1 {
+                    matching[0].clone()
+                } else {
+                    super::receivers::pick_jvm_declaration(&matching, r)
+                };
+                return Ok(Some(best));
             }
             // `import static com.example.Foo.bar;` — the FQN tail is the
             // member, the part before is the owner class. Bare matches only —
@@ -664,10 +720,18 @@ impl KernelResolver {
                 if let Some(dot) = imp.source.rfind('.') {
                     if dot > 0 {
                         let owner = &imp.source[..dot];
-                        for node in candidates.iter() {
-                            if is_jvm(&node.language) && ends_with_fqn(&node.file_path, owner) {
-                                return Ok(Some(node.clone()));
-                            }
+                        let owners: Vec<Arc<KNode>> = candidates
+                            .iter()
+                            .filter(|n| is_jvm(&n.language) && ends_with_fqn(&n.file_path, owner))
+                            .cloned()
+                            .collect();
+                        if !owners.is_empty() {
+                            let best = if owners.len() == 1 {
+                                owners[0].clone()
+                            } else {
+                                super::receivers::pick_jvm_declaration(&owners, r)
+                            };
+                            return Ok(Some(best));
                         }
                     }
                 }
@@ -1186,7 +1250,7 @@ impl KernelResolver {
         let decl = lines[from..to].join("\n");
         for pat in pats {
             let Some(type_name) =
-                self.infer_match_text(&decl, &value.name, std::slice::from_ref(pat), false)?
+                self.infer_match_text(&decl, &value.name, std::slice::from_ref(pat), false, &value.language)?
             else {
                 continue;
             };

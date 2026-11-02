@@ -1145,6 +1145,13 @@ if super::lang_scope::is_dart_member_read(r) {
                 None => Ok(ResolveOutcome::unresolved()),
             };
         }
+        // A Kotlin call through a receiver chain (`engine.pump.drain()`)
+        // resolves on the chain's declared type, or gets no edge when that
+        // type is a library one. An untyped chain resolves as the bare method
+        // name, the ref the extractor emitted before it kept the chain.
+        if let Some(outcome) = self.match_kotlin_receiver_chain(r)? {
+            return Ok(outcome);
+        }
         // A Kotlin call on an unqualified call's result — `repository().pending()`
         // — resolves against the inner call's declared return type, never a
         // same-named method elsewhere (#2822). `Some(None)` is terminal.

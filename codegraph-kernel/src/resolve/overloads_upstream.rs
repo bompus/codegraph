@@ -223,6 +223,24 @@ impl KernelResolver {
         let Some(args) = self.call_arguments(r, &hit.node.name) else {
             return Ok(hit);
         };
+        if r.language == "java" {
+            let overloads: Vec<Arc<KNode>> =
+                std::iter::once(hit.node.clone()).chain(siblings.iter().cloned()).collect();
+            if let Some(fitting) = self.java_overloads_fitting(&overloads, &args, r)? {
+                if fitting.iter().any(|n| n.id == hit.node.id) {
+                    return Ok(hit);
+                }
+                // A private overload of another file can't be the call, but
+                // when the arguments don't say which of the rest is, it stays
+                // that, unresolved, and not a guess.
+                let private_elsewhere = hit.node.visibility.as_deref() == Some("private")
+                    && hit.node.file_path != r.file_path;
+                if !(fitting.len() > 1 && private_elsewhere) {
+                    hit.node = fitting[0].clone();
+                }
+                return Ok(hit);
+            }
+        }
         if let Some(Some(selected)) = self.cpp_scalar_overload_choice(&hit.node, r) {
             hit.node = selected;
             return Ok(hit);
@@ -754,7 +772,20 @@ impl KernelResolver {
         if self.is_import_binding_call_target(&hit.node, r)? {
             return Ok(false);
         }
-        if self.java_outside_import(r)? || !self.language_type_visible(&hit.node, r)?
+        // `import java.lang.reflect.Field;` — the file's `Field` is the JDK's,
+        // never a project class of that name. Only a Kotlin extension the
+        // project declares on that type is in the graph.
+        if self.java_outside_import(r)? {
+            let extension = if r.language == "kotlin" {
+                self.kotlin_extension_on_imported_type(r)?
+            } else {
+                None
+            };
+            if !extension.is_some_and(|c| c.node.id == hit.node.id) {
+                return Ok(false);
+            }
+        }
+        if !self.language_type_visible(&hit.node, r)?
             || !self.dart_top_level_visible(&hit.node, r)? || !self.dart_bare_member_visible(&hit.node, r)? {
             return Ok(false);
         }
