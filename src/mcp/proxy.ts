@@ -405,7 +405,7 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
       }
       try {
         const local = await ensureEngine();
-        const result = await local.getToolHandler().execute(params.name, args, exploreSession, indexVersionWarnings);
+        const result = await local.getToolHandler().execute(params.name, args, exploreSession, undefined, undefined, indexVersionWarnings);
         writeClient({ jsonrpc: '2.0', id, result });
         getTelemetry().recordUsage('mcp_tool', params.name, !result.isError, telemetryClient);
       } catch (err) {

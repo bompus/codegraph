@@ -14,6 +14,7 @@ codegraph sync [path]             # Incremental update (--quiet)
 codegraph status [path]           # Show statistics (--json, --strict)
 codegraph ui [path]               # Open the browser viewer (not released yet — see below)
 codegraph unlock [path]           # Remove a stale lock file that's blocking indexing
+codegraph implementations <name>  # List the types that implement or extend a type (--depth, --json)
 codegraph query <search>          # Search symbols (--kind, --limit, --json)
 codegraph explore <query>         # Compact map by default; --mode map|snippets|source (same output as codegraph_explore)
 codegraph context <task...>       # Context for a task: relevant symbols, relationships and code (--format markdown|json, --max-nodes, --no-code)

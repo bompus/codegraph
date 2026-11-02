@@ -411,6 +411,13 @@ pub(super) fn framework_claims_reference(framework: &str, name: &str) -> bool {
         | "rust" | "svelte"
         | "swiftui" | "uikit" => false,
         "vapor" => vapor_handler_re().is_match(name),
+        // CodeIgniter 3: route ids and `$this->loader->model()`, which
+        // extraction writes as `this->…` / `ci->…`.
+        "codeigniter" => {
+            name.starts_with("ci:")
+                || re!(r"(?i)^(?:this->(?:_?ci->)?|_?ci->)[A-Za-z_]\w*\.[A-Za-z_]\w*$")
+                    .is_match(name)
+        }
         _ => true,
     }
 }
