@@ -37,7 +37,7 @@ arms disagree unresolved rather than guessed.
 | Router | Resolver | Markup synthesizer | Tests | Validated on |
 |---|---|---|---|---|
 | Expo Router | `frameworks/expo-router.ts` | `expo-router-synthesizer.ts` | `expo-router.test.ts`, `monorepo-app-frameworks.test.ts`, `monorepo-app-frameworks-sync.test.ts` | upstream: evanbacon.dev (`+api` endpoints), react-native-true-sheet (nearest manifest decides the app) |
-| Next.js | `frameworks/nextjs.ts` | `next-router-synthesizer.ts` | `nextjs.test.ts` | next-saas-starter |
+| Next.js | `frameworks/nextjs.ts`, `frameworks/next-proxy.ts` | `next-router-synthesizer.ts` | `nextjs.test.ts`, `nextjs-proxy.test.ts` | upstream: next-saas-starter; the proxy (trap 22): next-saas-starter (8 routes), taxonomy (6), ai-chatbot (19), dub's web app (80) |
 | React Router / Remix | `frameworks/react-router.ts` | `react-router-synthesizer.ts` | `react-router.test.ts`, `react-router-framework.test.ts`, `remix-routes.test.ts`, `react-router-returned-tables.test.ts` | proshop (44 edges), proshop-v2 (28), react-redux-realworld (22), react-boilerplate (`styled(Link)`), takenote (v5 `<Redirect>`); pinned official framework config and flat filenames; bulletproof-react: nested children, lazy routes and paths.x.path constants through per-app aliases; paths.x.getHref() links and navigate calls read literal or template destinations; upstream route-table and JSX index/layout regressions cover imported route tables, nested layouts and index pages; fork recheck: 11 navigates on bulletproof-react `9506629` (2026-10-01), all destinations checked against config and route registrations. Lazy loaders that pick their page (`lazyRouteReference` in `frameworks/react.ts`, trap 18): milo/ui's three tabs (`const { TestTab } = await import('…/tabs')`), 20 apps from a GitHub survey of `createBrowserRouter` + `lazy` (636 picked-page edges, each checked against the target file's own export: 467 by name, 169 as its `export default`; 42 routes written with `async lazy()` now indexed, among them React Router's own `lazy-loading-router-provider` example), an AST oracle on the TypeScript compiler agreeing with the text reader on all 2,538 loaders of 876 surveyed router files, a late-file sync equal to a fresh index on 8 of those apps, and 26 control repos byte-identical, among them ghostfolio, whose 30 Angular lazy routes stay Angular's with React detected in the same project Barrels that pass on a page they import (`import { UserLayout } from './UserLayout'; export { UserLayout }`, `import Login from './Login'; export default Login`): `exportedComponent` follows the import, reading the export from binding rows; upstream: Arshia76/DigiShop.Frontend (0 → 27 route and layout edges), 49 other repos byte-identical; `export default withAuth(Page)` is followed nowhere. A page in a folder below the barrel (`pages/Home/index.tsx` behind `@/pages`) whose route failed waits under the barrel's module key: a sync that adds the page, or gives it a definition, re-opens it (`reopenReferencesThroughBarrels` in `resolution/module-importers.ts`; upstream: a late-file sync on DigiShop equals a fresh index). A name the route file declares itself (trap 19) binds to what that declaration renders in routes, layouts and JSX alike; upstream: outline (+31 edges), mastodon (+20), SigNoz (+7), excalidraw (+3), bulletproof-react (+6), with matx, mantis, proshop, next-saas-starter and berry byte-identical. Upstream's 2026-10-19 measurements, taken on its own resolver and not re-measured on the fork's: a table a function returns handed over through a variable (Medusa's admin dashboard, trap 13), `<Outlet />` written in a route object (trap 14), and the `baseUrl` / `"*"` imports of matx, mantis and berry (trap 21). A table behind `useMemo`, and every `return` of a route-building function rather than the first (trap 13), are upstream's 2026-10-19 change too (`tableRoutes` in `frameworks/react.ts`, ported to the fork's top-level table reader; upstream: tg-tt-bot-stage, bewild-clone, SpaceR, BANKFORM1; not re-measured here). |
 | TanStack Router / Start | `frameworks/tanstack-router.ts` | `tanstack-router-synthesizer.ts` | `tanstack-router.test.ts`, `tanstack-start.test.ts` | TanStack examples, fastapi-template frontend; pinned Start server-handler syntax |
 | Vue Router / Nuxt | `frameworks/vue-router.ts` (Nuxt file routes: `nuxtResolver` in `frameworks/vue.ts`) | `vue-router-synthesizer.ts` | `vue-router.test.ts`, `nuxt-navigate-to.test.ts` | vue-realworld (23 edges); vue-element-admin (62 routes), vue-admin-template (14), vben (192), halo console (34) — named tables, module files, `children` + layouts; Nuxt: mealie, elk, nuxt/movies. Nuxt's `navigateTo` (upstream's 2026-10-22 measurements, taken on its own resolver and not re-measured on the fork's): mealie 13 of its 14 calls, nuxt.com 17 of 24, elk 9 of 10 outside the plugin that declares its own, atidone 2 of 2, pages and route middleware alike; the rest are computed, an API endpoint (`{ external: true }`), or a page of a Nuxt layer (`extends: ['./layers/nuxi']`), whose pages sit in a route table of their own. nuxt/ui's docs: 0 of 4, two computed and two whose only page is a catch-all (`[...slug].vue`, named `*slug`) or an optional parameter (`[[tag]].vue`, `:tag?`), which `matchRoute` doesn't read yet, for markup links either |
@@ -598,6 +598,27 @@ Each of these cost real debugging time; they are not hypothetical.
    sync binds it when its page appears. An absolute URL is no path of the app:
    Vue Router's call reader keeps only destinations that start with `/`, as
    its markup reader does.
+22. **What runs before a route has no import to it.** Next wires its proxy
+   (`proxy.ts`, `middleware.ts` before 16) by file name and `config.matcher`,
+   so `nextProxyEdges` draws a `calls` edge from each route the matcher accepts
+   to what runs there. `calls` because that is what `callers` and Flow ride: a
+   route stands for a request arriving, and the proxy is the first thing that
+   request runs. `decorates` reads as well, and leaves the proxy with no callers
+   and every flow stopped at the route. `routeRoots` skips these edges, since
+   they don't say where the route's own code starts, and so does the Screens
+   walk (`arrivesFromAnotherContext`): walked backwards from a redirect in the
+   proxy, 30-odd routes are more callers than it takes, and the navigation was
+   dropped. Screens stays byte-identical on all four apps.
+   Two things decide whether this reaches real apps at all. About two thirds of
+   real matchers are a negative lookahead (`/((?!api|_next/static).*)`), which a
+   reader of literal paths links nothing from, and about a third of real
+   proxies are a wrapped default export (`export default clerkMiddleware(…)`),
+   which has no node, so the edge goes to the file, where the wrapper's calls
+   are recorded. `compileMatcher` builds its regular expression from the parts
+   it recognizes and never from the entry's text: `new RegExp()` on a pattern
+   in an indexed repository could hang the index. Checked against path-to-regexp
+   on the 344 entries of 157 real proxies: 339 read, all agreeing on 27
+   addresses, and 5 left unread, which link nothing.
 
 ---
 
