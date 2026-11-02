@@ -1880,6 +1880,49 @@ impl KernelResolver {
             }
             break;
         }
+        // A type's own member, through a path or a `use` that names it: an
+        // enum's variant (`crate::models::Mode::Fast(1)`), or a trait's own
+        // declared method (`Codec::encode(…)`), never a namesake elsewhere.
+        if function.kind() == "scoped_identifier" && !method.is_empty() {
+            for decl in self.rust_type_decls(&written)? {
+                match decl.kind.as_str() {
+                    "enum" => {
+                        let wanted = format!("{}::{method}", decl.qualified_name);
+                        for member in self.nodes_in_file(&decl.file_path)?.iter() {
+                            if member.kind == "enum_member"
+                                && member.name == method
+                                && member.qualified_name == wanted
+                                && member.start_line >= decl.start_line
+                                && member.end_line <= decl.end_line
+                            {
+                                self.mark_rust_typed(r);
+                                return Ok(Some(Some(KCand {
+                                    node: member.clone(),
+                                    confidence: 0.9,
+                                    resolved_by: "qualified-name",
+                                })));
+                            }
+                        }
+                    }
+                    "trait" => {
+                        for m in self.rust_methods_named(&decl.name, &method)? {
+                            if m.file_path == decl.file_path
+                                && m.start_line >= decl.start_line
+                                && m.start_line <= decl.end_line
+                            {
+                                self.mark_rust_typed(r);
+                                return Ok(Some(Some(KCand {
+                                    node: m,
+                                    confidence: 0.9,
+                                    resolved_by: "qualified-name",
+                                })));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         let (head, _, _) = type_head(&unread.text);
         if head.starts_with("dyn ") || head.starts_with("impl ") {
             let trait_type =
