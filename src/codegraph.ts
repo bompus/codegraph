@@ -868,6 +868,7 @@ export class CodeGraph {
           const tDeferred = Date.now();
           await this.resolver.resolveDeferredThisMemberRefs();
           if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] deferredThisMember: ${Date.now() - tDeferred}ms`);
+          await this.resolver.resolveParameterFlows();
         }
         if (result.success && !this.nearDuplicatesRan) await this.refreshNearDuplicates();
 
@@ -1252,7 +1253,9 @@ export class CodeGraph {
           touchedBySynthesis === null && ++synthChecks <= 64
             ? this.queries.hasSynthesizedEdgesTouchingFile(p)
             : (touchedBySynthesis ??= this.queries.filesTouchingSynthesizedEdges()).has(p);
+        const flowChange = this.resolver.trackParameterFlows();
         const result = await this.orchestrator.sync(options.onProgress, options.paths, backpressure, (filePath, content) => {
+          flowChange.before(filePath);
           if (watchRoutes && routesBefore === null) routesBefore = this.queries.getNodesByKind('route');
           // A changed file only dirties synthesis when it carried synthesized
           // wiring (read BEFORE replacement cascades its edges), its last-seen
@@ -1912,6 +1915,12 @@ export class CodeGraph {
         }
         if (filesChanged || result.filesRemoved > 0) {
           await this.refreshNearDuplicates(result.changedFilePaths, result.filesRemoved > 0);
+        }
+
+        // A call in one file types a parameter in another, so an edit of the
+        // caller can move the callee's edges. Last, as in a full index.
+        if (filesChanged || result.filesRemoved > 0 || orphanCount > 0) {
+          await this.resolver.resolveParameterFlows(flowChange);
         }
 
         // Refresh planner stats + checkpoint the WAL after bulk writes.

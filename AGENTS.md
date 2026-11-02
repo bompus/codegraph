@@ -72,6 +72,7 @@ The public API surface is `src/index.ts`, which re-exports types and the `CodeGr
 Directory names say what each `src/` folder does; these are the parts they do not say.
 
 - `codegraph-kernel/` is the Rust (napi-rs) kernel. `src/<lang>/` holds each language's extraction walker; `src/resolve/` is the only reference resolver, entered at `mod.rs`. Files named `*_upstream.rs` port upstream's deleted TypeScript resolver (`src/resolution/name-matcher.ts` and friends); read the original with `git show upstream/main:<path>`. Kernel tests are `__tests__/kernel-*.test.ts`.
+- `src/resolution/parameter-flow.ts` is the last pass on `calls` edges: its SQL is `src/db/parameter-flow-queries.ts`, and `ruby-parameter-flow.ts` (with the Ruby scope helpers in `ruby-flow-scope.ts`) moves a call on a parameter to the method of the one class every call site passes. A sync looks only as far as what it changed reaches, from a record the last pass left in one metadata key, and whatever it can't settle from that falls back to a pass over the project.
 - `src/graph/` owns shared graph derivations. If more than one surface renders a derivation, put it here rather than in an individual handler.
 - The browser viewer is not released yet: `codegraph ui` / `web` are refused and hidden from `--help` unless `CODEGRAPH_UI=1` is set (`src/bin/viewer-gate.ts`). Viewer changelog entries wait in `docs/viewer-launch-changelog.md`, not under `[Unreleased]`.
 

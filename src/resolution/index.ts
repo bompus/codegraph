@@ -40,7 +40,8 @@ import { detectFrameworksWithSkips, getResolvingFrameworks } from './frameworks'
 import { clearDeclaredDependencies } from './frameworks/package-deps';
 import { collectSynthesisInputs, synthesizeCallbackEdges } from './callback-synthesizer';
 import { createYielder, type MaybeYield } from './cooperative-yield';
-import { MAX_SOURCE_FILE_SIZE_BYTES } from '../file-limits';
+import { FlowChange, planParameterFlows } from './parameter-flow';
+import { MAX_SOURCE_FILE_SIZE_BYTES, readSourceText } from '../file-limits';
 import { aliasConfigFields, loadProjectAliases, loadScopedAliases, scopedAliasesForFile, type AliasMap, type AliasScope } from './path-aliases';
 import { findGoModuleForImport, goModulePackageDir, loadGoModule, type GoModule } from './go-module';
 import { loadWorkspacePackages, workspaceFingerprint, workspacePackageDirOf, type WorkspacePackages } from './workspace-packages';
@@ -53,6 +54,7 @@ import { getKernel, type KernelResolverLike, type ResolveRefIn, type ResolveOutc
 import { LRUCache } from './lru-cache';
 import { SynthSkips, SYNTH_SKIPS_VERSION } from './synth-skips';
 import { readDirEntries } from '../directory';
+import { clearRubyFlowScopeMemos } from './ruby-flow-scope';
 
 // SUPERTYPE_TARGET_KINDS (the kinds an extends/implements edge may TARGET)
 // lives in ./types — the name-matcher needs the same set to restrict its
@@ -597,6 +599,7 @@ export class ReferenceResolver {
       clearSwiftTypeVisibility(this.context);
       clearTypeParameterMemos(this.context);
       clearRustScopeMemos(this.context);
+      clearRubyFlowScopeMemos(this.context);
       clearDeclaredDependencies(this.context);
     }
   }
@@ -649,12 +652,7 @@ export class ReferenceResolver {
       // Import resolvers may follow package metadata to an archive (`file:*.har`,
       // for example). Reject anything extraction would not accept before UTF-8
       // decoding can multiply a large binary blob into gigabytes of V8 heap.
-      const stats = fs.statSync(fullPath);
-      if (!stats.isFile() || stats.size > MAX_SOURCE_FILE_SIZE_BYTES) {
-        this.fileCache.set(filePath, null);
-        return null;
-      }
-      const content = fs.readFileSync(fullPath, 'utf-8');
+      const content = readSourceText(fullPath);
       this.fileCache.set(filePath, content);
       return content;
     } catch (error) {
@@ -2362,6 +2360,51 @@ export class ReferenceResolver {
    */
   getResolutionContext(): ResolutionContext {
     return this.context;
+  }
+
+  /** What a sync has to tell the parameter-flow pass of the files it changes. */
+  trackParameterFlows(): FlowChange {
+    return new FlowChange(this.queries);
+  }
+
+  /**
+   * Move each call on a parameter whose class its call sites settle to that
+   * class's method, and put back through resolution a call whose flow is gone
+   * (see ./parameter-flow). The last pass on `calls` edges, once every call has
+   * an answer and the resolver pool is gone: what it holds is off the index's
+   * peak. A sync hands in what it changed, and the pass goes only as far as
+   * that reaches.
+   */
+  async resolveParameterFlows(change?: FlowChange): Promise<number> {
+    const t0 = Date.now();
+    let changed = 0;
+    try {
+      const flows = this.queries.parameterFlows;
+      for (const { retarget, drop, restore, stats, language, record } of await planParameterFlows(this.queries, this.context, change)) {
+        flows.retargetCalls(
+          retarget.flatMap((r) => (r.edgeId === undefined ? [] : [r.edgeId])),
+          retarget.flatMap((r) => (r.rowId === undefined ? [] : [r.rowId])),
+          this.createEdges(retarget.map((r) => r.resolved)),
+        );
+        flows.replaceEdgesWithFlowMarkedRefs(drop.map((d) => d.edgeId), drop.map((d) => d.reference));
+        if (retarget.length + drop.length > 0) flows.noteParameterFlows();
+        if (restore.length > 0) {
+          flows.restoreCalls(
+            restore.flatMap((r) => (r.edgeId === undefined ? [] : [r.edgeId])),
+            restore.flatMap((r) => (r.rowId === undefined ? [] : [r.rowId])),
+            restore.map((r) => r.reference),
+          );
+          const files = new Set(restore.flatMap((r) => (r.reference.filePath === undefined ? [] : [r.reference.filePath])));
+          await this.resolveAndPersistListYielding(this.queries.getUnresolvedReferencesByFiles([...files]));
+        }
+        flows.setRecord(language, record);
+        changed += retarget.length + drop.length + restore.length;
+        if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] parameter-flow: ${Date.now() - t0}ms ${JSON.stringify(stats)}`);
+      }
+    } catch (error) {
+      logDebug('Parameter flows failed', { error: String(error) });
+    }
+    return changed;
   }
 
   /**
