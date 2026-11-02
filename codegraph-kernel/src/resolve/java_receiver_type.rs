@@ -419,6 +419,21 @@ impl KernelResolver {
         method: &str,
         r: &ResolveRefIn,
     ) -> Res<Option<Option<KCand>>> {
+        // A type parameter is no class of that name, even one the project
+        // declares: `<T> void unknown(T value)` says nothing of `value`, and
+        // `T extends Item` goes to Item. `resolveBoundType`'s rule, so no name
+        // strategy guesses a same-named method either.
+        if let Some((declaration, _)) = self.java_type_parameter(written, r)? {
+            let bound_re = re!(r"^[A-Za-z0-9_]+\s+extends\s+([A-Za-z0-9_.]+)$");
+            let bound = bound_re
+                .captures(&declaration)
+                .map(|m| m[1].to_string())
+                .filter(|bound| bound != written);
+            return match bound {
+                Some(bound) => self.java_typed_receiver(&bound, method, r).map(|r| r.or(Some(None))),
+                None => Ok(Some(None)),
+            };
+        }
         let Some(ty) = self.java_type_ref(written, &r.file_path, r)? else {
             return Ok(Some(None));
         };

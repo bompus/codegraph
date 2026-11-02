@@ -932,6 +932,15 @@ if inferred.is_none() && r.language == "dart" {
                 {
                     member = None;
                 }
+                // A "type" no declaration makes a type — the `load` a
+                // local-declaration scan takes from `Checker.load()` — is not
+                // the receiver's declared type; the property and chain reader
+                // in the tail still gets its turn.
+                if r.language == "kotlin"
+                    && self.inferred_member_type_bound(&t, r)?.is_none()
+                {
+                    member = None;
+                }
                 if member.is_none() && r.language == "go" {
                     // A Go standard method name the declared type lacks is no
                     // other type's (`err.Error()`, `context.Done()`); any
@@ -2054,8 +2063,17 @@ if inferred.is_none() && r.language == "dart" {
             // A Kotlin receiver a property or chain types, or one nothing
             // types at all (`helper` from a library base class), is answered
             // by the free strategies and the declared-type arms there, as
-            // matchMethodCall's single pass does upstream.
-            if hit.is_none() && r.language == "kotlin" {
+            // matchMethodCall's single pass does upstream. A parameter or a
+            // name an enclosing lambda binds is not: it shadows every property
+            // the class declares, and the claim model keeps its miss
+            // terminal. A type name (an uppercase receiver) is no property
+            // name either.
+            if hit.is_none()
+                && r.language == "kotlin"
+                && root.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+                && binding.as_ref().is_none_or(|b| b.kind != "param")
+                && !self.kotlin_lambda_binds(root, r)?
+            {
                 return probe!(r, "brc:mc-free", self.match_method_call_free(r));
             }
             return Ok(hit);

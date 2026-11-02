@@ -562,6 +562,35 @@ impl KernelResolver {
         Ok(out)
     }
 
+    /// Whether an enclosing Kotlin lambda binds `name` — one of its declared
+    /// parameters, or the implicit `it`. Such a name shadows every property the
+    /// enclosing class declares, so it is the claim model's, not a receiver a
+    /// property or chain types.
+    pub(super) fn kotlin_lambda_binds(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
+        let Some(file) = self.read_file(&r.file_path) else { return Ok(false) };
+        let Some(tree) = self.parsed_tree(&file, r) else { return Ok(false) };
+        let source = file.text();
+        let mut node = super::iteration::descendant_for_position(
+            tree.root_node(),
+            source,
+            ((r.line - 1).max(0) as usize, r.column.max(0) as usize),
+        );
+        while let Some(parent) = node.parent() {
+            if parent.kind() == "lambda_literal"
+                && self
+                    .kotlin_lambda_names(parent, source, r)?
+                    .contains(&name)
+            {
+                return Ok(true);
+            }
+            if matches!(parent.kind(), "function_declaration" | "class_declaration") {
+                break;
+            }
+            node = parent;
+        }
+        Ok(false)
+    }
+
     /// The declared type of Kotlin receiver `name` at `r`: the nearest local
     /// declaration in the enclosing scope (typed, constructed, or bound to a
     /// call), else a property of the enclosing class, else a parameter, else a

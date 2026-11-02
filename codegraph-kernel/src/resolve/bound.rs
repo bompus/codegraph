@@ -92,11 +92,68 @@ impl KernelResolver {
                     p.split(|c: char| c.is_whitespace()).next() == Some(ty)
                 })
             });
+            // The extractor records type parameters on classes only. Read a
+            // method's own `<T>` / `<T extends Item>` from its head, so a
+            // method that redeclares the class's `T` shadows the class bound:
+            // `<T> void unknown(T value)` says nothing about `T`.
+            let decl = match decl {
+                Some(decl) => Some(decl.clone()),
+                None if scope.kind == "method" => {
+                    // The method's own `<...>` list: from the `<` after its
+                    // name to the matching `>`. A type argument in a parameter
+                    // (`List<a.http.Request> all`) is no declaration.
+                    let head = self.declaration_head(scope, 2);
+                    let head = head.split('{').next().unwrap_or("").to_string();
+                    let name_re = Self::cached_regex(&format!(
+                        r"\b{}\s*<",
+                        regex::escape(&scope.name)
+                    ))?;
+                    let mut found = None;
+                    if let Some(m) = name_re.find(&head) {
+                        let rest = &head[m.end() - 1..];
+                        let mut depth = 0i64;
+                        let mut end = None;
+                        for (i, ch) in rest.char_indices() {
+                            if ch == '<' {
+                                depth += 1;
+                            } else if ch == '>' {
+                                depth -= 1;
+                                if depth == 0 {
+                                    end = Some(i);
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some(end) = end {
+                            for part in
+                                super::overloads_upstream::split_top_level(&rest[1..end])
+                            {
+                                if part.split_whitespace().next() != Some(ty) {
+                                    continue;
+                                }
+                                let bound = Self::cached_regex(&format!(
+                                    r"^{}\s+(extends\s+[A-Za-z0-9_.]+)$",
+                                    regex::escape(ty)
+                                ))?
+                                .captures(part.trim())
+                                .map(|m| m[1].to_string());
+                                found = Some(match bound {
+                                    Some(bound) => format!("{ty} {bound}"),
+                                    None => ty.to_string(),
+                                });
+                                break;
+                            }
+                        }
+                    }
+                    found
+                }
+                None => None,
+            };
             if let Some(declaration) = decl {
                 let mut site = r.clone();
                 site.line = scope.start_line;
                 site.column = scope.start_column;
-                return Ok(Some((declaration.clone(), site)));
+                return Ok(Some((declaration, site)));
             }
         }
         Ok(None)
