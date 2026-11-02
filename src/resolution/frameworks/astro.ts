@@ -58,6 +58,7 @@ function pageComponentId(filePath: string): string {
     1,
   );
 }
+import { inReferencingFolder } from './component-folder';
 
 /**
  * Astro virtual module prefixes — framework-provided, not user code
@@ -355,9 +356,8 @@ function resolveComponent(
 
   if (components.length === 0) return null;
 
-  // Prefer same directory
-  const fromDir = fromFile.substring(0, fromFile.lastIndexOf('/'));
-  const sameDir = components.filter((n) => n.filePath.startsWith(fromDir));
+  // Prefer the referencing file's folder, or one below it
+  const sameDir = inReferencingFolder(fromFile, components, (n) => n.filePath);
   if (sameDir.length > 0) return sameDir[0]!.id;
 
   // No positional signal: only an UNAMBIGUOUS name may resolve — picking

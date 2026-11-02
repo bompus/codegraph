@@ -42,7 +42,8 @@
 use super::*;
 use tables::{PASCAL_SYSTEM_NAMES, RTL_PROCEDURAL_TYPES};
 
-const PARENLESS: &str = r"^\{(call|read|ref|recv)(?:@([^}]+))?\}\.(.+)$";
+const PARENLESS: &str =
+    r"^\{(call|read|ref|recv|args)(?:=([^@}]+))?(?:@([^}]+))?\}\.(.+)$";
 const CLASS_KINDS: &[&str] = &["class", "struct", "interface"];
 /// What a unit declares by name at its top level.
 const UNIT_KINDS: &[&str] = &[
@@ -63,6 +64,18 @@ const PASCAL_SOURCE: &str = r"(?i)\.(?:pas|dpr|dpk|lpr|inc)$";
 /// A routine type written out: `procedure(...) of object`, `function: T`,
 /// `reference to procedure`.
 const PROCEDURAL_TYPE: &str = r"(?i)^(?:reference\s+to\s+)?(?:procedure|function)\b";
+
+/// The System unit's value types, lowercased, which hold no routine.
+const SYSTEM_VALUE_TYPES: &[&str] = &[
+    "boolean", "bytebool", "wordbool", "longbool", "integer", "cardinal",
+    "shortint", "smallint", "longint", "longword", "int8", "int16", "int32",
+    "int64", "uint8", "uint16", "uint32", "uint64", "byte", "word", "dword",
+    "nativeint", "nativeuint", "single", "double", "extended", "real",
+    "currency", "comp", "char", "ansichar", "widechar", "string", "ansistring",
+    "widestring", "unicodestring", "shortstring", "rawbytestring",
+    "utf8string", "pchar", "pansichar", "pwidechar", "pointer", "variant",
+    "olevariant", "tdatetime", "tdate", "ttime",
+];
 const MAX_HIERARCHY_DEPTH: usize = 8;
 
 #[derive(Clone)]
@@ -76,6 +89,7 @@ struct PasFound {
 /// declared type, written `:TFoo`), a class itself, or a unit.
 struct PasHead {
     ty: Option<Arc<KNode>>,
+    class_ref: bool,
     unit_file: Option<String>,
 }
 
@@ -131,6 +145,7 @@ pub(super) struct PasMemo {
     routine_nodes: HashMap<String, Option<Arc<KNode>>>,
     routine_qns: HashMap<String, bool>,
     supers: HashMap<String, Rc<Vec<String>>>,
+    pointees: HashMap<String, Option<String>>,
 }
 
 impl KernelResolver {
@@ -154,20 +169,25 @@ impl KernelResolver {
             return Ok(None);
         }
         let m = re!(PARENLESS).captures(&r.reference_name).unwrap();
-        let mode = m[1].to_string();
+        let mut mode = m[1].to_string();
+        let target = m.get(2).map(|t| t.as_str().to_string());
         let path: Vec<String> =
-            m[3].split('.').map(|s| s.to_string()).collect();
+            m[4].split('.').map(|s| s.to_string()).collect();
         // Most such names read data, often the framework's: a name no
         // Pascal routine has is settled here, before any lookup in scope.
-        let last = path[path.len() - 1].to_lowercase();
-        let routine_exists = self.nodes_by_lower_name(&last)?.iter().any(|n| {
-            n.language == "pascal"
-                && matches!(n.kind.as_str(), "method" | "function")
-        });
-        if !routine_exists {
-            return Ok(Some(ResolveOutcome::unresolved()));
+        // Called with its arguments, a chain may end at data that holds a
+        // routine.
+        if mode != "args" {
+            let last = path[path.len() - 1].to_lowercase();
+            let routine_exists = self.nodes_by_lower_name(&last)?.iter().any(|n| {
+                n.language == "pascal"
+                    && matches!(n.kind.as_str(), "method" | "function")
+            });
+            if !routine_exists {
+                return Ok(Some(ResolveOutcome::unresolved()));
+            }
         }
-        let cls = if let Some(qn) = m.get(2) {
+        let cls = if let Some(qn) = m.get(3) {
             self.pascal_class_by_qn(qn.as_str(), &r.file_path)?
         } else {
             match self.node_by_id(&r.from_node_id)? {
@@ -178,28 +198,59 @@ impl KernelResolver {
         let found = if path.len() == 1 {
             self.pascal_name_in_scope(&path[0], cls.as_deref(), r)?
         } else {
-            self.pascal_member_through_path(&path, cls.as_deref(), r)?
+            self.pascal_member_through_path(
+                &path,
+                cls.as_deref(),
+                r,
+                mode == "args",
+            )?
         };
         let Some(found) = found else {
             return Ok(Some(ResolveOutcome::unresolved()));
         };
-        // Written without arguments, a routine that needs some can only be
-        // a method pointer — save a constructor, whose name then means an
-        // inherited one outside the project (`TObject.Create`) — and so is
-        // a procedure read for a value, and an event's method; any other
-        // runs.
-        let needs_args = pascal_needs_arguments(&found.node);
-        if needs_args && self.pascal_routine_keyword(&found.node)? == Some("constructor".into()) {
-            return Ok(Some(ResolveOutcome::unresolved()));
+        let mut edge_kind = "calls".to_string();
+        let mut pointer = false;
+        // Written with its arguments, the routine runs, or the routine the
+        // data holds.
+        if mode != "args" {
+            if let Some(target) = &target {
+                // Given to a target, a method is a method pointer when the
+                // target's declared type is a routine type, and a value
+                // otherwise. A function whose result is a routine type is
+                // called for it.
+                if let Some(routine_typed) =
+                    self.pascal_assigned_routine_type(target, cls.as_deref(), r)?
+                {
+                    mode = if routine_typed { "ref".into() } else { "read".into() };
+                    if mode == "ref"
+                        && self.pascal_returns_routine_type(&found.node)?
+                    {
+                        mode = "read".into();
+                    }
+                }
+            }
+            // Written without arguments, a routine that needs some can only
+            // be a method pointer — save a constructor, whose name then
+            // means an inherited one outside the project (`TObject.Create`)
+            // — and so is a procedure read for a value, and an event's
+            // method; any other runs.
+            let needs_args = pascal_needs_arguments(&found.node);
+            if needs_args
+                && self.pascal_routine_keyword(&found.node)?
+                    == Some("constructor".into())
+            {
+                return Ok(Some(ResolveOutcome::unresolved()));
+            }
+            pointer = mode == "ref"
+                || needs_args
+                || (mode != "call" && !self.pascal_yields_value(&found.node)?);
+            // A statement runs its routine, and a receiver is a routine's
+            // value.
+            if pointer && (mode == "call" || mode == "recv") {
+                return Ok(Some(ResolveOutcome::unresolved()));
+            }
+            edge_kind = if pointer { "references".into() } else { "calls".into() };
         }
-        let pointer = mode == "ref" || needs_args
-            || (mode != "call" && !self.pascal_yields_value(&found.node)?);
-        // A statement runs its routine, and a receiver is a routine's value.
-        if pointer && (mode == "call" || mode == "recv") {
-            return Ok(Some(ResolveOutcome::unresolved()));
-        }
-        let edge_kind =
-            if pointer { "references".to_string() } else { "calls".to_string() };
         let mut out = self.finish_pre_framework(
             r,
             KCand {
@@ -567,8 +618,12 @@ impl KernelResolver {
                 let mut depth = -1i64;
                 for n in &named {
                     if n.file_path != caller.file_path
-                        || n.start_line > r.line
                         || !self.pascal_is_nested_routine(n)?
+                    {
+                        continue;
+                    }
+                    if n.start_line > r.line
+                        && !self.pascal_declared_forward(n, r.line)?
                     {
                         continue;
                     }
@@ -600,6 +655,56 @@ impl KernelResolver {
         }
         self.pascal.nested_in_scope.insert(key, found.clone());
         Ok(found)
+    }
+
+    /// declaredForward — whether a routine nested in another is declared
+    /// `forward` above a line (`procedure Late; forward;`), which puts it in
+    /// scope there ahead of its body: a header of its name, as indented as
+    /// its own, that ends in `forward;`, between the line and the header
+    /// indented less above it, the routine both are nested in.
+    fn pascal_declared_forward(
+        &mut self,
+        routine: &KNode,
+        line: i64,
+    ) -> Res<bool> {
+        let Some(source) = self.read_file(&routine.file_path) else {
+            return Ok(false);
+        };
+        let name = routine.name.to_lowercase();
+        let header = re!(
+            r"(?i)^(\s*)(?:class\s+)?(?:procedure|function|constructor|destructor)\s+([A-Za-z_]\w*)"
+        );
+        let strip = re!(r"//.*$|\{[^}]*\}|\(\*.*?\*\)");
+        let start = (line.min(source.len() as i64) - 1).max(0) as usize;
+        for i in (0..=start).rev() {
+            let Some(m) = header.captures(&source[i]) else {
+                continue;
+            };
+            let indent = m[1].chars().count() as i64;
+            if indent < routine.start_column {
+                return Ok(false);
+            }
+            if indent != routine.start_column
+                || m[2].to_lowercase() != name
+            {
+                continue;
+            }
+            // Its parameters may go on over a few lines.
+            let mut text = strip.replace_all(&source[i], " ").into_owned();
+            let mut j = i + 1;
+            while j < source.len()
+                && j <= i + 4
+                && text.matches('(').count() > text.matches(')').count()
+            {
+                text.push(' ');
+                text.push_str(&strip.replace_all(&source[j], " "));
+                j += 1;
+            }
+            if re!(r"(?i)\bforward\s*;").is_match(&text) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// isNestedRoutine — whether a node is a routine nested in another: a
@@ -849,20 +954,76 @@ impl KernelResolver {
         Ok(rc)
     }
 
-    /// A dotted name: the method its receiver's declared type has.
+    /// A dotted name: the method its receiver's declared type has; with
+    /// `holds_routine`, data that holds a routine too (a chain called with
+    /// its arguments, `Owner.Events.FOnChange(Self)`, see isProceduralData).
     fn pascal_member_through_path(
         &mut self,
         path: &[String],
         cls: Option<&KNode>,
         r: &ResolveRefIn,
+        holds_routine: bool,
     ) -> Res<Option<PasFound>> {
-        let Some(head) = self.pascal_head_of(&path[0], cls, r)? else {
+        let Some((node, unit)) = self.pascal_member_at_path(path, cls, r)?
+        else {
             return Ok(None);
         };
-        let mut ty: Option<Arc<KNode>>;
-        let mut rest: &[String] = &path[1..];
+        if !pascal_is_routine(&node)
+            && !(holds_routine
+                && DATA_KINDS.contains(&node.kind.as_str())
+                && self.pascal_is_procedural_data(&node)?)
+        {
+            return Ok(None);
+        }
+        Ok(Some(PasFound {
+            node,
+            resolved_by: if unit { "import" } else { "instance-method" },
+            confidence: 0.9,
+        }))
+    }
+
+    /// memberAtPath — what a dotted name's last link is declared as: a
+    /// member of what the links before it are declared to be — a field's
+    /// or a property's type, a function's result — from its head (see
+    /// headOf), or, with `unit`, the routine or variable a unit's name
+    /// qualifies (`Utils.Helper`). A constructor called on a class gives an
+    /// instance of it: one the class declares, or `Create`, which the
+    /// project's classes inherit from outside it (`TLog.Create.Write('x')`,
+    /// `Logs.TLog.Create().Write('x')`).
+    fn pascal_member_at_path(
+        &mut self,
+        path: &[String],
+        cls: Option<&KNode>,
+        r: &ResolveRefIn,
+    ) -> Res<Option<(Arc<KNode>, bool)>> {
+        let mut head = self.pascal_head_of(&path[0], cls, r)?;
+        let mut rest: Vec<String> = path[1..].to_vec();
+        // A dotted unit name, the longest the links make
+        // (`mormot.core.os.GetTickCount64`).
+        if head.is_none() && path.len() > 2 {
+            let mut k = path.len() - 1;
+            while k >= 2 {
+                let unit = path[..k].join(".").to_lowercase();
+                if let Some(file) =
+                    self.pascal_unit_file_named(&unit, &r.file_path)?
+                {
+                    head = Some(PasHead {
+                        ty: None,
+                        class_ref: false,
+                        unit_file: Some(file),
+                    });
+                    rest = path[k..].to_vec();
+                    break;
+                }
+                k -= 1;
+            }
+        }
+        let Some(head) = head else { return Ok(None) };
+        let mut class_ref = head.class_ref;
+        let mut ty = head.ty;
         if let Some(unit_file) = head.unit_file {
-            // `UnitName.Routine`, `UnitName.GlobalVar.Method`.
+            // `UnitName.Routine`, `UnitName.GlobalVar.Method`,
+            // `UnitName.TFoo.Create.Method`.
             let Some(decl) = self.pascal_unit_declaration(
                 &unit_file,
                 &rest[0].to_lowercase(),
@@ -872,47 +1033,104 @@ impl KernelResolver {
                 return Ok(None);
             };
             if rest.len() == 1 {
-                return Ok(if pascal_is_routine(&decl) {
-                    Some(PasFound {
-                        node: decl,
-                        resolved_by: "import",
-                        confidence: 0.9,
-                    })
-                } else {
-                    None
-                });
+                return Ok(Some((decl, true)));
             }
-            ty = self.pascal_type_of_member(&decl)?;
-            rest = &rest[1..];
-        } else {
-            ty = head.ty;
+            class_ref = CLASS_KINDS.contains(&decl.kind.as_str());
+            ty = if class_ref {
+                Some(decl)
+            } else {
+                self.pascal_type_of_member(&decl)?
+            };
+            rest = rest[1..].to_vec();
         }
-        for link in &rest[..rest.len() - 1] {
+        for i in 0..rest.len() {
+            let lower = rest[i].to_lowercase();
             let member = match ty.as_deref() {
-                Some(t) => {
-                    self.pascal_member_in_hierarchy(t, &link.to_lowercase())?
-                }
+                Some(t) => self.pascal_member_in_hierarchy(t, &lower)?,
                 None => None,
             };
+            if i == rest.len() - 1 {
+                return Ok(member.map(|m| (m, false)));
+            }
+            if class_ref {
+                // A constructor called on a class gives an instance of it;
+                // `Create` is inherited from outside the project.
+                let ctor = match &member {
+                    Some(m) => {
+                        pascal_is_routine(m)
+                            && self.pascal_routine_keyword(m)?
+                                == Some("constructor".into())
+                    }
+                    None => lower == "create",
+                };
+                if ctor {
+                    class_ref = false;
+                    continue;
+                }
+            }
             let Some(member) = member else { return Ok(None) };
             ty = self.pascal_type_of_member(&member)?;
+            class_ref = false;
         }
-        let member = match ty.as_deref() {
-            Some(t) => self
-                .pascal_member_in_hierarchy(t, &rest[rest.len() - 1].to_lowercase())?,
-            None => None,
-        };
-        Ok(member.and_then(|m| {
-            if pascal_is_routine(&m) {
-                Some(PasFound {
-                    node: m,
-                    resolved_by: "instance-method",
-                    confidence: 0.9,
-                })
-            } else {
-                None
+        Ok(None)
+    }
+
+    /// Whether the target a value is assigned to is declared with a routine
+    /// type (see the file comment): the field, property or variable a name
+    /// reaches in scope, or through a receiver (`FEvents.OnGet`,
+    /// `Self.Callback`), or the declared type of a local (`:TGet`,
+    /// `:procedure` for one written out). None when the declaration, or what
+    /// its type is, can't be read.
+    fn pascal_assigned_routine_type(
+        &mut self,
+        target: &str,
+        cls: Option<&KNode>,
+        r: &ResolveRefIn,
+    ) -> Res<Option<bool>> {
+        let links: Vec<String> =
+            target.split('.').map(|s| s.to_string()).collect();
+        if links.len() == 1 {
+            if let Some(name) = links[0].strip_prefix(':') {
+                return self.pascal_routine_type_verdict(name, 0);
             }
-        }))
+        }
+        let node = if links.len() == 1 {
+            self.pascal_declaration_in_scope(&links[0].to_lowercase(), cls, r)?
+                .map(|f| f.node)
+        } else {
+            self.pascal_member_at_path(&links, cls, r)?.map(|(n, _)| n)
+        };
+        let Some(node) = node else { return Ok(None) };
+        if !DATA_KINDS.contains(&node.kind.as_str()) || node.kind == "enum_member"
+        {
+            return Ok(None);
+        }
+        let text = self.pascal_declared_type_text(&node)?;
+        if text.is_empty() {
+            return Ok(None);
+        }
+        self.pascal_routine_type_verdict(&text, 0)
+    }
+
+    /// Whether a function's result is of a routine type
+    /// (`function MakeHandler: TNotifyEvent`).
+    fn pascal_returns_routine_type(
+        &mut self,
+        routine: &KNode,
+    ) -> Res<bool> {
+        if !pascal_is_routine(routine) {
+            return Ok(false);
+        }
+        let type_name = routine.return_type.clone().or_else(|| {
+            re!(r":\s*([A-Za-z_][\w.]*)\s*;?\s*$")
+                .captures(routine.signature.as_deref().unwrap_or(""))
+                .map(|m| m[1].to_string())
+        });
+        match type_name {
+            Some(name) => Ok(self.pascal_routine_type_verdict(&name, 0)?
+                == Some(true)),
+            None => Ok(false),
+        }
     }
 
     /// headOf — what a dotted name's first link is: a value of a known
@@ -927,6 +1145,7 @@ impl KernelResolver {
         if let Some(ty_name) = name.strip_prefix(':') {
             return Ok(Some(PasHead {
                 ty: self.pascal_class_named(ty_name, &r.file_path)?,
+                class_ref: false,
                 unit_file: None,
             }));
         }
@@ -934,6 +1153,7 @@ impl KernelResolver {
         if lower == "self" {
             return Ok(cls.map(|cls| PasHead {
                 ty: Some(Arc::new(cls.clone())),
+                class_ref: false,
                 unit_file: None,
             }));
         }
@@ -941,6 +1161,7 @@ impl KernelResolver {
             if let Some(member) = self.pascal_member_in_hierarchy(cls, &lower)? {
                 return Ok(Some(PasHead {
                     ty: self.pascal_type_of_member(&member)?,
+                    class_ref: false,
                     unit_file: None,
                 }));
             }
@@ -957,18 +1178,21 @@ impl KernelResolver {
             }
         }
         if let Some(decl) = decl {
+            let class_ref = CLASS_KINDS.contains(&decl.kind.as_str());
             return Ok(Some(PasHead {
-                ty: if CLASS_KINDS.contains(&decl.kind.as_str()) {
+                ty: if class_ref {
                     Some(decl)
                 } else {
                     self.pascal_type_of_member(&decl)?
                 },
+                class_ref,
                 unit_file: None,
             }));
         }
         match self.pascal_unit_file_named(&lower, &r.file_path)? {
             Some(file) => Ok(Some(PasHead {
                 ty: None,
+                class_ref: false,
                 unit_file: Some(file),
             })),
             None => Ok(None),
@@ -1613,7 +1837,8 @@ impl KernelResolver {
                     .replace_all(&line, "")
                     .into_owned();
                 if let Some(m) =
-                    re!(r"=\s*([A-Za-z_][\w.]*)\s*;").captures(&stripped)
+                    re!(r"(?i)=\s*(?:\^|class\s+of\b)?\s*([A-Za-z_][\w.]*)\s*;")
+                        .captures(&stripped)
                 {
                     if let Some(c) = self.pascal_class_named_depth(
                         &m[1],
@@ -1782,8 +2007,21 @@ impl KernelResolver {
         text: &str,
         depth: usize,
     ) -> Res<bool> {
+        Ok(self.pascal_routine_type_verdict(text, depth)? == Some(true))
+    }
+
+    /// routineTypeVerdict — whether a written type is a routine's (see
+    /// isProceduralTypeText): Some(false) for one of the System unit's value
+    /// types, and None when nothing says, for a name neither the project
+    /// declares nor the RTL's names say is a routine type (`TStringList`) or
+    /// text that names no type (`array of TFoo`).
+    fn pascal_routine_type_verdict(
+        &mut self,
+        text: &str,
+        depth: usize,
+    ) -> Res<Option<bool>> {
         if re!(PROCEDURAL_TYPE).is_match(text) {
-            return Ok(true);
+            return Ok(Some(true));
         }
         let type_name = re!(r"(?i)^(?:type\s+)?([A-Za-z_][\w.]*)")
             .captures(text)
@@ -1791,26 +2029,36 @@ impl KernelResolver {
                 m[1].rsplit('.').next().unwrap_or(&m[1]).to_lowercase()
             });
         let Some(type_name) = type_name else {
-            return Ok(false);
+            return Ok(None);
         };
         if depth > 3 {
-            return Ok(false);
+            return Ok(None);
         }
         let types = self.pascal_types_named(&type_name)?;
         if types.is_empty() {
-            return Ok(RTL_PROCEDURAL_TYPES.contains(type_name.as_str())
+            if RTL_PROCEDURAL_TYPES.contains(type_name.as_str())
                 || re!(r"(?i)^t\w*(?:event|proc|method|callback)$")
-                    .is_match(&type_name));
+                    .is_match(&type_name)
+            {
+                return Ok(Some(true));
+            }
+            return Ok(if SYSTEM_VALUE_TYPES.contains(&type_name.as_str()) {
+                Some(false)
+            } else {
+                None
+            });
         }
         for t in types {
             if t.kind == "type_alias" {
                 let aliased = self.pascal_aliased_type_text(&t)?;
-                if self.pascal_is_procedural_type_text(&aliased, depth + 1)? {
-                    return Ok(true);
+                if self.pascal_routine_type_verdict(&aliased, depth + 1)?
+                    == Some(true)
+                {
+                    return Ok(Some(true));
                 }
             }
         }
-        Ok(false)
+        Ok(Some(false))
     }
 
     /// aliasedTypeText — what a type declaration says after its `=`,
@@ -1850,6 +2098,39 @@ impl KernelResolver {
             .collect();
         out.extend(generic.get(lower).cloned().unwrap_or_default());
         Ok(out)
+    }
+
+    /// The type a Pascal pointer or class reference type the project
+    /// declares stands for (`PDBObject = ^TDBObject` → `TDBObject`,
+    /// `TSynLogClass = class of TSynLog` → `TSynLog`), whose members a value
+    /// of it reaches, or None for any other type (#2550).
+    pub(super) fn pascal_pointee(
+        &mut self,
+        type_name: &str,
+    ) -> Res<Option<String>> {
+        let lower = type_name.to_lowercase();
+        if let Some(hit) = self.pascal.pointees.get(&lower) {
+            return Ok(hit.clone());
+        }
+        let mut pointee: Option<String> = None;
+        for n in self.pascal_named(&lower)? {
+            if n.kind != "type_alias" {
+                continue;
+            }
+            let line = self
+                .read_file(&n.file_path)
+                .and_then(|s| s.get((n.start_line - 1).max(0) as usize).cloned())
+                .unwrap_or_default();
+            let stripped = re!(r"//.*$|\{[^}]*\}").replace_all(&line, " ");
+            if let Some(m) = re!(r"(?i)=\s*(?:\^|class\s+of\b)\s*([A-Za-z_]\w*)")
+                .captures(&stripped)
+            {
+                pointee = Some(m[1].to_string());
+                break;
+            }
+        }
+        self.pascal.pointees.insert(lower, pointee.clone());
+        Ok(pointee)
     }
 
     /// The generic Pascal types by the name before their parameters.

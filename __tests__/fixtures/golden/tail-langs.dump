@@ -219,7 +219,7 @@
 {"source":"file:pascal/Greeter.pas","target":"function:4deb563e7c698926a335c1bd62d36702","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:pascal/Greeter.pas","target":"import:97ab2e7e0faf1209335e0059099591b9","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:pascal/Greeter.pas","target":"module:4373f831559a99d192a077ddad372788","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
-{"source":"file:pascal/main.dpr","target":"function:4deb563e7c698926a335c1bd62d36702","kind":"calls","metadata":"{\"confidence\":0.85,\"resolvedBy\":\"import\",\"refName\":\"{read}.DefaultGreeter\",\"refKind\":\"references\"}","line":6,"col":7,"provenance":null}
+{"source":"file:pascal/main.dpr","target":"function:4deb563e7c698926a335c1bd62d36702","kind":"calls","metadata":"{\"confidence\":0.85,\"resolvedBy\":\"import\",\"refName\":\"{read=G}.DefaultGreeter\",\"refKind\":\"references\"}","line":6,"col":7,"provenance":null}
 {"source":"file:pascal/main.dpr","target":"import:bf1c55023fbd4037a03eb2a4a0f99b21","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:pascal/main.dpr","target":"method:c8700c0a274e1839c7a6188810e73785","kind":"calls","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"instance-method\",\"refName\":\"{read}.G.Greet\",\"refKind\":\"references\"}","line":7,"col":10,"provenance":null}
 {"source":"file:pascal/main.dpr","target":"module:4373f831559a99d192a077ddad372788","kind":"imports","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"Greeter\"}","line":2,"col":5,"provenance":null}

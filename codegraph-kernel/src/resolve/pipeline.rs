@@ -476,6 +476,30 @@ if super::lang_scope::is_dart_member_read(r) {
             }
             match bound {
                 None => {
+                    // A Java or Kotlin call chain rooted at an imported
+                    // declaration (`KUtil.INSTANCE.kmake()`, `Modes.extOther()`,
+                    // `JUtil.Nested.deep()` after `import p.JUtil`) walks that
+                    // declaration's nested types and members, or its file's
+                    // top-level function (#3023). The bound claim above has no
+                    // type for the chain.
+                    if matches!(r.language.as_str(), "java" | "kotlin")
+                        && r.reference_kind == "calls"
+                    {
+                        if let Some(dot) = r.reference_name.find('.') {
+                            let root = r.reference_name[..dot].to_string();
+                            if self
+                                .import_mappings(&r.file_path)?
+                                .iter()
+                                .any(|m| m.local_name == root)
+                            {
+                                if let Some(c) = self.resolve_via_import_member(r)? {
+                                    if let Some(c) = self.gate_language(Some(c), r) {
+                                        return self.finish_pre_framework(r, c);
+                                    }
+                                }
+                            }
+                        }
+                    }
                     return Ok(self.refused());
                 }
                 Some(c) => {
@@ -578,6 +602,13 @@ if super::lang_scope::is_dart_member_read(r) {
             return self.after_name_match(r, cands, erlang);
         }
         let mut name_cand = self.match_by_file_path(r)?;
+        // A dotted Java, Kotlin or C# supertype (`extends Outer.Inner`) is a
+        // nested type's path: the type it names in the file's reach, or nothing.
+        if name_cand.is_none() {
+            if let Some(dotted) = self.match_dotted_supertype(r)? {
+                return self.after_name_match(r, cands, dotted);
+            }
+        }
         if name_cand.is_none() {
             name_cand = self.match_by_qualified_name(r)?;
         }
@@ -1125,6 +1156,64 @@ if super::lang_scope::is_dart_member_read(r) {
         // its scope declares first (#2810). Undefined when that scope holds
         // no routine of the name, for the other strategies to resolve.
         if let Some(outcome) = self.resolve_pascal_nested_call(r)? { return Ok(outcome); }
+        // A Kotlin extension declared beside its receiver's type
+        // (`fun Modes.extOther()`), reached as `Modes.extOther()`, is a
+        // top-level declaration: from another package, only an import of it
+        // or of its package puts it in scope (#3023).
+        if r.language == "kotlin" && r.reference_kind == "calls" {
+            if let Some(dot) = r.reference_name.find('.') {
+                let (recv, member) = (
+                    &r.reference_name[..dot],
+                    &r.reference_name[dot + 1..],
+                );
+                if !recv.contains('.') && !member.contains('.') {
+                    let qn = format!("{recv}::{member}");
+                    let candidates = self.nodes_by_qualified_name(&qn)?;
+                    let mut hit = None;
+                    for n in candidates.iter() {
+                        if n.kind == "method"
+                            && n.language == "kotlin"
+                            && self.kotlin_extension_in_scope(n, r)?
+                        {
+                            hit = Some(n.clone());
+                            break;
+                        }
+                    }
+                    if let Some(node) = hit {
+                        return self.finish_pre_framework(
+                            r,
+                            KCand {
+                                node,
+                                confidence: 0.9,
+                                resolved_by: "instance-method",
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        // A Java or Kotlin call chain rooted at an imported declaration
+        // (`JUtil.Nested.deep()`, `Modes.extOther()`) walks that
+        // declaration's nested types and members, or the file's top-level
+        // function; a chain through its properties is typed below (#3023).
+        if matches!(r.language.as_str(), "java" | "kotlin")
+            && r.reference_kind == "calls"
+        {
+            if let Some(dot) = r.reference_name.find('.') {
+                let root = r.reference_name[..dot].to_string();
+                if self
+                    .import_mappings(&r.file_path)?
+                    .iter()
+                    .any(|m| m.local_name == root)
+                {
+                    if let Some(c) = self.resolve_via_import_member(r)? {
+                        if let Some(c) = self.gate_language(Some(c), r) {
+                            return self.finish_pre_framework(r, c);
+                        }
+                    }
+                }
+            }
+        }
         // A Ruby namespaced constant path (`Billing::ChargeCard`,
         // `::Foo.call`) resolves only to a constant the project declares,
         // looked up from the lexical namespace outward; a call on one

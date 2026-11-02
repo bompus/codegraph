@@ -48,7 +48,7 @@ import * as syncStack from './sync';
 import { provideStacks } from './codegraph';
 provideStacks({ extraction: extractionStack, resolution: resolutionStack, sync: syncStack });
 
-export { CodeGraph } from './codegraph';
+export { CodeGraph, parseSynthMinIntervalEnv } from './codegraph';
 export type { InitOptions, OpenOptions, IndexOptions } from './codegraph';
 import { CodeGraph } from './codegraph';
 export default CodeGraph;

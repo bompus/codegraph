@@ -238,6 +238,13 @@ function appendHardFilters(hard: HardFilters | undefined, params: (string | numb
   return sql;
 }
 
+/** Whether a name passes a query's `name:` filters (case-folded substring, OR'd). */
+function passesNameFilters(name: string, hard: HardFilters): boolean {
+  if (hard.names.length === 0) return true;
+  const lowered = name.toLowerCase();
+  return hard.names.some((n) => lowered.includes(n.toLowerCase()));
+}
+
 function rowToNode(row: NodeRow): Node {
   return {
     id: row.id,
@@ -1895,6 +1902,13 @@ export class QueryBuilder {
     return new Set(rows.map((r) => r.language));
   }
 
+  /** Whether any function of `language` carries `decorator`: a project's marker for a framework it uses. */
+  hasDecoratedFunction(language: Language, decorator: string): boolean {
+    return !!this.db.prepare(
+      `SELECT 1 FROM nodes WHERE kind = 'function' AND language = ? AND decorators LIKE ? LIMIT 1`
+    ).get(language, `%"${decorator}"%`);
+  }
+
   /**
    * Get nodes by exact name match (uses idx_nodes_name index).
    *
@@ -2074,7 +2088,7 @@ export class QueryBuilder {
       ? (this._fts5Available !== false ? this.searchNodesFTS(text, { kinds, languages, limit, offset }, hard) : [])
       // Over-fetch by 5× when running filter-only (no text) so scoring has
       // more than `limit` candidates to rank.
-      : this.searchAllByFilters({ kinds, languages, limit: limit * 5 }, hard);
+      : this.searchAllByFilters({ kinds, languages, limit: limit * 5, offset }, hard);
 
     // If no FTS results, try LIKE-based substring search
     if (results.length === 0 && text.length >= 2) {
@@ -2183,10 +2197,10 @@ export class QueryBuilder {
    * what was asked for.
    */
   private searchAllByFilters(
-    options: { kinds?: NodeKind[]; languages?: Language[]; limit: number },
+    options: { kinds?: NodeKind[]; languages?: Language[]; limit: number; offset: number },
     hard?: HardFilters
   ): SearchResult[] {
-    const { kinds, languages, limit } = options;
+    const { kinds, languages, limit, offset } = options;
     let sql = 'SELECT * FROM nodes WHERE 1=1';
     const params: (string | number)[] = [];
     if (kinds && kinds.length > 0) {
@@ -2198,8 +2212,8 @@ export class QueryBuilder {
       params.push(...languages);
     }
     sql += appendHardFilters(hard, params);
-    sql += ' ORDER BY name LIMIT ?';
-    params.push(limit);
+    sql += ' ORDER BY name LIMIT ? OFFSET ?';
+    params.push(limit, offset);
     const rows = this.shapeStmt(sql).all(...params) as NodeRow[];
     return rows.map((row) => ({ node: rowToNode(row), score: 1 }));
   }
@@ -2243,13 +2257,19 @@ export class QueryBuilder {
     // a project with many similar names (`getUser1`, `getUser2`...)
     // could fan out far beyond `limit` queries before the inner-loop
     // limit kicks in.
+    // With `path:`/`name:` filters the cap could be spent on names whose
+    // symbols all lie outside them, ahead of the one that matches (#2254), so
+    // a filtered search looks names up until it has `limit` results, skipping
+    // without a lookup each name `name:` rules out. Every lookup is an index
+    // seek on one name.
     const FUZZY_FOLLOWUP_CAP = Math.max(limit * 2, 50);
-    const cappedCandidates = candidates.slice(0, FUZZY_FOLLOWUP_CAP);
+    const cappedCandidates = hard ? candidates : candidates.slice(0, FUZZY_FOLLOWUP_CAP);
 
     const results: SearchResult[] = [];
     const seen = new Set<string>();
     for (const c of cappedCandidates) {
       if (results.length >= limit) break;
+      if (hard && hard.names.length > 0 && !passesNameFilters(c.name, hard)) continue;
       let sql = 'SELECT * FROM nodes WHERE name = ?';
       const params: (string | number)[] = [c.name];
       if (kinds && kinds.length > 0) {
@@ -3524,16 +3544,8 @@ export class QueryBuilder {
   /**
    * Every ordered pair of files where one reaches into the other, once each.
    *
-   * The input a cycle finder wants: file-level circular dependencies are the
-   * strongly connected components of this graph. One query instead of the
-   * dependency lookup per file that {@link GraphQueryManager.findCircularDependencies}
-   * does — which matters because a cycle report is only interesting on a large
-   * repo, and that is exactly where a query per file stops being affordable.
-   *
    * `contains` is excluded (a file "contains" its own symbols, which is not a
-   * dependency), and so are same-file edges and low-confidence name matches:
-   * a cycle conjured by a common method name is a false alarm a reader cannot
-   * check.
+   * dependency), and so are same-file edges and low-confidence name matches.
    */
   getCrossFileDependencyPairs(minConfidence: number): Array<{ source: string; target: string }> {
     return this.db
@@ -3547,6 +3559,29 @@ export class QueryBuilder {
             AND COALESCE(json_extract(e.metadata, '$.confidence'), 1) >= ?`
       )
       .all(minConfidence) as Array<{ source: string; target: string }>;
+  }
+
+  /**
+   * Every ordered pair of files where one imports the other, once each: the
+   * graph circular imports are read from. See `src/graph/file-cycles.ts`.
+   *
+   * Only `imports` edges, which the import resolver made from a statement in
+   * the file. Every other cross-file edge says something ran or was mentioned
+   * there, and a loop of those is not a circular import: an interface's call
+   * fans out to a test's fake that implements it, two pages link to each other,
+   * and the files of one Go package call each other freely.
+   */
+  getFileImportPairs(): Array<{ source: string; target: string }> {
+    return this.db
+      .prepare(
+        `SELECT DISTINCT sn.file_path AS source, tn.file_path AS target
+           FROM edges e
+           JOIN nodes sn ON sn.id = e.source
+           JOIN nodes tn ON tn.id = e.target
+          WHERE e.kind = 'imports'
+            AND sn.file_path <> tn.file_path`
+      )
+      .all() as Array<{ source: string; target: string }>;
   }
 
   /**
@@ -5857,6 +5892,30 @@ export class QueryBuilder {
   getNodeCount(): number {
     const row = this.db.prepare('SELECT COUNT(*) AS count FROM nodes').get() as { count: number };
     return row.count;
+  }
+
+  /**
+   * For each language, how many files it has and how many yielded a symbol: a
+   * node other than the file's own. More than one stored node settles a row, so
+   * `nodes` is only probed for the few it can't, such as a file whose one symbol
+   * came from a framework pass. Probing every row costs as much as the whole of
+   * getStats() on a 14,000-file index; this costs a tenth of that. Not part of
+   * getStats() either way, because every explore runs that.
+   */
+  getParsedFileCounts(): Array<{ language: Language; files: number; parsed: number }> {
+    return this.db
+      .prepare(`
+        SELECT f.language AS language, COUNT(*) AS files,
+          SUM(CASE
+            WHEN f.node_count > 1 THEN 1
+            WHEN EXISTS (SELECT 1 FROM nodes n WHERE n.file_path = f.path AND n.kind <> 'file') THEN 1
+            ELSE 0
+          END) AS parsed
+        FROM files f
+        GROUP BY f.language
+        ORDER BY f.language
+      `)
+      .all() as Array<{ language: Language; files: number; parsed: number }>;
   }
 
   /**

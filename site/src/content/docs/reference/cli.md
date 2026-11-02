@@ -7,13 +7,14 @@ description: Every CodeGraph command and the flags it accepts.
 codegraph                         # Run interactive installer
 codegraph install                 # Run installer (explicit)
 codegraph uninstall               # Remove CodeGraph from your agents (inverse of install)
-codegraph init [path]             # Initialize a project + build its graph (one step; --no-seed in a worktree)
+codegraph init [path]             # Initialize a project + build its graph (one step; --no-seed in a worktree, --local-only keeps .codegraph/ out of git)
 codegraph uninit [path]           # Remove CodeGraph from a project (--force to skip prompt)
 codegraph index [path]            # Full re-index from scratch (--force, --quiet, --verbose)
 codegraph sync [path]             # Incremental update (--quiet)
-codegraph status [path]           # Show statistics (--json)
+codegraph status [path]           # Show statistics (--json, --strict)
 codegraph ui [path]               # Open the browser viewer (not released yet — see below)
 codegraph unlock [path]           # Remove a stale lock file that's blocking indexing
+codegraph implementations <name>  # List the types that implement or extend a type (--depth, --json)
 codegraph query <search>          # Search symbols (--kind, --limit, --json)
 codegraph explore <query>         # Compact map by default; --mode map|snippets|source (same output as codegraph_explore)
 codegraph context <task...>       # Context for a task: relevant symbols, relationships and code (--format markdown|json, --max-nodes, --no-code)
@@ -24,6 +25,7 @@ codegraph callers <symbol>        # Find what calls a function/method (--limit, 
 codegraph callees <symbol>        # Find what a function/method calls (--limit, --json)
 codegraph impact <symbol>         # Analyze what code is affected by changing a symbol (--depth, --json)
 codegraph affected [files...]     # Find test files affected by changes (see below)
+codegraph cycles [path]           # List circular imports between files (--json); exits 1 when there are any
 codegraph daemon                  # Manage background daemons — pick one to stop (alias: daemons)
 codegraph telemetry [on|off]      # Show or change anonymous usage telemetry
 codegraph upgrade [version]       # Update to the latest release (--check, --force)
@@ -49,6 +51,22 @@ Embedding callers that need a verified watcher and fresh reconciliation use `sta
 
 `codegraph init` creates the local `.codegraph/` directory **and** builds the full graph in one step. (The old `-i`/`--index` flag is now a no-op, accepted only so existing scripts don't break.) After that the file watcher keeps the graph current automatically — `index` (a full rebuild from scratch) and `sync` (an incremental update) are only needed when the watcher is disabled or you're scripting against the index outside an agent session.
 
+`.codegraph/` holds a `.gitignore` that keeps the index out of git and is itself meant to be committed, so the rule is shared with your team. If you use CodeGraph on your own, `codegraph init --local-only` makes that file ignore itself too, so nothing shows in `git status`. It also works on a project that's already initialized, without re-indexing. A `.gitignore` you've edited or committed is left as it is.
+
+## status
+
+`codegraph status` shows what is in the index, including how many files each language has. When only some of a language's files yielded symbols, its row says how many did:
+
+```text
+Files by Language:
+  typescript      1,204
+  python          500  (420 with symbols)
+```
+
+Empty files and stubs explain most gaps. A language where no file yielded a symbol gets a warning naming its files, because that is also what a parser that isn't working looks like. Formats tracked at file level, such as YAML, never show a count.
+
+`codegraph status --strict` exits with code 1 unless the index is finished, up to date, and every language that should yield symbols did, so packaging and CI can gate on it. A dirty working tree counts as out of date, and one file that can't be parsed doesn't fail it. With `--json` the same counts are in `filesByLanguage`, `parsedFilesByLanguage` and `unparsedLanguages`.
+
 ## Query commands
 
 `status` reports files whose symbols need re-indexing and files with recorded parse errors. Its JSON output includes `index.filesNeedingReindex` and `index.filesWithParseErrors`. `files --json` includes each file's extraction `errors` array.
@@ -66,9 +84,23 @@ codegraph impact AuthMiddleware --depth 3
 
 `explore` and `node` are the CLI faces of the `codegraph_explore` and `codegraph_node` MCP tools — same output — so subagents and non-MCP harnesses can reach the graph from a shell.
 
+`codegraph files --format package` lists files by the package that owns them: the nearest `package.json` or `composer.json` above each file that names one. A monorepo splits into its workspace members with no setup, and files nothing claims get a section of their own. The other formats are `tree` (the default), `flat` and `grouped` (by language).
+
 ## affected
 
 Traces import dependencies transitively to find which test files are affected by changed source files. See [Affected Tests in CI](/codegraph/guides/affected-tests/) for options and a CI example.
+
+## cycles
+
+Lists circular imports: groups of files that all import each other, directly or through others. Each group is reported once with every file in it, smallest group first, and `--json` prints the whole list.
+
+```bash
+codegraph cycles                 # the project you're standing in
+codegraph cycles --json          # { "count": 2, "cycles": [["src/a.ts", "src/b.ts"], ...] }
+codegraph cycles || exit 1       # as a pre-commit or CI check
+```
+
+It exits 1 when there are any and 0 when there are none. Only import statements count, type-only imports included. Two files that merely call each other, like the files of one Go package, are not a circular import.
 
 ## ui
 

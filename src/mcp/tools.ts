@@ -36,7 +36,7 @@ import {
   type WorktreeIndexMismatch,
 } from '../sync/worktree';
 import type { PendingFile } from '../sync';
-import type { Node, Edge, SearchResult, Subgraph, NodeKind, GraphStats } from '../types';
+import type { Node, Edge, SearchResult, Subgraph, NodeKind, GraphStats, Language } from '../types';
 import type { NodeSpan } from '../db/queries';
 import { isDistinctiveIdentifier, isQueryNameToken, isTestFile, isTestPath, normalizeNameToken, splitAtCjkSwitches, STOP_WORDS } from '../search/query-utils';
 import { groupDefinitions, isQualifiedSymbol, lastQualifierPart, matchesSymbol, qualifiedSymbolMatches } from '../graph/symbol-lookup';
@@ -67,6 +67,7 @@ import { describeSynthesizedHop } from '../graph/synthesized-hop';
 import { callSiteLines, formatCallSiteLines } from '../graph/call-sites';
 import { DEFAULT_IMPACT_MAX_EDGES, DEFAULT_IMPACT_MAX_NODES, type CallSiteRow } from '../graph/traversal';
 import { isCopybookInclude, MAX_COPYBOOK_INCLUDES, type NamedCopybook } from '../graph/cobol-copybooks';
+import { groupFilesByPackage, packageGroupTitle, packageListingTitle } from '../graph/owning-package';
 import {
   findAllSymbols,
   resolveNamedSymbolFlow,
@@ -79,6 +80,12 @@ import { ExploreDiagnostics } from './explore-diagnostics';
 import { requestedSourceRanges } from './explore-source-ranges';
 import { collectChanges, symbolsForRanges, type ChangeSet } from './explore-changes';
 import { extractSegmentSearchWords, splitIdentifierSegments } from '../search/identifier-segments';
+import {
+  IndexVersionWarningState,
+  formatIndexBuildVersion,
+  formatIndexVersionWarning,
+  formatRunningVersion,
+} from './index-version-warning';
 import {
   EXPLORE_EMISSION_KEY,
   EXPLORE_SESSION_VIEW_ARG,
@@ -2628,8 +2635,8 @@ export const tools: ToolDefinition[] = [
         },
         format: {
           type: 'string',
-          description: 'Output format: "tree" (hierarchical, default), "flat" (simple list), "grouped" (by language)',
-          enum: ['tree', 'flat', 'grouped'],
+          description: 'Output format: "tree" (hierarchical, default), "flat" (simple list), "grouped" (by language), "package" (by the nearest package.json or composer.json that names a package)',
+          enum: ['tree', 'flat', 'grouped', 'package'],
           default: 'tree',
         },
         includeMetadata: {
@@ -2876,6 +2883,10 @@ export class ToolHandler {
   // (#995), or an index that exists but could not be opened (SQLite's own
   // failure, or no node:sqlite). Engine-maintained; cleared by a successful open.
   private defaultOpenFailure: WslSharedIndexError | DatabaseOpenError | NodeSqliteUnavailableError | null = null;
+  // Why the default project was refused: the folder it resolved to, or was
+  // searched for from, is a sensitive one (the guard a `projectPath` gets).
+  // Engine-maintained; cleared by a successful open.
+  private defaultRootRefusal: string | null = null;
   // Per-start-path cache of the git worktree/index mismatch (issue #155). The
   // mismatch is a fixed property of (where the request came from → which
   // .codegraph/ it resolves to), so the up-to-two `git rev-parse` spawns run
@@ -2928,6 +2939,17 @@ export class ToolHandler {
   setDefaultCodeGraph(cg: CodeGraph): void {
     this.cg = cg;
     this.defaultOpenFailure = null;
+    this.defaultRootRefusal = null;
+  }
+
+  /**
+   * Engine-only: record why the default project was refused as a sensitive
+   * folder, so a call without a projectPath says why there is none. `null`
+   * clears it. A refused root was never opened, so no open failure stands.
+   */
+  setDefaultRootRefusal(refusal: string | null): void {
+    this.defaultRootRefusal = refusal;
+    if (refusal) this.defaultOpenFailure = null;
   }
 
   /**
@@ -3178,14 +3200,21 @@ export class ToolHandler {
       if (!this.cg) {
         if (this.defaultOpenFailure) throw this.defaultOpenFailure;
         const searched = this.defaultProjectHint ?? process.cwd();
+        // A refused default is the same "pass projectPath" state, success-shaped
+        // like the rest: the agent can still query every other project.
+        const why = this.defaultRootRefusal
+          ? `${this.defaultRootRefusal}. CodeGraph never uses a credential, config or system folder ` +
+            'as a project, so this session has no default project. To query a project outside such ' +
+            'folders, target it explicitly:\n'
+          : `Searched for a .codegraph/ directory starting from: ${searched}\n` +
+            this.formatKnownSubprojects() +
+            'Either the server root has no index of its own (e.g. a monorepo where only ' +
+            "sub-projects are indexed), or the MCP client launched the server outside your " +
+            'project without reporting the workspace root. Either way, target the project ' +
+            'explicitly:\n';
         throw new NotIndexedError(
           'No CodeGraph project is loaded for this session.\n' +
-          `Searched for a .codegraph/ directory starting from: ${searched}\n` +
-          this.formatKnownSubprojects() +
-          'Either the server root has no index of its own (e.g. a monorepo where only ' +
-          "sub-projects are indexed), or the MCP client launched the server outside your " +
-          'project without reporting the workspace root. Either way, target the project ' +
-          'explicitly:\n' +
+          why +
           '  • Pass projectPath to the tool call, e.g. projectPath: "/absolute/path/to/your/project" ' +
           '(any project that has a .codegraph/ — including a sub-project of a monorepo)\n' +
           '  • Or add --path to the server\'s MCP config args: ["serve", "--mcp", "--path", "/absolute/path/to/your/project"]\n' +
@@ -3231,6 +3260,14 @@ export class ToolHandler {
         "for that codebase instead, and don't call codegraph for it again this session. " +
         "Indexing is the user's decision — they can run 'codegraph init' in that project to enable it."
       );
+    }
+
+    // The root the walk landed on gets the same refusal. A path that doesn't
+    // exist skips the check above, so `~/.config/no-such-dir` would otherwise
+    // walk up into an index of `~/.config` (#1930).
+    const rootError = validateProjectPath(resolvedRoot);
+    if (rootError) {
+      throw new PathRefusalError(rootError);
     }
 
     const cg = this.openProjectRoot(resolvedRoot, canonicalRoot);
@@ -3738,6 +3775,40 @@ export class ToolHandler {
   }
 
   /**
+   * Warn this MCP client once for each selected project whose persisted
+   * extraction version predates the running engine. The state belongs to the
+   * client session, never this shared handler: one daemon serves many clients.
+   */
+  private withIndexVersionNotice(
+    result: ToolResult,
+    projectPath: string | undefined,
+    state: IndexVersionWarningState | undefined,
+  ): ToolResult {
+    if (!state || result.isError) return result;
+    const [first, ...rest] = result.content;
+    if (!first || first.type !== 'text') return result;
+
+    let cg: CodeGraph;
+    let root: string;
+    try {
+      cg = this.getCodeGraph(projectPath);
+      if (!cg.isIndexStale()) return result;
+      root = cg.getProjectRoot();
+    } catch {
+      // No initialized project (or a project that cannot be opened) has no
+      // trustworthy build metadata to report and must not consume a warning.
+      return result;
+    }
+    if (!state.claim(root)) return result;
+
+    const warning = formatIndexVersionWarning(cg.getIndexBuildInfo());
+    return {
+      ...result,
+      content: [{ type: 'text', text: `${warning}\n\n${first.text}` }, ...rest],
+    };
+  }
+
+  /**
    * Execute a tool by name.
    *
    * `sessionState` is the CALLER's per-session explore history (CG-17). The
@@ -3752,6 +3823,7 @@ export class ToolHandler {
     sessionState?: ExploreSessionState,
     exploreMode?: unknown,
     advertisedMode?: unknown,
+    indexVersionWarnings?: IndexVersionWarningState,
   ): Promise<ToolResult> {
     // A cross-project session search (experimental) names its projects itself and
     // needs no default one: anchor the call on the first listed project that has an
@@ -3835,7 +3907,12 @@ export class ToolHandler {
       // a worker (whose read connection has no watcher). It also skips the
       // auto-banner wrapper to avoid duplicating its own pending-files section.
       if (toolName === 'codegraph_status') {
-        return await this.handleStatus(args);
+        const result = await this.handleStatus(args);
+        return this.withIndexVersionNotice(
+          result,
+          args.projectPath as string | undefined,
+          indexVersionWarnings,
+        );
       }
 
       // Read tools: off-load the CPU-heavy dispatch to the worker pool when one
@@ -3908,7 +3985,15 @@ export class ToolHandler {
       // caller passed session state.
       const result = this.takeExploreEmission(raw, sessionState);
       const withWorktree = this.withWorktreeNotice(result, args.projectPath as string | undefined);
-      return this.withStalenessNotice(withWorktree, args.projectPath as string | undefined);
+      const withStaleness = this.withStalenessNotice(
+        withWorktree,
+        args.projectPath as string | undefined,
+      );
+      return this.withIndexVersionNotice(
+        withStaleness,
+        args.projectPath as string | undefined,
+        indexVersionWarnings,
+      );
     } catch (err) {
       // Expected condition, not a malfunction: answer as a SUCCESS so the
       // agent keeps trusting the toolset for projects that ARE indexed.
@@ -4990,6 +5075,7 @@ export class ToolHandler {
    */
   private dependentEntries(cg: CodeGraph, roots: Node[], includeLeaves: boolean): string[] {
     const FILE_CAP = 4; // caller files listed per symbol before "+N more"
+    const TEMPLATE_VIEW_FILE = /\.(?:cshtml|razor|vue|svelte|astro)$/i;
     const rel = (p: string) => p.replace(/\\/g, '/');
     const entries: string[] = [];
     for (const root of roots) {
@@ -5013,9 +5099,17 @@ export class ToolHandler {
       const testFiles = callerFiles.filter((f) => isTestFile(f));
       const nonTest = callerFiles.filter((f) => !isTestFile(f));
 
-      const shown = nonTest.slice(0, FILE_CAP).map((f) => `\`${f}\``).join(', ');
-      const more = nonTest.length > FILE_CAP ? ` +${nonTest.length - FILE_CAP} more` : '';
-      const where = nonTest.length > 0 ? ` in ${shown}${more}` : '';
+      // A view depends on a helper across a layer, and is easily outnumbered by
+      // same-language callers: one flat cap showed none of a helper's 22 views
+      // behind four `.js` files. "Which views use this?" gets its own slot.
+      const viewFiles = nonTest.filter((f) => TEMPLATE_VIEW_FILE.test(f));
+      const codeFiles = nonTest.filter((f) => !TEMPLATE_VIEW_FILE.test(f));
+      const shown = codeFiles.slice(0, FILE_CAP).map((f) => `\`${f}\``).join(', ');
+      const more = codeFiles.length > FILE_CAP ? ` +${codeFiles.length - FILE_CAP} more` : '';
+      const views = viewFiles.length > 0
+        ? `${codeFiles.length > 0 ? ';' : ' in'} ${viewFiles.length} view${viewFiles.length === 1 ? '' : 's'}: ${viewFiles.slice(0, FILE_CAP).map((f) => `\`${f}\``).join(', ')}${viewFiles.length > FILE_CAP ? ` +${viewFiles.length - FILE_CAP}` : ''}`
+        : '';
+      const where = (codeFiles.length > 0 ? ` in ${shown}${more}` : '') + views;
       const tests = testFiles.length > 0
         ? `; tests: ${testFiles.slice(0, FILE_CAP).map((f) => `\`${f}\``).join(', ')}${testFiles.length > FILE_CAP ? ` +${testFiles.length - FILE_CAP}` : ''}`
         : this.indirectTestNote(cg, callers, rel);
@@ -10034,6 +10128,7 @@ export class ToolHandler {
     }
 
     const filePath = resolved.path;
+    const testLabel = isTestPath(filePath) ? ' · test file' : '';
     const nodes = cg.getNodesInFile(filePath)
       .filter((n) => n.kind !== 'file' && n.kind !== 'import' && n.kind !== 'export')
       .sort((a, b) => a.startLine - b.startLine);
@@ -10057,7 +10152,7 @@ export class ToolHandler {
 
     // symbolsOnly → the cheap structural overview, no source.
     if (opts.symbolsOnly) {
-      const out = [`**${filePath}** — ${nodes.length} symbol${nodes.length === 1 ? '' : 's'}, ${depSummary}`, ''];
+      const out = [`**${filePath}**${testLabel} — ${nodes.length} symbol${nodes.length === 1 ? '' : 's'}, ${depSummary}`, ''];
       if (nodes.length) out.push(...symbolMap('**Symbols**'));
       else out.push('_No indexed symbols in this file._');
       out.push('', '> Drop `symbolsOnly` (or pass `offset`/`limit`) to read the source, like Read.');
@@ -10067,7 +10162,7 @@ export class ToolHandler {
     // SECURITY (#383): never dump a raw config/data file — a yaml/properties
     // line is `key: <secret>`. Summarize by key and point to a real Read.
     if (CONFIG_LEAF_LANGUAGES.has(resolved.language)) {
-      const out = [`**${filePath}** — configuration/data file, ${depSummary}`, ''];
+      const out = [`**${filePath}**${testLabel} — configuration/data file, ${depSummary}`, ''];
       if (nodes.length) out.push(...symbolMap('**Keys (values withheld for safety)**'));
       out.push('', '> Values may be secrets, so codegraph indexes keys only. Read the file directly if you need a value.');
       return this.textResult(this.truncateOutput(out.join('\n')));
@@ -10081,7 +10176,7 @@ export class ToolHandler {
       try { content = readFileSync(abs, 'utf-8'); } catch { content = null; }
     }
     if (content === null) {
-      const out = [`**${filePath}** — could not read from disk (it may have moved since indexing). ${depSummary}`, ''];
+      const out = [`**${filePath}**${testLabel} — could not read from disk (it may have moved since indexing). ${depSummary}`, ''];
       if (nodes.length) out.push(...symbolMap('**Symbols**'));
       out.push('', `> Read \`${filePath}\` directly for its current content.`);
       return this.textResult(this.truncateOutput(out.join('\n')));
@@ -10101,11 +10196,11 @@ export class ToolHandler {
     const DEFAULT_LIMIT = 2000;
     const offset = Math.max(1, opts.offset ?? 1);
     if (offset > total) {
-      return this.textResult(`**${filePath}** has ${total} line${total === 1 ? '' : 's'} — offset ${offset} is past the end. ${depSummary}`);
+      return this.textResult(`**${filePath}**${testLabel} has ${total} line${total === 1 ? '' : 's'} — offset ${offset} is past the end. ${depSummary}`);
     }
     const maxLines = Math.max(1, opts.limit ?? DEFAULT_LIMIT);
     const start = offset - 1; // 0-based
-    const header = `**${filePath}** — ${total} lines, ${nodes.length} symbol${nodes.length === 1 ? '' : 's'} · ${depSummary}`;
+    const header = `**${filePath}**${testLabel} — ${total} lines, ${nodes.length} symbol${nodes.length === 1 ? '' : 's'} · ${depSummary}`;
 
     // Numbered lines, byte-for-byte Read's shape: `<n>\t<line>`, no left-pad.
     const numbered: string[] = [];
@@ -10279,6 +10374,11 @@ export class ToolHandler {
       } catch { /* closed instance — leave as is */ }
     }
     const stats = cg.getStats();
+    const buildInfo = cg.getIndexBuildInfo();
+    const reindexRecommended = cg.isIndexStale();
+    const indexBuildLabel = cg.getLastIndexedAt() == null
+      ? 'not indexed yet'
+      : formatIndexBuildVersion(buildInfo);
 
     // Warn when this index actually belongs to a different git working tree
     // (e.g. the server resolved up from a nested worktree to the main checkout).
@@ -10321,6 +10421,11 @@ export class ToolHandler {
     // Surface the active SQLite backend (node:sqlite, Node's built-in real
     // SQLite — full WAL + FTS5, no native build).
     lines.push(`**Backend:** node:sqlite (Node built-in) — full WAL + FTS5`);
+    lines.push(
+      `**Index built with:** ${indexBuildLabel}`,
+      `**Running CodeGraph:** ${formatRunningVersion()}`,
+      `**Re-index recommended:** ${reindexRecommended ? 'yes — the user can run `codegraph index`' : 'no'}`,
+    );
 
     // Effective journal mode. 'wal' ⇒ concurrent reads never block on a writer;
     // anything else ⇒ they can ("database is locked"). node:sqlite supports WAL
@@ -10365,11 +10470,22 @@ export class ToolHandler {
       }
     }
 
+    // Beside the file count, how many yielded symbols: it is what tells a
+    // language that parsed from one that is only listed.
+    const coverage = cg.getLanguageCoverage();
     lines.push('', '**Languages:**');
     for (const [lang, count] of Object.entries(stats.filesByLanguage)) {
       if ((count as number) > 0) {
-        lines.push(`- ${lang}: ${count}`);
+        const parsed = coverage.parsedFilesByLanguage[lang as Language];
+        lines.push(parsed === undefined || parsed === count ? `- ${lang}: ${count}` : `- ${lang}: ${count} (${parsed} with symbols)`);
       }
+    }
+    if (coverage.unparsedLanguages.length > 0) {
+      lines.push(
+        '',
+        `**No symbols from:** ⚠ ${coverage.unparsedLanguages.join(', ')} ` +
+        `— those files are indexed, but nothing in them can be searched or traced; Read them directly.`
+      );
     }
 
     // Whole-index degradation (#876): when live watching has permanently
@@ -10414,7 +10530,7 @@ export class ToolHandler {
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const pathFilter = args.path as string | undefined;
     const pattern = args.pattern as string | undefined;
-    const format = (args.format as 'tree' | 'flat' | 'grouped') || 'tree';
+    const format = (args.format as 'tree' | 'flat' | 'grouped' | 'package') || 'tree';
     const includeMetadata = args.includeMetadata !== false;
     const maxDepth = args.maxDepth != null ? clamp(args.maxDepth as number, 1, 20) : undefined;
 
@@ -10459,6 +10575,9 @@ export class ToolHandler {
         break;
       case 'grouped':
         output = this.formatFilesGrouped(files, includeMetadata);
+        break;
+      case 'package':
+        output = this.formatFilesByPackage(cg.getProjectRoot(), files, includeMetadata);
         break;
       case 'tree':
       default:
@@ -10521,6 +10640,32 @@ export class ToolHandler {
       for (const file of langFiles.sort((a, b) => a.path.localeCompare(b.path))) {
         if (includeMetadata) {
           lines.push(`- ${file.path} (${file.nodeCount} symbols)`);
+        } else {
+          lines.push(`- ${file.path}`);
+        }
+      }
+      lines.push('');
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Format files grouped by the package that owns them
+   */
+  private formatFilesByPackage(
+    projectRoot: string,
+    files: { path: string; language: string; nodeCount: number }[],
+    includeMetadata: boolean
+  ): string {
+    const groups = groupFilesByPackage(projectRoot, files);
+    const lines: string[] = [`**${packageListingTitle(groups)}**`, ''];
+
+    for (const group of groups) {
+      lines.push(`**${packageGroupTitle(group)}**`);
+      for (const file of group.files) {
+        if (includeMetadata) {
+          lines.push(`- ${file.path} (${file.language}, ${file.nodeCount} symbols)`);
         } else {
           lines.push(`- ${file.path}`);
         }

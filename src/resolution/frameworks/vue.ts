@@ -13,6 +13,7 @@ import { isJsPathImportRef, resolveImportPath } from '../import-resolver';
 import { dependsOn } from './package-deps';
 import { httpHandlerReferences } from './http-routing';
 import { pageComponentRef, resolvePageComponent } from './page-component';
+import { inReferencingFolder } from './component-folder';
 
 /** The languages a Vue app's scripts are written in. */
 const VUE_SCRIPT_LANGUAGES: ReadonlySet<string> = new Set(['vue', 'javascript', 'typescript', 'tsx', 'jsx']);
@@ -411,9 +412,8 @@ function resolveComponent(
     return component ? component.id : null;
   };
 
-  // Same directory first for specificity
-  const fromDir = fromFile.substring(0, fromFile.lastIndexOf('/'));
-  const sameDir = matches.filter((f) => f.startsWith(fromDir));
+  // The referencing file's folder, or one below it, first for specificity
+  const sameDir = inReferencingFolder(fromFile, matches, (f) => f);
   if (sameDir.length > 0) return componentIn(sameDir[0]!);
 
   // No positional signal: only an UNAMBIGUOUS basename may resolve;

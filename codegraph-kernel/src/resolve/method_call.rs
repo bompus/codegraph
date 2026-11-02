@@ -559,6 +559,27 @@ impl KernelResolver {
         Ok(receiver == "it" || declaration.is_some_and(|d| d.contains("->")))
     }
 
+    /// A capitalized type name no project class or interface of the call's
+    /// language family is named (isUndeclaredTypeName): the receiver's
+    /// declared type is external, so the name strategies below must not guess
+    /// a same-named project method.
+    fn undeclared_method_owner(
+        &mut self,
+        name: &str,
+        r: &ResolveRefIn,
+    ) -> Res<bool> {
+        if !name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+            return Ok(false);
+        }
+        Ok(!self.nodes_by_name(name)?.iter().any(|n| {
+            same_language_family(&n.language, &r.language)
+                && (matches!(
+                    n.kind.as_str(),
+                    "class" | "struct" | "union" | "interface"
+                ) || (n.language == "scala" && n.kind == "module"))
+        }))
+    }
+
     /// The un-receiver-typed c/cpp field fallback: every same-language
     /// `field` node carrying `member`'s name, resolved only when the set is
     /// a singleton. Field nodes exist only for callable function-pointer
@@ -1553,6 +1574,17 @@ if inferred.is_none() && r.language == "dart" {
                         {
                             return Ok(None);
                         }
+                        // A Pascal receiver's declared type the project
+                        // doesn't declare is an outside type: no same-named
+                        // project method is a guess worth making (#3065's
+                        // `List.Clear` on a `TStringList`). Other languages
+                        // keep their own outside-type rules above.
+                        if r.language == "pascal" {
+                            let last = t.rsplit('.').next().unwrap_or(&t).to_string();
+                            if self.undeclared_method_owner(&last, r)? {
+                                return Ok(None);
+                            }
+                        }
                     }
                 }
                 }
@@ -1833,6 +1865,19 @@ if inferred.is_none() && r.language == "dart" {
             narrowed |= target.len() != before;
             if !is_test_path(&r.file_path) { target.retain(|n| !super::resolver_upstream::test_suite_path(&n.file_path)); }
             let mut visible=Vec::new();for n in target {if self.language_type_visible(&n,r)? {visible.push(n);}}target=visible;
+            // Nor is it a method of a class another function declares: a
+            // guess by the receiver's name is all that remains, never the
+            // only method of the name. A Kotlin object expression's member
+            // out of reach leaves no likelier a guess than before it was
+            // one (its overrides were local functions, never candidates):
+            // okhttp's `it.isReady()` is still the SerialTask interface's.
+            let mut kept=Vec::with_capacity(target.len());
+            let mut scoped_out=false;
+            for n in target {
+                if self.is_lexically_reachable(&n,r)? {kept.push(n);}
+                else if !(n.language=="kotlin" && super::names::is_anonymous_member(&n)) {scoped_out=true;}
+            }
+            target=kept;
             // A Vue component's own method is reached as `this.m()` inside it —
             // never as `e.preventDefault()` on an event, nor
             // `this.editor.setValue()` on something the component holds. The
@@ -1894,7 +1939,7 @@ if inferred.is_none() && r.language == "dart" {
             let lua_library = target.len() == 1
                 && matches!(r.language.as_str(), "lua" | "luau")
                 && is_lua_library_call(&object_or_class, &method_name, r, &target[0]);
-            if target.len() == 1 && !narrowed && target[0].language == r.language && !untyped_unnamed && !lua_library
+            if target.len() == 1 && !narrowed && !(r.language == "kotlin" && scoped_out) && target[0].language == r.language && !untyped_unnamed && !lua_library
                 // A file that gives an object a method of this name itself takes
                 // no lone guess from elsewhere.
                 && !(is_js_family(&r.language)
@@ -1917,7 +1962,9 @@ if inferred.is_none() && r.language == "dart" {
             let ruby_bang_or_predicate = r.language == "ruby"
                 && method_name.ends_with(['!', '?'])
                 && super::call_shape::receiver_link(&object_or_class).starts_with(|c: char| c.is_ascii_lowercase() || c == '_');
-            if target.len() > 1 && !ruby_bang_or_predicate {
+            if (target.len() > 1 || (r.language == "kotlin" && target.len() == 1 && scoped_out && !narrowed))
+                && !(target.len() > 1 && ruby_bang_or_predicate)
+            {
                 let receiver_words = split_camel_case(super::call_shape::receiver_link(&object_or_class));
                 // Same-file candidates first, so a score tie resolves to the
                 // call site's own file (`score > bestScore` keeps first seen).
@@ -2326,6 +2373,35 @@ if inferred.is_none() && r.language == "dart" {
                 && !self.kotlin_lambda_binds(root, r)?
             {
                 return probe!(r, "brc:mc-free", self.match_method_call_free(r));
+            }
+            // No binding claims a lowercase Kotlin receiver — a parameter the
+            // index never recorded, an unknown variable — so the ref is no
+            // bound call at all: matchMethodCall's name strategies answer it
+            // upstream (the anon-member filter there keeps an object
+            // expression's override out of the running). A name the body
+            // itself declares is bound with or without a row: its refusal
+            // stays terminal. `it` is a lambda's implicit parameter and never
+            // an unbound value.
+            // `it` is a lambda's implicit parameter: it is answered only when
+            // the lambda's call passes a project type. A `let` on a value of
+            // an outside type (`Any`, `Object`) leaves it untyped, and the
+            // name strategies must not guess a project method of that name.
+            let it_untyped = root == "it"
+                && match self.infer_iteration_receiver(root, r)? {
+                    Some(hit) => self.is_undeclared_type_name(
+                        hit.ty.rsplit('.').next().unwrap_or(&hit.ty),
+                        r,
+                    )?,
+                    None => false,
+                };
+            if hit.is_none()
+                && r.language == "kotlin"
+                && root.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+                && !it_untyped
+                && binding.is_none()
+                && !self.body_binds_receiver(root, r)?
+            {
+                return probe!(r, "brc:unbound-recv", self.match_method_call_free(r));
             }
             return Ok(hit);
         }

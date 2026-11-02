@@ -2,6 +2,19 @@
 
 use super::*;
 
+/// Where a Pascal routine's own declarations begin, and the lines of
+/// routines nested in another that are not its own (#2550).
+struct PascalReceiverScope {
+    own_from: usize,
+    nested: Vec<(usize, usize)>,
+}
+
+impl PascalReceiverScope {
+    fn inside_nested(&self, i: usize) -> bool {
+        self.nested.iter().any(|&(s, e)| i >= s && i <= e)
+    }
+}
+
 impl KernelResolver {
     // -----------------------------------------------------------------------
     // Stage-2 member-access arms — matchMethodCall(requireReceiverEvidence)
@@ -23,6 +36,12 @@ impl KernelResolver {
                 continue;
             }
             if n.language != language {
+                continue;
+            }
+            // A Kotlin object expression's code sees the scope it is written in,
+            // as when its overrides were local functions: its members open no
+            // scope of their own, the declaration holding the object does.
+            if language == "kotlin" && super::names::is_anonymous_member(n) {
                 continue;
             }
             if n.start_line <= line && n.end_line >= line && n.start_line >= start {
@@ -236,31 +255,87 @@ impl KernelResolver {
         };
         let js = is_js_family(&site.language);
         let shadow_scan = js || site.language == "go";
+        // Pascal scopes a routine's declarations to that routine: a name list
+        // counts only from the calling routine's own header, and a routine
+        // nested in another keeps its locals to itself (#2550).
+        let pascal_scope = if site.language == "pascal" {
+            Some(self.pascal_receiver_scope(&site.file_path, &lines, call_idx, start_idx)?)
+        } else {
+            None
+        };
         // Every pattern needs the receiver literal in the line, so only the
         // lines containing it are scanned (highest first, as before).
         let scanned = probe!(site, "il:scan", {
             let candidates = lines.lines_containing(&scan_receiver);
             let upto = candidates.partition_point(|&l| l as usize <= call_idx);
             let mut hit = None;
-            for &i in candidates[..upto].iter().rev() {
-                if (i as usize) < start_idx {
-                    break;
-                }
-                let line = &lines[i as usize];
-                if let Some(t) = self.infer_match_line(line, &scan_receiver, pats, preserve, &site.language)? {
-                    hit = Some(t);
-                    break;
-                }
-                // `const x = …` (Go: `x := …`, `var x`) shadows every
-                // declaration above it while its block is open. In JS it types
-                // `x` when its initializer is a call with a known return
-                // annotation; otherwise `x` stays untyped here rather than
-                // taking an outer same-named declaration's type.
-                if shadow_scan && declares(line, &scan_receiver, js) && block_reaches(&lines, i as usize, call_idx) {
-                    if js {
-                        hit = self.untyped_local_call_type(&lines, i as usize, &scan_receiver, site, preserve)?;
+            if let Some(scope) = &pascal_scope {
+                // A Pascal routine's own lines, where its name lists count,
+                // are scanned first; the lines above it under the plain
+                // patterns.
+                let own_lo = start_idx.max(scope.own_from);
+                for (lo, hi) in
+                    [(own_lo, call_idx), (start_idx, own_lo.saturating_sub(1))]
+                {
+                    if lo > hi {
+                        continue;
                     }
-                    break;
+                    if hit.is_some() {
+                        break;
+                    }
+                    let begin = candidates.partition_point(|&l| (l as usize) < lo);
+                    let end = candidates.partition_point(|&l| l as usize <= hi);
+                    for &i in candidates[begin.min(end)..end].iter().rev() {
+                        if scope.inside_nested(i as usize) {
+                            continue;
+                        }
+                        let line = &lines[i as usize];
+                        let mut found = self.infer_match_line(
+                            line,
+                            &scan_receiver,
+                            pats,
+                            preserve,
+                            &site.language,
+                        )?;
+                        if found.is_none() && (i as usize) >= own_lo {
+                            found = self.pascal_listed_receiver_type(
+                                line,
+                                &scan_receiver,
+                                preserve,
+                            )?;
+                        }
+                        if let Some(ty) = found {
+                            // Delphi dereferences a pointer for a member
+                            // (`P.Method` is `P^.Method`), and a class
+                            // reference reaches its class's methods.
+                            hit = Some(
+                                self.pascal_pointee(&ty)?.unwrap_or(ty),
+                            );
+                            break;
+                        }
+                    }
+                }
+            } else {
+                for &i in candidates[..upto].iter().rev() {
+                    if (i as usize) < start_idx {
+                        break;
+                    }
+                    let line = &lines[i as usize];
+                    if let Some(t) = self.infer_match_line(line, &scan_receiver, pats, preserve, &site.language)? {
+                        hit = Some(t);
+                        break;
+                    }
+                    // `const x = …` (Go: `x := …`, `var x`) shadows every
+                    // declaration above it while its block is open. In JS it types
+                    // `x` when its initializer is a call with a known return
+                    // annotation; otherwise `x` stays untyped here rather than
+                    // taking an outer same-named declaration's type.
+                    if shadow_scan && declares(line, &scan_receiver, js) && block_reaches(&lines, i as usize, call_idx) {
+                        if js {
+                            hit = self.untyped_local_call_type(&lines, i as usize, &scan_receiver, site, preserve)?;
+                        }
+                        break;
+                    }
                 }
             }
             hit
@@ -282,6 +357,69 @@ impl KernelResolver {
             return self.kotlin_local_call_result_type(&scan_receiver, site);
         }
         Ok(None)
+    }
+
+    /// The lines a Pascal routine's own declarations cover: where its header
+    /// starts (`procedure TFoo.Bar;` at column 0, #2550), and the spans of
+    /// routines nested in another that do not hold the call, whose locals
+    /// are not this routine's.
+    fn pascal_receiver_scope(
+        &mut self,
+        file_path: &str,
+        lines: &std::rc::Rc<super::SourceFile>,
+        call_idx: usize,
+        start_idx: usize,
+    ) -> Res<PascalReceiverScope> {
+        let header = re!(
+            r"(?i)^(?:class\s+)?(?:procedure|function|constructor|destructor|operator)\s+[A-Za-z_]"
+        );
+        let mut own_from = 0usize;
+        for (i, line) in lines.iter().enumerate() {
+            if i > call_idx {
+                break;
+            }
+            if header.is_match(line) {
+                own_from = i;
+            }
+        }
+        let mut nested = Vec::new();
+        for n in self.nodes_in_file(file_path)?.iter() {
+            if n.kind != "function"
+                || n.language != "pascal"
+                || !n.qualified_name.contains("::")
+            {
+                continue;
+            }
+            let start = (n.start_line - 1).max(0) as usize;
+            let end = (n.end_line.max(n.start_line) - 1).max(0) as usize;
+            if start > start_idx || end < start_idx {
+                nested.push((start, end));
+            }
+        }
+        Ok(PascalReceiverScope { own_from, nested })
+    }
+
+    /// A receiver declared in a Pascal name list (`Doc, Doc2:
+    /// TDocVariantData`), which counts from the routine's own header (#2550).
+    fn pascal_listed_receiver_type(
+        &mut self,
+        line: &str,
+        receiver: &str,
+        preserve: bool,
+    ) -> Res<Option<String>> {
+        if utf16_len_exceeds(line, 10_000) {
+            return Ok(None);
+        }
+        let rx = Self::cached_regex(&format!(
+            r"\b{}\b(?:\s*,\s*[A-Za-z_]\w*)+\s*:\s*([A-Z][\w]*)",
+            regex::escape(receiver)
+        ))?;
+        let Some(m) = rx.captures(line) else { return Ok(None) };
+        let raw = m[1].to_string();
+        if preserve {
+            return Ok(Some(raw));
+        }
+        self.normalize_inferred_type_name(&raw)
     }
 
     /// Swift route-call declarations belong to parsed lexical scopes, not every later
@@ -1126,7 +1264,30 @@ fn go_bare_result(
         }
         let candidates = self.nodes_by_qualified_name(&format!("{}::{}", pkg, sym))?;
         if candidates.is_empty() {
-            return Ok(None);
+            // `import p.UtilsKt;` in Java names the class Kotlin compiles
+            // `p/Utils.kt`'s top-level functions into: that file, in that
+            // package.
+            if r.language != "java" || !re!(r"^\w+Kt$").is_match(sym) {
+                return Ok(None);
+            }
+            let name = format!("{}.kt", &sym[..sym.len() - 2]);
+            let file = self
+                .nodes_by_name(&name)?
+                .iter()
+                .find(|n| {
+                    n.kind == "file"
+                        && self.nodes_in_file(&n.file_path).is_ok_and(|nodes| {
+                            nodes.iter().any(|d| {
+                                d.kind == "namespace" && d.qualified_name == pkg
+                            })
+                        })
+                })
+                .cloned();
+            return Ok(file.map(|node| KCand {
+                node,
+                confidence: 0.9,
+                resolved_by: "import",
+            }));
         }
         let best = if candidates.len() == 1 {
             candidates[0].clone()

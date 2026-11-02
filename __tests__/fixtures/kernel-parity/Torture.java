@@ -154,3 +154,12 @@ interface TortureConsts {
   String NAME = "x", OTHER = "y";
   Runnable TASK = new Runnable() { public void run() { go(); } };
 }
+
+class DottedAnon {
+  Api.Listener listener = new Api.Listener<String>() {
+    public void on() {}
+  };
+  Object plain = new java.util.concurrent.Callable<Integer>() {
+    public Integer call() { return 1; }
+  };
+}

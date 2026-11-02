@@ -134,3 +134,90 @@ export function gateRustScope(result: ResolvedRef | null, ref: UnresolvedRef, co
   const target = context.getNodeById?.(result.targetNodeId);
   return target && !isRustNameInScope(target, ref, context) ? null : result;
 }
+
+/** `c` is part of a Rust identifier (a raw-string prefix is not). */
+function isRustIdentChar(c: string): boolean {
+  return /[A-Za-z0-9_]/.test(c);
+}
+
+/**
+ * `src` with comments, and the contents of strings and characters, blanked to
+ * spaces (newlines kept) — so a brace or a `#[cfg(test)]` inside a string or
+ * a comment is not mistaken for code. Offsets and line structure are those of
+ * the original.
+ */
+export function blankRustCode(src: string): string {
+  const n = src.length;
+  const parts: string[] = [];
+  let last = 0;
+  // `src[from, to)` as spaces, its newlines kept; the text before it as it is.
+  const blank = (from: number, to: number): void => {
+    if (to <= from) return;
+    parts.push(src.slice(last, from));
+    const chunk = src.slice(from, to);
+    parts.push(chunk.includes('\n') ? chunk.replace(/[^\n]/g, ' ') : ' '.repeat(to - from));
+    last = to;
+  };
+  const special = /[/"']/g;
+  for (let m = special.exec(src); m; m = special.exec(src)) {
+    const i = m.index;
+    const c = src[i];
+    const d = src[i + 1];
+    if (c === '/') {
+      if (d === '/') {
+        const end = src.indexOf('\n', i);
+        const to = end < 0 ? n : end;
+        blank(i, to);
+        special.lastIndex = to;
+      } else if (d === '*') {
+        let depth = 1;
+        let j = i + 2;
+        while (j < n && depth > 0) {
+          if (src[j] === '/' && src[j + 1] === '*') { depth++; j += 2; }
+          else if (src[j] === '*' && src[j + 1] === '/') { depth--; j += 2; }
+          else j++;
+        }
+        blank(i, j);
+        special.lastIndex = j;
+      }
+      continue;
+    }
+    if (c === '"') {
+      // A raw string: `r"…"`, `r#"…"#`, also after a `b` or `c` prefix —
+      // the `r` no end of a longer name.
+      let k = i - 1;
+      while (k >= 0 && src[k] === '#') k--;
+      let p = k - 1;
+      if (src[p] === 'b' || src[p] === 'c') p--;
+      if (src[k] === 'r' && (p < 0 || !isRustIdentChar(src[p]!))) {
+        const close = `"${'#'.repeat(i - 1 - k)}`;
+        const end = src.indexOf(close, i + 1);
+        const to = end < 0 ? n : end;
+        blank(i + 1, to);
+        special.lastIndex = Math.min(n, to + close.length);
+        continue;
+      }
+      let j = i + 1;
+      while (j < n && src[j] !== '"') j += src[j] === '\\' ? 2 : 1;
+      blank(i + 1, Math.min(j, n));
+      special.lastIndex = Math.min(n, j + 1);
+      continue;
+    }
+    // `'\n'`, `'\u{1F600}'`; `'x'`; a character outside the BMP; else a lifetime or a label.
+    if (d === '\\') {
+      const end = src.indexOf('\'', i + 3);
+      if (end > 0 && end - i <= 12) {
+        blank(i + 1, end);
+        special.lastIndex = end + 1;
+      }
+    } else if (src[i + 2] === '\'' && d !== undefined && d !== '\n') {
+      blank(i + 1, i + 2);
+      special.lastIndex = i + 3;
+    } else if (d !== undefined && /[\uD800-\uDBFF]/.test(d) && src[i + 3] === '\'') {
+      blank(i + 1, i + 3);
+      special.lastIndex = i + 4;
+    }
+  }
+  parts.push(src.slice(last));
+  return parts.join('');
+}

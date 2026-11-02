@@ -29,6 +29,7 @@ import {
   FindRelevantContextOptions,
   UnresolvedReference,
   IndexHealth,
+  LanguageCoverage,
   Language,
   ImpactOptions,
 } from './types';
@@ -58,7 +59,7 @@ import { logWarn } from './errors';
 import type { FileWatcher, WatchOptions, PendingFile } from './sync';
 import { EXTRACTION_VERSION } from './extraction/extraction-version';
 import { isGeneratedFile } from './extraction/generated-detection';
-import { hasGrammarLoadFailure, isFileLevelOnlyLanguage } from './extraction/grammars';
+import { hasGrammarLoadFailure, isFileLevelOnlyLanguage, yieldsSymbols } from './extraction/grammars';
 import { refreshNearDuplicates, type NearDupSigner } from './graph/near-duplicates';
 import { getCodeGraphDir } from './directory';
 import { deriveProjectNameTokens } from './search/query-utils';
@@ -182,6 +183,18 @@ function parseNameList(value: string | null): string[] | null {
   }
 }
 
+/**
+ * CODEGRAPH_SYNTH_MIN_INTERVAL_MS: the least time between two repo-wide
+ * synthesis passes a long-lived instance's syncs run (#2911). Whole
+ * milliseconds, 1000 to 24 hours; unset, empty or out of range means no hold.
+ */
+export function parseSynthMinIntervalEnv(raw: string | undefined): number | undefined {
+  if (!raw || !raw.trim()) return undefined;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1000 || n > 86_400_000) return undefined;
+  return n;
+}
+
 export class CodeGraph {
   private db: DatabaseConnection;
   private queries: QueryBuilder;
@@ -224,6 +237,10 @@ export class CodeGraph {
   private synthesisTimer: ReturnType<typeof setTimeout> | null = null;
   /** How long the last refresh took; the debounce grows with it (see scheduleSynthesisRefresh). */
   private lastSynthesisMs = 0;
+  /** When this instance last rebuilt the synthesized edges (#2911). */
+  private lastSynthesisAt = 0;
+  /** The timer that runs a synthesis a sync put off under CODEGRAPH_SYNTH_MIN_INTERVAL_MS (#2911). */
+  private deferredSynthesisTimer: ReturnType<typeof setTimeout> | null = null;
 
   // File watcher for auto-sync on file changes
   private watcher: FileWatcher | null = null;
@@ -629,6 +646,7 @@ export class CodeGraph {
    */
   close(): void {
     if (this.synthesisTimer) { clearTimeout(this.synthesisTimer); this.synthesisTimer = null; }
+    if (this.deferredSynthesisTimer) { clearTimeout(this.deferredSynthesisTimer); this.deferredSynthesisTimer = null; }
     this.unwatch();
     // Release file lock if held
     this.fileLock.release();
@@ -856,6 +874,7 @@ export class CodeGraph {
             true
           );
           if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] resolution: ${Date.now() - tResolve}ms`);
+          this.lastSynthesisAt = Date.now();
 
           // The deferred passes below can lazily re-open a kernel conn —
           // rusqlite's wal-index locks can't see node:sqlite's, so the
@@ -1924,8 +1943,24 @@ export class CodeGraph {
         const retrySynthesis = process.env.CODEGRAPH_SYNC_RESYNTHESIS !== '0' && this.queries.isSynthesisPending();
         if ((resynthesis && this.synthesisDirty.size > 0) || retrySynthesis ||
             (options.requireComplete && this.synthesisDirty.size > 0)) {
-          if (options.deferSynthesis && !options.requireComplete) this.scheduleSynthesisRefresh();
-          else await this.refreshSynthesis(options.onProgress, options.requireComplete);
+          if (options.deferSynthesis && !options.requireComplete) {
+            this.scheduleSynthesisRefresh();
+          } else {
+            // The synthesis passes read the whole graph, whatever this sync
+            // changed, so on a large repo almost every edit paid for a
+            // whole-repo synthesis (#2911). With CODEGRAPH_SYNTH_MIN_INTERVAL_MS
+            // set, a synthesis within that long of the last one is put off,
+            // not dropped: `synthesis_pending` stays set, so a later sync runs
+            // it, and a timer runs it when the interval is up even if no edit
+            // follows. A full index is never held.
+            const hold = this.synthesisHoldMs();
+            if (hold > 0) {
+              this.queries.setSynthesisPending(true);
+              this.armDeferredSynthesis(hold);
+            } else {
+              await this.refreshSynthesis(options.onProgress, options.requireComplete);
+            }
+          }
         }
         if (options.requireComplete && this.queries.isSynthesisPending()) {
           throw new Error('Reconciliation did not complete synthesized-edge refresh.');
@@ -2262,7 +2297,11 @@ export class CodeGraph {
    * synthesized edges, never wrong ones. Caller holds the index mutex and
    * file lock.
    */
-  private async refreshSynthesis(onProgress?: IndexOptions['onProgress'], requireComplete = false): Promise<void> {
+  private async refreshSynthesis(
+    onProgress?: IndexOptions['onProgress'],
+    requireComplete = false,
+    backpressure?: () => void
+  ): Promise<void> {
     if (this.synthesisDirty.size === 0 && !this.queries.isSynthesisPending()) return;
     const files = [...this.synthesisDirty];
     this.synthesisDirty.clear();
@@ -2271,8 +2310,10 @@ export class CodeGraph {
       // Cleared by resynthesize once it completes. Until then the next sync,
       // in this process or after a restart, retries the rebuild.
       this.queries.setSynthesisPending(true);
-      const edges = await this.resolver.resynthesize((current, total) =>
-        onProgress?.({ phase: 'linking', current, total }));
+      const edges = await this.resolver.resynthesize(
+        (current, total) => onProgress?.({ phase: 'linking', current, total }),
+        backpressure
+      );
       const { deleted, updated } = this.queries.reconcileSynthesizedEdges(this.resolver.lastSynthesizedEdges);
       // The emitted set and the warm caches a daemon's pass just filled are
       // dead weight until the next rebuild — drop them rather than let the
@@ -2280,6 +2321,7 @@ export class CodeGraph {
       this.resolver.lastSynthesizedEdges = [];
       this.resolver.clearCaches();
       this.lastSynthesisMs = Date.now() - t;
+      this.lastSynthesisAt = Date.now();
       if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] sync-resynthesis: ${Date.now() - t}ms (${files.length} files, ${deleted} pruned, ${updated} updated, ${edges} synthesized)`);
     } catch (error) {
       // A mid-run failure leaves stored edges stale and newly-inserted ones
@@ -2301,6 +2343,101 @@ export class CodeGraph {
    * four times the last refresh, so a repository where synthesis is slow
    * spends at most about a fifth of its time holding the mutex for it.
    */
+  /**
+   * How much longer a sync must wait before it may rebuild the synthesized
+   * edges: the rest of CODEGRAPH_SYNTH_MIN_INTERVAL_MS since this instance last
+   * did (#2911). Zero when the variable is unset or invalid, or the interval
+   * has passed.
+   */
+  private synthesisHoldMs(): number {
+    const interval = parseSynthMinIntervalEnv(process.env.CODEGRAPH_SYNTH_MIN_INTERVAL_MS);
+    if (!interval || this.lastSynthesisAt === 0) return 0;
+    return Math.max(0, this.lastSynthesisAt + interval - Date.now());
+  }
+
+  /** Run the synthesis a sync put off once the interval is up, unless a sync runs it first. */
+  private armDeferredSynthesis(delayMs: number): void {
+    if (this.deferredSynthesisTimer) return;
+    this.deferredSynthesisTimer = setTimeout(() => {
+      this.deferredSynthesisTimer = null;
+      void this.runDeferredSynthesis();
+    }, delayMs);
+    this.deferredSynthesisTimer.unref?.();
+  }
+
+  /**
+   * The put-off synthesis, under the locks a sync holds. Nothing to do when a
+   * sync ran it meanwhile. When the file lock is taken by another process,
+   * try again after the interval; `synthesis_pending` stays set throughout.
+   *
+   * It runs from a timer, so nothing above it catches a failure, and an
+   * unhandled rejection ends the process (`installFatalHandlers`): that would
+   * be the daemon every session shares, over a `database is locked`. A failure
+   * here is logged and tried again after the interval, as lock contention is.
+   */
+  private async runDeferredSynthesis(): Promise<void> {
+    const retryLater = (): void => {
+      if (!this.db.isOpen()) return;
+      this.armDeferredSynthesis(parseSynthMinIntervalEnv(process.env.CODEGRAPH_SYNTH_MIN_INTERVAL_MS) ?? 1000);
+    };
+    try {
+      await this.indexMutex.withLock(async () => {
+        if (this.synthesisDirty.size === 0 && !this.queries.isSynthesisPending()) return;
+        try {
+          this.fileLock.acquire();
+        } catch {
+          retryLater();
+          return;
+        }
+        try {
+          // A rebuild may have replaced the file meanwhile, as sync checks.
+          this.reopenReplacedDatabase();
+          if (this.synthesisDirty.size === 0 && !this.queries.isSynthesisPending()) return;
+          await this.synthesizeWithWalDeferred();
+          // A refresh that failed leaves the flag set (refreshSynthesis logs
+          // and keeps it); try again after the interval, as lock contention is.
+          if (this.queries.isSynthesisPending()) retryLater();
+        } finally {
+          this.resolver.closeKernel();
+          this.fileLock.release();
+        }
+      });
+    } catch (err) {
+      logWarn(`Put-off synthesis failed, trying again after the interval: ${err instanceof Error ? err.message : String(err)}`);
+      retryLater();
+    }
+  }
+
+  /**
+   * The rebuild, with the WAL handling a sync gives it (#1231, #1248): a whole
+   * graph's edges rewritten must not be checkpointed inline on this thread by
+   * the next commit on this connection, so the valve bounds the WAL off-thread
+   * and runMaintenance folds it up.
+   */
+  private async synthesizeWithWalDeferred(): Promise<void> {
+    const deferWal = process.env.CODEGRAPH_NO_WAL_DEFER !== '1' && this.db.getJournalMode() === 'wal';
+    let walValve: WalCheckpointValve | null = null;
+    let priorAutocheckpoint = 1000;
+    if (deferWal) {
+      priorAutocheckpoint = this.db.getWalAutocheckpoint();
+      this.db.setWalAutocheckpoint(0);
+      walValve = new WalCheckpointValve(
+        this.db,
+        resolveWalValveMb(process.env.CODEGRAPH_WAL_VALVE_MB, this.db.getDbFileSizeBytes())
+      );
+      walValve.start();
+    }
+    try {
+      await this.refreshSynthesis(undefined, false, walValve ? () => walValve!.backpressure() : undefined);
+      await this.db.runMaintenance();
+    } finally {
+      if (walValve) { walValve.stop(); await walValve.drain(); }
+      if (deferWal) {
+        try { this.db.setWalAutocheckpoint(priorAutocheckpoint); } catch { /* connection may be closing */ }
+      }
+    }
+  }
+
   private scheduleSynthesisRefresh(): void {
     if (this.synthesisTimer) clearTimeout(this.synthesisTimer);
     const configured = process.env.CODEGRAPH_SYNTH_REFRESH_MS;
@@ -2713,6 +2850,14 @@ export class CodeGraph {
    */
   getFileDependencyPairs(minConfidence = 0): Array<{ source: string; target: string }> {
     return this.queries.getCrossFileDependencyPairs(minConfidence);
+  }
+
+  /**
+   * Every ordered pair of files where one imports the other — the edge list
+   * circular imports are found on. See {@link QueryBuilder.getFileImportPairs}.
+   */
+  getFileImportPairs(): Array<{ source: string; target: string }> {
+    return this.queries.getFileImportPairs();
   }
 
   /**
@@ -3157,6 +3302,21 @@ export class CodeGraph {
     return { needsReindex, parseErrors };
   }
 
+
+  /**
+   * Files found against files that yielded symbols, by language. Reported by
+   * `status`, whose `--strict` fails on a language that yielded none.
+   */
+  getLanguageCoverage(): LanguageCoverage {
+    const parsedFilesByLanguage: LanguageCoverage['parsedFilesByLanguage'] = {};
+    const unparsedLanguages: Language[] = [];
+    for (const { language, parsed } of this.queries.getParsedFileCounts()) {
+      if (!yieldsSymbols(language)) continue;
+      parsedFilesByLanguage[language] = parsed;
+      if (parsed === 0) unparsedLanguages.push(language);
+    }
+    return { parsedFilesByLanguage, unparsedLanguages };
+  }
 
   // ===========================================================================
   // Graph Query Methods

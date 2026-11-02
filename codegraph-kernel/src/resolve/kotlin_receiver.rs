@@ -59,6 +59,33 @@ impl KernelResolver {
         Ok(if dispatch.is_some() {self.kotlin_member_reachable(n,r)?} else {self.kotlin_top_level_visible(n,r)?})
     }
 
+    /// isKotlinExtensionInScope (name-matcher.ts): whether a Kotlin method a
+    /// call reached by its type's name can be called from the reference's
+    /// file. A member of a class in its file's package can; an extension,
+    /// `fun Modes.hidden()` indexed as `Modes::hidden`, is top-level, so only
+    /// from its own package or through an import of it or its package.
+    pub(super) fn kotlin_extension_in_scope(
+        &mut self,
+        n: &KNode,
+        r: &ResolveRefIn,
+    ) -> Res<bool> {
+        if n.language != "kotlin"
+            || n.kind != "method"
+            || n.file_path == r.file_path
+        {
+            return Ok(true);
+        }
+        let scope = self.kotlin_file_scope(&n.file_path);
+        let pkg = scope.pkg.clone();
+        if pkg.is_empty() {
+            return self.kotlin_top_level_visible(n, r);
+        }
+        if n.qualified_name.starts_with(&format!("{pkg}::")) {
+            return Ok(true);
+        }
+        self.kotlin_top_level_visible(n, r)
+    }
+
     pub(super) fn kotlin_unknown_extension_target(&mut self,n:&KNode,r:&ResolveRefIn)->Res<bool> {
         Ok(self.kotlin_visible_extension(n,r)? && self.kotlin_unknown_receiver_allowed(r)?)
     }
@@ -318,7 +345,9 @@ impl KernelResolver {
             return match node.named_child(0) {Some(inner)=>self.kotlin_expression_type(inner,source,r,implicit,depth+1),None=>Ok(None)};
         }
         if node.kind()=="this_expression" {
-            let enclosing=self.nodes_in_file(&site.file_path)?.iter().filter(|n|super::call_shape::type_kind(&n.kind) && n.start_line<=site.line && n.end_line>=site.line).min_by_key(|n|n.end_line-n.start_line).cloned();
+            // `this@Outer` names the enclosing type labelled `Outer`; a bare `this` the innermost one.
+            let label=text(node,source).split_once('@').map(|(_,label)|label.trim().to_string());
+            let enclosing=self.nodes_in_file(&site.file_path)?.iter().filter(|n|super::call_shape::type_kind(&n.kind) && n.start_line<=site.line && n.end_line>=site.line && label.as_ref().is_none_or(|label|&n.name==label)).min_by_key(|n|n.end_line-n.start_line).cloned();
             let Some(owner)=enclosing else {return Ok(None)};
             return Ok(Some(KotlinReceiverHit{ty:owner.name.clone(),site:site.clone().at(&owner),heuristic:false}));
         }
