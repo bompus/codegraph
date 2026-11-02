@@ -279,6 +279,21 @@ impl KernelResolver {
             return Ok(ResolveOutcome::unresolved());
         }
         let included = self.namespace_visible_files(&r.file_path, &language)?;
+        // A header is a type's home wherever the project keeps it: a C
+        // translation unit's source file is the only file that is not shared
+        // (the same set `resolve_cpp_supertype` looks in).
+        let files = match self.sorted_files() {
+            Some(files) => files,
+            None => Arc::new(self.table()?.files.iter().cloned().collect()),
+        };
+        let visible: HashSet<String> = files
+            .iter()
+            .filter(|file| {
+                **file == r.file_path
+                    || !re!(r"(?i)\.(?:c|cc|cpp|cxx|c\+\+|cu|metal)$").is_match(file)
+            })
+            .cloned()
+            .collect();
         let written = r.reference_name.trim().to_string();
         let Some(parts) = super::cpp_aliases::type_segments(&written) else {
             return Ok(ResolveOutcome::unresolved());
@@ -291,43 +306,15 @@ impl KernelResolver {
             s
         };
         let path = parts.join("::");
-        let mut names = Vec::new();
-        if !written.starts_with("::") {
-            for i in (1..=scopes.len()).rev() {
-                names.push(format!("{}::{}", scopes[..i].join("::"), path));
-            }
+        // A macro the file sees can rename the type (`#define sds hisds`),
+        // and the new name is looked up first; the written one still stands.
+        let renamed = self.cpp_macro_rename(&written, r);
+        let mut scoped = Vec::new();
+        if let Some(name) = &renamed {
+            scoped = self.cpp_declared_scoped(name, holder, &visible)?;
         }
-        names.push(path.clone());
-        let mut scoped: Vec<Arc<KNode>> = Vec::new();
-        for name in &names {
-            let mut found: Vec<Arc<KNode>> = self
-                .nodes_by_qualified_name(name)?
-                .iter()
-                .filter(|n| {
-                    matches!(n.language.as_str(), "c" | "cpp")
-                        && matches!(
-                            n.kind.as_str(),
-                            "class" | "struct" | "union" | "enum" | "type_alias"
-                        )
-                        && included.contains(&n.file_path)
-                        && n.id != holder.id
-                })
-                .cloned()
-                .collect();
-            if found.is_empty() {
-                continue;
-            }
-            // The nearest declaration above the holder is the one in force
-            // (`#ifdef WIDE` alternatives, two classes of one name in a file).
-            found.sort_by_key(|n| n.start_line);
-            let preceding: Vec<Arc<KNode>> =
-                found.iter().filter(|n| n.start_line <= holder.start_line).cloned().collect();
-            if !preceding.is_empty() {
-                let line = preceding.iter().map(|n| n.start_line).max().unwrap_or(0);
-                found = preceding.into_iter().filter(|n| n.start_line == line).collect();
-            }
-            scoped = found;
-            break;
+        if scoped.is_empty() {
+            scoped = self.cpp_declared_scoped(&written, holder, &visible)?;
         }
         let leaf = parts.last().map(String::as_str).unwrap_or(&path);
         let non_alias = |v: &[Arc<KNode>]| -> Vec<Arc<KNode>> {
@@ -418,5 +405,103 @@ impl KernelResolver {
             return Ok(Some(found.remove(0)));
         }
         Ok(None)
+    }
+}
+
+impl KernelResolver {
+    /// The visible type declarations a written name means from inside
+    /// `holder`: the innermost scope that has any, the nearest declaration
+    /// above the holder when a file declares the name twice.
+    fn cpp_declared_scoped(
+        &mut self,
+        written: &str,
+        holder: &Arc<KNode>,
+        included: &HashSet<String>,
+    ) -> Res<Vec<Arc<KNode>>> {
+        let Some(parts) = super::cpp_aliases::type_segments(written) else {
+            return Ok(Vec::new());
+        };
+        let mut scopes: Vec<String> =
+            holder.qualified_name.split("::").map(str::to_string).collect();
+        if holder.kind == "type_alias" {
+            scopes.pop();
+        }
+        let path = parts.join("::");
+        let mut names = Vec::new();
+        if !written.starts_with("::") {
+            for i in (1..=scopes.len()).rev() {
+                names.push(format!("{}::{}", scopes[..i].join("::"), path));
+            }
+        }
+        names.push(path);
+        for name in &names {
+            let mut found: Vec<Arc<KNode>> = self
+                .nodes_by_qualified_name(name)?
+                .iter()
+                .filter(|n| {
+                    matches!(n.language.as_str(), "c" | "cpp")
+                        && matches!(
+                            n.kind.as_str(),
+                            "class" | "struct" | "union" | "enum" | "type_alias"
+                        )
+                        && included.contains(&n.file_path)
+                        && n.id != holder.id
+                })
+                .cloned()
+                .collect();
+            if found.is_empty() {
+                continue;
+            }
+            // The nearest declaration above the holder is the one in force
+            // (`#ifdef WIDE` alternatives, two classes of one name in a file).
+            found.sort_by_key(|n| n.start_line);
+            let preceding: Vec<Arc<KNode>> =
+                found.iter().filter(|n| n.start_line <= holder.start_line).cloned().collect();
+            if !preceding.is_empty() {
+                let line = preceding.iter().map(|n| n.start_line).max().unwrap_or(0);
+                found = preceding.into_iter().filter(|n| n.start_line == line).collect();
+            }
+            return Ok(found);
+        }
+        Ok(Vec::new())
+    }
+
+    /// What an object-like macro renames `name` to at `r`, by the file or what
+    /// it includes (`#define sds hisds`). One name, or none when the file
+    /// writes no such macro, the build may not define it, or two disagree.
+    fn cpp_macro_rename(&mut self, name: &str, r: &ResolveRefIn) -> Option<String> {
+        let language = r.language.clone();
+        let included = self.namespace_visible_files(&r.file_path, &language).ok()?;
+        let mut renames: HashSet<String> = HashSet::new();
+        for file in included {
+            let events = self.summarize(&file);
+            for event in events.iter() {
+                if let super::cpp::FileEvent::Define {
+                    define: true,
+                    name: macro_name,
+                    function_like: false,
+                    value,
+                    ..
+                } = event
+                {
+                    let value = value.trim().trim_end_matches(';').trim();
+                    if macro_name == name && re!(r"^[A-Za-z_]\w*$").is_match(value) {
+                        renames.insert(value.to_string());
+                    }
+                }
+            }
+        }
+        // Two renames of one name that disagree (`#ifdef` arms) say nothing.
+        if renames.len() != 1 {
+            return None;
+        }
+        let target = renames.into_iter().next()?;
+        if target == name {
+            return None;
+        }
+        // A macro under a flag the build may not set, or written further
+        // down, renames nothing.
+        let names = self.cpp_type_alias_names(r, &r.file_path, r.line, name);
+        (names.len() == 1 && names[0] == target).then_some(target)
     }
 }

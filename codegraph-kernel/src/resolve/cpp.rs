@@ -36,7 +36,7 @@ pub(super) fn not(a: Truth) -> Truth {
     a.map(|v| !v)
 }
 
-enum FileEvent {
+pub(super) enum FileEvent {
     Define { define: bool, name: String, line: i64, function_like: bool, value: String, wraps_itself: bool },
     Include { quote: char, spec: String, line: i64 },
     Branch { op: String, expression: String, guard: bool, line: i64 },
@@ -240,7 +240,7 @@ impl KernelResolver {
     }
 
     /// Cache syntax, never conditional truth.
-    fn summarize(&mut self, file: &str) -> Rc<Vec<FileEvent>> {
+    pub(super) fn summarize(&mut self, file: &str) -> Rc<Vec<FileEvent>> {
         if let Some(s) = self.cpp_macros.summaries.get(file) {
             return s.clone();
         }
