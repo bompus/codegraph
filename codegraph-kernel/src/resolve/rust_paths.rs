@@ -7,6 +7,10 @@ use super::super::*;
 pub(in super::super) struct RustModule {
     pub(in super::super) file: String,
     pub(in super::super) inline: Vec<String>,
+    /// The module a `#[path = "…"]` declaration loads this one from — its
+    /// `super`, and the crate its `crate::` starts from. None for a module
+    /// found at its conventional place.
+    pub(in super::super) parent: Option<Rc<RustModule>>,
 }
 
 pub(in super::super) fn rust_children(n: tree_sitter::Node<'_>) -> Vec<tree_sitter::Node<'_>> {
@@ -212,6 +216,7 @@ impl KernelResolver {
         RustModule {
             file: file.into(),
             inline,
+            parent: None,
         }
     }
     fn rust_module_body<'a>(
@@ -262,6 +267,7 @@ impl KernelResolver {
                             RustModule {
                                 file: file.into(),
                                 inline: rust_inline_at(child, text),
+                                parent: None,
                             },
                         ));
                     }
@@ -273,6 +279,16 @@ impl KernelResolver {
         out
     }
     pub(in super::super) fn rust_root_module(&mut self, file: &str) -> Option<RustModule> {
+        if let Some(root) = self.rust_root_module_at(file) {
+            return Some(root);
+        }
+        // A file a `#[path]` declaration loads starts `crate::` from the
+        // declaring file's crate.
+        let parent = self.rust_path_declaring_module(file, 0)?;
+        self.rust_root_module_at(&parent.file)
+    }
+
+    fn rust_root_module_at(&mut self, file: &str) -> Option<RustModule> {
         let dir = self.rust_crate_root_dir(file).ok()??;
         for name in ["lib.rs", "main.rs"] {
             let p = pos_join(&dir, name);
@@ -280,29 +296,123 @@ impl KernelResolver {
                 return Some(RustModule {
                     file: p,
                     inline: Vec::new(),
+                    parent: None,
                 });
             }
         }
         None
     }
-    fn rust_submodule(&mut self, m: &RustModule, name: &str) -> Option<RustModule> {
-        if let Some((source, tree)) = self.rust_tree_for(&m.file) {
-            let body = Self::rust_module_body(&tree, source.text(), &m.inline)?;
-            if rust_children(body).iter().any(|n| {
-                n.kind() == "mod_item"
-                    && n.child_by_field_name("name")
-                        .is_some_and(|x| rust_text(x, source.text()) == name)
-                    && n.child_by_field_name("body").is_some()
-            }) {
-                let mut sub = m.clone();
-                sub.inline.push(name.into());
-                return Some(sub);
-            }
+    /// The directory a `#[path = "…"]` is read from: the declaring file's
+    /// own directory for a module-level declaration (`mod.rs`/`lib.rs`/
+    /// `main.rs` are their directory), and an inline `mod`'s own directory
+    /// for one written inside it.
+    fn rust_path_dir(m: &RustModule) -> String {
+        if m.inline.is_empty() {
+            pos_dirname(&m.file).to_string()
+        } else {
+            Self::rust_module_dir(m)
         }
+    }
+
+    /// The directory a module's own submodules live in: the declaring
+    /// file's (`mod.rs`/`lib.rs`/`main.rs` are their directory; another file
+    /// adds its stem), then each inline `mod` segment. This is the
+    /// conventional place, not where a `#[path]` points.
+    fn rust_module_dir(m: &RustModule) -> String {
         let mut dir = rust_self_module_dir(&m.file);
         for seg in &m.inline {
             dir = pos_join(&dir, seg);
         }
+        dir
+    }
+
+    /// The attributes written directly above an item.
+    fn rust_attributes(decl: tree_sitter::Node<'_>, text: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut prev = decl.prev_named_sibling();
+        while let Some(p) = prev {
+            if p.kind() != "attribute_item" {
+                break;
+            }
+            out.push(rust_text(p, text).to_string());
+            prev = p.prev_named_sibling();
+        }
+        out
+    }
+
+    /// The `#[path = "…"]` a module declaration loads, when the build does
+    /// not decide it: a `cfg_attr` path depends on the configuration and is
+    /// not read. A `#[cfg]` beside a plain path is fine (one file either way).
+    fn rust_mod_path(decl: tree_sitter::Node<'_>, text: &str) -> Option<String> {
+        let attrs = Self::rust_attributes(decl, text);
+        if attrs.iter().any(|a| a.contains("cfg_attr")) {
+            return None;
+        }
+        for a in attrs {
+            if let Some(c) = re!(r#"#\s*\[\s*path\s*=\s*"([^"]+)"\s*\]"#).captures(&a) {
+                return Some(c[1].to_string());
+            }
+        }
+        None
+    }
+
+    fn rust_submodule(&mut self, m: &RustModule, name: &str) -> Option<RustModule> {
+        // A file module: its `#[path]`, if any; inline modules are handled
+        // from the same body below.
+        let mut file_mods: Vec<(Option<String>, bool)> = Vec::new();
+        let mut inline = false;
+        if let Some((source, tree)) = self.rust_tree_for(&m.file) {
+            let text = source.text().to_string();
+            let body = Self::rust_module_body(&tree, text.as_str(), &m.inline)?;
+            for n in rust_children(body) {
+                if n.kind() != "mod_item"
+                    || !n
+                        .child_by_field_name("name")
+                        .is_some_and(|x| rust_text(x, text.as_str()) == name)
+                {
+                    continue;
+                }
+                if n.child_by_field_name("body").is_some() {
+                    inline = true;
+                } else {
+                    let attrs = Self::rust_attributes(n, text.as_str());
+                    let cfg_attr = attrs.iter().any(|a| a.contains("cfg_attr"));
+                    file_mods.push((Self::rust_mod_path(n, text.as_str()), cfg_attr));
+                }
+            }
+        }
+        if inline {
+            let mut sub = m.clone();
+            sub.inline.push(name.into());
+            sub.parent = None;
+            return Some(sub);
+        }
+        if !file_mods.is_empty() {
+            // A `cfg_attr` path, or `#[cfg]` alternatives that name a file
+            // each, depend on the build: the module has no one file to read.
+            if file_mods.iter().any(|(_, cfg_attr)| *cfg_attr) {
+                self.rust_ambiguous_module = true;
+                return None;
+            }
+            let path_mods: Vec<&String> =
+                file_mods.iter().filter_map(|(path, _)| path.as_ref()).collect();
+            if path_mods.len() > 1 {
+                self.rust_ambiguous_module = true;
+                return None;
+            }
+            if let Some(path) = path_mods.first() {
+                let file = pos_resolve(&Self::rust_path_dir(m), path);
+                if !self.file_exists(&file) {
+                    return None;
+                }
+                return Some(RustModule {
+                    file,
+                    inline: Vec::new(),
+                    parent: Some(Rc::new(m.clone())),
+                });
+            }
+        }
+        let dir = Self::rust_module_dir(m);
         for p in [
             pos_join(&dir, &format!("{name}.rs")),
             pos_join(&dir, &format!("{name}/mod.rs")),
@@ -311,15 +421,92 @@ impl KernelResolver {
                 return Some(RustModule {
                     file: p,
                     inline: Vec::new(),
+                    parent: None,
                 });
             }
         }
         None
     }
+
+    /// Every `#[path]` declaration in the project, by the file it loads.
+    /// Built on first use: only a file whose `super`/`crate::` is not at its
+    /// conventional place needs it.
+    fn rust_path_declarations(&mut self) -> Rc<HashMap<String, Vec<RustModule>>> {
+        if let Some(hit) = &self.rust_path_decls {
+            return hit.clone();
+        }
+        let mut map: HashMap<String, Vec<RustModule>> = HashMap::new();
+        let files: Vec<String> = match self.sorted_files() {
+            Some(files) => files.iter().cloned().collect(),
+            None => self
+                .table()
+                .map(|t| t.files.iter().cloned().collect())
+                .unwrap_or_default(),
+        };
+        let mut candidates: Vec<String> = Vec::new();
+        for file in files.iter().filter(|f| f.ends_with(".rs")) {
+            if self
+                .read_file(file)
+                .is_some_and(|s| re!(r"#\s*\[\s*(?:cfg_attr|path)").is_match(s.text()))
+            {
+                candidates.push(file.clone());
+            }
+        }
+        for file in candidates {
+            let Some((source, tree)) = self.rust_tree_for(&file) else { continue };
+            let text = source.text().to_string();
+            let mut stack = vec![tree.root_node()];
+            while let Some(n) = stack.pop() {
+                if n.kind() == "mod_item" && n.child_by_field_name("body").is_none() {
+                    if let Some(path) = Self::rust_mod_path(n, &text) {
+                        let declaring = RustModule {
+                            file: file.clone(),
+                            inline: rust_inline_at(n, &text),
+                            parent: None,
+                        };
+                        let target = pos_resolve(&Self::rust_path_dir(&declaring), &path);
+                        map.entry(target).or_default().push(declaring);
+                    }
+                }
+                stack.extend(rust_children(n));
+            }
+        }
+        let map = Rc::new(map);
+        self.rust_path_decls = Some(map.clone());
+        map
+    }
+
+    /// The module that declares `file` with a `#[path]` attribute, when
+    /// exactly one declaration in the project loads it.
+    pub(in super::super) fn rust_path_declaring_module(&mut self, file: &str, depth: usize) -> Option<RustModule> {
+        if depth > 8 {
+            return None;
+        }
+        let decls = self.rust_path_declarations();
+        let sites = decls.get(file)?;
+        if sites.len() != 1 {
+            return None;
+        }
+        let site = &sites[0];
+        let parent = if site.inline.is_empty() {
+            self.rust_path_declaring_module(&site.file, depth + 1).map(Rc::new)
+        } else {
+            None
+        };
+        Some(RustModule {
+            file: site.file.clone(),
+            inline: site.inline.clone(),
+            parent,
+        })
+    }
+
     fn rust_super_module(&mut self, m: &RustModule) -> Option<RustModule> {
         let mut m = m.clone();
         if m.inline.pop().is_some() {
             return Some(m);
+        }
+        if let Some(parent) = &m.parent {
+            return Some((**parent).clone());
         }
         let dir = pos_dirname(&rust_self_module_dir(&m.file)).to_string();
         for p in [
@@ -332,11 +519,15 @@ impl KernelResolver {
                 return Some(RustModule {
                     file: p,
                     inline: Vec::new(),
+                    parent: None,
                 });
             }
         }
-        None
+        // A file a `#[path]` declaration loads: its `super` is the module
+        // that declares it, wherever the file sits.
+        self.rust_path_declaring_module(&m.file, 0)
     }
+
     pub(in super::super) fn rust_walk_module(
         &mut self,
         path: &[String],
@@ -385,6 +576,7 @@ impl KernelResolver {
                             m = RustModule {
                                 file: p,
                                 inline: Vec::new(),
+                                parent: None,
                             };
                             i = 1;
                         }
@@ -543,12 +735,6 @@ impl KernelResolver {
         let Some(m) = self.rust_walk_module(prefix, from, 0) else {
             return Ok(None);
         };
-        if self
-            .read_file(&m.file)
-            .is_some_and(|s| re!(r"#\s*\[\s*path\s*=").is_match(s.text()))
-        {
-            return Ok(None);
-        }
         self.rust_items_in_module(&m, leaf, public_only, seen)
             .map(Some)
     }

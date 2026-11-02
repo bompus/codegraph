@@ -213,6 +213,37 @@ fn rust_item_visible_from(candidate: &KNode, r: &ResolveRefIn) -> bool {
 }
 
 impl KernelResolver {
+    /// isRustItemVisibleFrom, with the `#[path]` module chain: a file a
+    /// declaration of the candidate's module loads is inside that module,
+    /// so its private items are visible there however far away it sits.
+    fn rust_item_visible_from_paths(&mut self, candidate: &KNode, r: &ResolveRefIn) -> bool {
+        rust_item_visible_from(candidate, r)
+            || self.rust_path_declared_inside(&r.file_path, &candidate.file_path)
+    }
+
+    /// Is `file` a `#[path]` module — directly or through another one — of
+    /// the module `module_file` declares? Such a file is inside that
+    /// module, so its private items are visible there.
+    pub(super) fn rust_path_declared_inside(&mut self, file: &str, module_file: &str) -> bool {
+        let mut file = file.to_string();
+        for _ in 0..8 {
+            let Some(decl) = self.rust_path_declaring_module(&file, 0) else {
+                return false;
+            };
+            if decl.file == module_file
+                || decl
+                    .file
+                    .starts_with(&format!("{}/", super::names::rust_module_dir(module_file)))
+            {
+                return true;
+            }
+            file = decl.file;
+        }
+        false
+    }
+}
+
+impl KernelResolver {
     /// The ref's source line, when the reference name sits at its column.
     fn line_at_name(&mut self, r: &ResolveRefIn) -> Option<(String, String)> {
         let lines = self.read_file(&r.file_path)?;
@@ -269,7 +300,7 @@ impl KernelResolver {
     /// the prelude's unless the file defines it or imports a project item of
     /// that name.
     pub(super) fn is_rust_name_in_scope(&mut self, candidate: &KNode, r: &ResolveRefIn) -> bool {
-        if !rust_item_visible_from(candidate, r) {
+        if !self.rust_item_visible_from_paths(candidate, r) {
             return false;
         }
         if let Some(visible) = self.rust_precise_name_scope(candidate, r) {

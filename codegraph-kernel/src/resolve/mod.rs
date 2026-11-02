@@ -915,6 +915,12 @@ pub struct KernelResolver {
     /// getRazorUsings memo, by file.
     razor_usings_memo: HashMap<String, Rc<Vec<String>>>,
     rust_crate_root_memo: HashMap<String, Option<String>>,
+    /// Every `#[path]` module declaration in the project, by the file it
+    /// loads (`rustPathDeclarations`); built on first non-conventional lookup.
+    rust_path_decls: Option<Rc<HashMap<String, Vec<rust_modules::rust_paths::RustModule>>>>,
+    /// Set when a module walk met a `#[cfg]`/`cfg_attr` module declaration
+    /// with no one file to read; the path is then terminal.
+    rust_ambiguous_module: bool,
     rust_scope_memo: HashMap<String, Rc<rust_scope::RustScopeFacts>>,
     /// factory_initializer memo: (file, binding line, root, binding node).
     factory_init_memo: HashMap<(String, i64, String, Option<String>), Rc<method_call::FactoryInit>>,
@@ -1173,6 +1179,8 @@ impl KernelResolver {
             cobol_copybooks: None,
             razor_usings_memo: HashMap::new(),
             rust_crate_root_memo: HashMap::new(),
+            rust_path_decls: None,
+            rust_ambiguous_module: false,
             rust_scope_memo: HashMap::new(),
             factory_init_memo: HashMap::new(),
             cpp_macros: cpp::MacroCache::default(),

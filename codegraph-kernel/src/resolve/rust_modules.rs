@@ -33,7 +33,14 @@ impl KernelResolver {
         }
         let path: Vec<String> =
             r.reference_name.split("::").filter(|s| !s.is_empty()).map(str::to_string).collect();
+        self.rust_ambiguous_module = false;
         let hit = self.match_rust_path_reference(r)?;
+        // A module whose `#[cfg]` alternatives name a file each, or whose
+        // path a `cfg_attr` sets, is not read: the path names nothing, even
+        // when a conventional file of that name exists.
+        if self.rust_ambiguous_module {
+            return Ok(Some(ResolveOutcome::unresolved()));
+        }
         // A path whose head a `use` binds from the standard library —
         // `fs::read` under `use std::fs;` — is std's, whatever module the
         // project has of that name: `fs/mod.rs`'s own `read` is not
