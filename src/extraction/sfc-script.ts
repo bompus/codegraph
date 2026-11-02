@@ -32,6 +32,39 @@ export function sfcScriptLanguage(attrs: string, host: Language): Language {
  */
 export const SFC_SCRIPT_ELEMENT = /<script(\s[^>]*?)?(?:\/>|>(?<content>[\s\S]*?)<\/script\s*>)/g;
 
+
+
+/**
+ * A `<script>` or `<style>` element, which the template scans skip: what it
+ * holds is code or CSS, not markup. A self-closing one (see
+ * {@link SFC_SCRIPT_ELEMENT}) has no body to skip, and its attributes, like
+ * `set:html={serializeJsonLd(schema)}`, are template expressions like any
+ * other's: {@link sfcElementHasBody} says which a match is.
+ */
+export const SFC_SCRIPT_OR_STYLE_ELEMENT = /<(script|style)(\s[^>]*?)?(?:\/>|>[\s\S]*?<\/\1\s*>)/g;
+
+/** Whether a match of {@link SFC_SCRIPT_OR_STYLE_ELEMENT} has a body: false for a self-closing tag. */
+export function sfcElementHasBody(element: string): boolean {
+  return !element.endsWith('/>');
+}
+
+/**
+ * The lines (0-indexed, inclusive) of each `<script>` and `<style>` element
+ * with a body in `source`, which a template scan skips. A self-closing tag
+ * covers nothing.
+ */
+export function sfcBlockLineRanges(source: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  const elements = new RegExp(SFC_SCRIPT_OR_STYLE_ELEMENT);
+  let match: RegExpExecArray | null;
+  while ((match = elements.exec(source)) !== null) {
+    if (!sfcElementHasBody(match[0])) continue;
+    const startLine = (source.substring(0, match.index).match(/\n/g) || []).length;
+    ranges.push([startLine, startLine + (match[0].match(/\n/g) || []).length]);
+  }
+  return ranges;
+}
+
 /** The SFC's own file node — the whole file, as the tree-sitter extractor makes one. */
 export function sfcFileNode(filePath: string, source: string, language: Language): Node {
   return {
