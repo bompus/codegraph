@@ -544,7 +544,8 @@ export class ReferenceResolver {
    * synthesized rows against it instead of deleting them all first. */
   lastSynthesizedEdges: Edge[] = [];
 
-  async resynthesize(onProgress?: (done: number, total: number) => void): Promise<number> {
+  async resynthesize(onProgress?: (done: number, total: number) => void, backpressure?: () => void): Promise<number> {
+    backpressure?.();
     this.clearCaches();
     const emitted: { edges?: Edge[] } = {};
     const edges = await synthesizeCallbackEdges(this.queries, this.context, onProgress, undefined, undefined, emitted);
