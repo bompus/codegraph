@@ -2,7 +2,7 @@
 use super::*;
 
 fn class_kind(kind: &str) -> bool { matches!(kind, "class" | "struct" | "interface" | "enum" | "record" | "trait") }
-fn angle_arguments(text: &str) -> Vec<String> {
+pub(super) fn angle_arguments(text: &str) -> Vec<String> {
     let Some(open) = text.find('<') else { return vec![] };
     let mut depth = 0usize;
     let mut out = Vec::new();

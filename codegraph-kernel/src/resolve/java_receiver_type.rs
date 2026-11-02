@@ -151,7 +151,7 @@ impl KernelResolver {
     }
 
     /// JVM type declarations named `name` (Java, Kotlin or Scala).
-    fn jvm_type_decls(&mut self, name: &str) -> Res<Vec<Arc<KNode>>> {
+    pub(super) fn jvm_type_decls(&mut self, name: &str) -> Res<Vec<Arc<KNode>>> {
         Ok(self
             .nodes_by_name(name)?
             .iter()
@@ -202,7 +202,7 @@ impl KernelResolver {
     /// as visible, and so does a Scala or Kotlin declaration, whose qualified
     /// name carries no package to check. A class also names the nested types
     /// of the classes it extends or implements.
-    fn is_java_type_nameable(
+    pub(super) fn is_java_type_nameable(
         &mut self,
         decl: &KNode,
         file_path: &str,
@@ -312,7 +312,7 @@ impl KernelResolver {
     /// (`MyLayout.LayoutParams`, inherited from a library class). A short
     /// all-caps name (`T`, `VH`) is taken for a type parameter, whose bound
     /// may be a project type, and left alone.
-    fn java_type_ref(
+    pub(super) fn java_type_ref(
         &mut self,
         written: &str,
         file_path: &str,
@@ -590,7 +590,7 @@ impl KernelResolver {
 
 impl KernelResolver {
     /// The method `method` of the type `type_qn` declared in `file`.
-    fn java_method_of(
+    pub(super) fn java_method_of(
         &mut self,
         type_qn: &str,
         method: &str,
@@ -606,7 +606,7 @@ impl KernelResolver {
     /// The static field `name` of Java type `owner`, its own or one it
     /// inherits from the types it extends or implements (an interface's
     /// constant), a few levels up. An enum's constant counts.
-    fn java_static_field(
+    pub(super) fn java_static_field(
         &mut self,
         owner: &KNode,
         name: &str,

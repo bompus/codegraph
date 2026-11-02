@@ -973,7 +973,20 @@ if inferred.is_none() && r.language == "dart" {
                         return Ok(None);
                     }
                 }
-                None => {}
+                None => {
+                    // A lambda's parameter is typed by the method the lambda is
+                    // passed to: `tb -> tb.process()` handed to a
+                    // `Consumer<Builder>`.
+                    if let Some(declared) = self.java_lambda_parameter_type(&object_or_class, r)? {
+                        if let Some(written) = Self::java_type_name(&declared) {
+                            if let Some(ty) = self.java_type_ref(&written, &r.file_path, r)? {
+                                if let Some(hit) = self.resolve_on_java_type(&ty, &method_name, r)? {
+                                    return Ok(Some(hit));
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -1461,7 +1474,20 @@ if inferred.is_none() && r.language == "dart" {
                         return Ok(None);
                     }
                 }
-                None => {}
+                None => {
+                    // A lambda's parameter is typed by the method the lambda is
+                    // passed to: `tb -> tb.process()` handed to a
+                    // `Consumer<Builder>`.
+                    if let Some(declared) = self.java_lambda_parameter_type(&object_or_class, r)? {
+                        if let Some(written) = Self::java_type_name(&declared) {
+                            if let Some(ty) = self.java_type_ref(&written, &r.file_path, r)? {
+                                if let Some(hit) = self.resolve_on_java_type(&ty, &method_name, r)? {
+                                    return Ok(Some(hit));
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 

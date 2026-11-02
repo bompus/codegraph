@@ -223,6 +223,24 @@ impl KernelResolver {
         let Some(args) = self.call_arguments(r, &hit.node.name) else {
             return Ok(hit);
         };
+        if r.language == "java" {
+            let overloads: Vec<Arc<KNode>> =
+                std::iter::once(hit.node.clone()).chain(siblings.iter().cloned()).collect();
+            if let Some(fitting) = self.java_overloads_fitting(&overloads, &args, r)? {
+                if fitting.iter().any(|n| n.id == hit.node.id) {
+                    return Ok(hit);
+                }
+                // A private overload of another file can't be the call, but
+                // when the arguments don't say which of the rest is, it stays
+                // that, unresolved, and not a guess.
+                let private_elsewhere = hit.node.visibility.as_deref() == Some("private")
+                    && hit.node.file_path != r.file_path;
+                if !(fitting.len() > 1 && private_elsewhere) {
+                    hit.node = fitting[0].clone();
+                }
+                return Ok(hit);
+            }
+        }
         if let Some(Some(selected)) = self.cpp_scalar_overload_choice(&hit.node, r) {
             hit.node = selected;
             return Ok(hit);
