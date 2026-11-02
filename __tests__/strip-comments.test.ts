@@ -132,3 +132,22 @@ real = 1
     expect(out.length).toBe(src.length);
   });
 });
+
+describe('stripCommentsForRegex keeps every offset', () => {
+  // A blank stands for each character of a comment, a newline for itself.
+  const blanked = (text: string): string => text.replace(/[^\n]/g, ' ');
+  const cases: Array<[string, Parameters<typeof stripCommentsForRegex>[1], string, string]> = [
+    ['a block comment across lines', 'cpp', 'int a; /* one\r\n two\n */ int b;', '/* one\r\n two\n */'],
+    ['a comment that runs off the end', 'typescript', 'const a = 1; /* open\nstill', '/* open\nstill'],
+    ['a line comment at the very end', 'java', 'int a; // last', '// last'],
+    ['a docstring across lines', 'python', 'x = 1\n"""doc\n\nmore"""\ny = 2\n', '"""doc\n\nmore"""'],
+    ['a comment first in the file', 'go', '// top\npackage a\n', '// top'],
+    ['nested block comments', 'rust', 'fn a() {} /* x /* y */ z */ fn b() {}', '/* x /* y */ z */'],
+    ['a wide character in a comment', 'c', 'int a; /* 😀 é */ int b;', '/* 😀 é */'],
+  ];
+  it.each(cases)('%s', (_label, lang, text, comment) => {
+    const at = text.indexOf(comment);
+    const out = stripCommentsForRegex(text, lang);
+    expect(out).toBe(text.slice(0, at) + blanked(comment) + text.slice(at + comment.length));
+  });
+});
