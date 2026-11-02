@@ -303,6 +303,7 @@ export interface KernelResolverLike {
   resolvePythonModule(spec: string, from: string): string | null;
   pythonPackageRoots(): string;
   pythonPackageReopenScope(files: string[]): { targetFiles: string[]; sourceDirs: string[]; moduleLeaves: string[] };
+  pythonScriptModuleScope(files: string[]): { targetFiles: string[]; sourceDirs: string[]; moduleLeaves: string[] };
   pythonPackageImportBindings(inits: string[]): { filePath: string; localName: string; binding?: string }[];
   clearPythonModuleCaches(): void;
   isPythonFromImportModule(ref: ResolveRefIn): boolean;

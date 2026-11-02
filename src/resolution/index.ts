@@ -1179,6 +1179,11 @@ export class ReferenceResolver {
     return this.withPythonKernel((kernel) => kernel.pythonPackageReopenScope(changedFiles));
   }
 
+  /** What a sync must re-open after these Python files were edited (see `pythonScriptModuleScope`). */
+  getPythonScriptModuleScope(editedFiles: string[]) {
+    return this.withPythonKernel((kernel) => kernel.pythonScriptModuleScope(editedFiles));
+  }
+
   getPythonPackageImporters(initFiles: string[]): Map<string, Map<string, string | null>> {
     return this.withPythonKernel((kernel) => {
       const result = new Map<string, Map<string, string | null>>();
