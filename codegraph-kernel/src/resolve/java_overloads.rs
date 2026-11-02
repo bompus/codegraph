@@ -60,6 +60,18 @@ fn java_widened(primitive: &str) -> &'static [&'static str] {
     }
 }
 
+/// What `java_argument_type` says of a method reference, and of a lambda with
+/// its parameters' count after it: no type of its own until a parameter gives
+/// it one.
+pub(super) const JAVA_FUNCTION_VALUE: &str = "->";
+
+/// The JDK's functional interfaces: java.util.function's, and `Runnable`,
+/// `Callable`, `Comparator`.
+fn java_functional_type(ty: &str) -> bool {
+    re!(r"^(?:Runnable|Callable|Comparator|(?:Bi|Boolean|Double|Int|Long|Obj(?:Double|Int|Long)|To(?:Double|Int|Long)(?:Bi)?|(?:Double|Int|Long)To(?:Double|Int|Long))?(?:Consumer|Function|Predicate|Supplier)|(?:Double|Int|Long)?(?:Binary|Unary)Operator)$")
+        .is_match(ty)
+}
+
 /// The JDK's functional interfaces: for each parameter of a lambda written for
 /// one, the type argument it has.
 fn java_functional_argument(interface: &str) -> Option<&'static [usize]> {
@@ -342,6 +354,19 @@ impl KernelResolver {
         r: &ResolveRefIn,
     ) -> Res<Option<String>> {
         let arg = arg.trim();
+        // A lambda or a method reference: no type of its own until a parameter
+        // gives it one.
+        if let Some(lambda) = re!(r"^(?:\(([^()]*)\)|[A-Za-z_$][\w$]*)\s*->").captures(arg) {
+            let count = match lambda.get(1) {
+                None => 1,
+                Some(list) if list.as_str().trim().is_empty() => 0,
+                Some(list) => super::overloads_upstream::split_top_level(list.as_str()).len(),
+            };
+            return Ok(Some(format!("{JAVA_FUNCTION_VALUE}{count}")));
+        }
+        if re!(r"^[\w$.]+(?:<[^()]*>)?(?:\[\])*\s*::\s*[A-Za-z_$][\w$]*$").is_match(arg) {
+            return Ok(Some(JAVA_FUNCTION_VALUE.to_string()));
+        }
         if re!(r#"^"(?:[^"\\]|\\.)*"(?:\s*\+[\s\S]*)?$"#).is_match(arg) {
             return Ok(Some("String".to_string()));
         }
@@ -357,10 +382,10 @@ impl KernelResolver {
         if re!(r"^-?(?:0[xX][\da-fA-F_]+|0[bB][01_]+|\d[\d_]*)[lL]$").is_match(arg) {
             return Ok(Some("long".to_string()));
         }
-        if re!(r"^-?\d[\d_]*(?:\.[\d_]*)?(?:[eE][-+]?\d+)?[fF]$").is_match(arg) {
+        if re!(r"^-?(?:\d[\d_]*(?:\.[\d_]*)?|\.\d[\d_]*)(?:[eE][-+]?\d+)?[fF]$").is_match(arg) {
             return Ok(Some("float".to_string()));
         }
-        if re!(r"^-?(?:\d[\d_]*\.[\d_]*(?:[eE][-+]?\d+)?|\d[\d_]*[eE][-+]?\d+)[dD]?$").is_match(arg) {
+        if re!(r"^-?(?:(?:\d[\d_]*\.[\d_]*|\.\d[\d_]*)(?:[eE][-+]?\d+)?[dD]?|\d[\d_]*(?:[eE][-+]?\d+[dD]?|[dD]))$").is_match(arg) {
             return Ok(Some("double".to_string()));
         }
         // (Only when nothing follows it: `new Foo().bar()` is what `bar` returns.)
@@ -449,6 +474,9 @@ impl KernelResolver {
         if type_variable.is_match(arg) || type_variable.is_match(param) {
             return Ok(0.0);
         }
+        if arg.starts_with(JAVA_FUNCTION_VALUE) {
+            return self.java_function_fit(arg, param);
+        }
         let project_type = |this: &mut Self, name: &str| -> Res<bool> {
             let base = name.trim_end_matches("[]").to_string();
             Ok(this.jvm_type_decls(&base)?.iter().any(|n| n.language == "java"))
@@ -458,7 +486,7 @@ impl KernelResolver {
         // A name the project doesn't declare may be a type parameter (`Item`),
         // which takes anything.
         let refused = if param == "String" || project_param { -1.0 } else { 0.0 };
-        let value_refused = if java_functional_argument(param).is_some() { -1.0 } else { refused };
+        let value_refused = if java_functional_type(param) { -1.0 } else { refused };
         let arg_primitive = java_primitive(arg);
         let param_primitive = java_primitive(param);
         if arg_primitive && param_primitive {
@@ -507,6 +535,38 @@ impl KernelResolver {
         }
         let _ = r;
         Ok(refused)
+    }
+
+    /// How a lambda or a method reference fits a parameter of Java type
+    /// `param`: 1 a functional interface of the JDK's, 0 what may be one
+    /// (another interface, a library type), -1 what can't take one, or a JDK
+    /// interface whose method takes another number of arguments than the
+    /// lambda's.
+    fn java_function_fit(&mut self, arg: &str, param: &str) -> Res<f64> {
+        if java_functional_type(param) {
+            let takes = if re!(r"Supplier$|^Runnable$|^Callable$").is_match(param) {
+                0
+            } else if re!(r"^Bi|BiFunction$|Binary|^Obj|^Comparator$").is_match(param) {
+                2
+            } else {
+                1
+            };
+            return Ok(if arg == JAVA_FUNCTION_VALUE || arg == format!("{JAVA_FUNCTION_VALUE}{takes}") {
+                1.0
+            } else {
+                -1.0
+            });
+        }
+        if param == "Object" || param == "String" || param.ends_with("[]") || java_primitive(param) {
+            return Ok(-1.0);
+        }
+        let decls = self.jvm_type_decls(param)?;
+        let java: Vec<&Arc<KNode>> = decls.iter().filter(|n| n.language == "java").collect();
+        Ok(if !java.is_empty() && java.iter().all(|n| n.kind != "interface") {
+            -1.0
+        } else {
+            0.0
+        })
     }
 
     /// Of one class's overloads of a method, those a Java call's arguments
