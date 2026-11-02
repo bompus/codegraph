@@ -2375,7 +2375,8 @@ program
   .option('--no-watch', 'Disable the file watcher (no auto-sync; useful on slow filesystems like WSL2 /mnt drives)')
   .option('--preserve-existing', 'Never replace an existing writer; require an exact indexed project path')
   .option('--initialize-index', 'With --preserve-existing, initialize the exact project index under daemon ownership')
-  .action(async (options: { path?: string; mcp?: boolean; watch?: boolean; preserveExisting?: boolean; initializeIndex?: boolean }) => {
+  .option('--no-telemetry', 'Send no usage telemetry from this server (same as CODEGRAPH_TELEMETRY=0)')
+  .action(async (options: { path?: string; mcp?: boolean; watch?: boolean; preserveExisting?: boolean; initializeIndex?: boolean; telemetry?: boolean }) => {
     const projectPath = options.path
       ? options.preserveExisting ? path.resolve(options.path) : resolveProjectPath(options.path)
       : undefined;
@@ -2384,6 +2385,11 @@ program
     // the same env-var chokepoint the watcher and MCP server already honor.
     if (options.watch === false) {
       process.env.CODEGRAPH_NO_WATCH = '1';
+    }
+    // Same for --no-telemetry (#1908): telemetry reads CODEGRAPH_TELEMETRY on
+    // every check, and a daemon this server spawns inherits the env.
+    if (options.telemetry === false) {
+      process.env.CODEGRAPH_TELEMETRY = '0';
     }
 
     try {
