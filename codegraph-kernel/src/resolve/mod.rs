@@ -866,6 +866,8 @@ pub struct KernelResolver {
     pkg_folder_memo: HashMap<String, String>,
     /// tsAliasedType, by (file, type name).
     ts_aliased_memo: HashMap<(String, String), Option<Arc<KNode>>>,
+    /// The members a JS file assigns to an object itself (`X.prototype.m = …`).
+    js_assigned_members: HashMap<String, Rc<HashSet<String>>>,
     /// lexicalScopeOf, by candidate id: the scoping function body's lines.
     lexical_scope_memo: HashMap<String, Option<(i64, i64)>>,
     /// jsDeclarationReachable's candidate-side walk, by (candidate id,
@@ -1160,6 +1162,7 @@ impl KernelResolver {
             pkg_manifest_memo: HashMap::new(),
             pkg_folder_memo: HashMap::new(),
             ts_aliased_memo: HashMap::new(),
+            js_assigned_members: HashMap::new(),
             lexical_scope_memo: HashMap::new(),
             js_decl_scope_memo: HashMap::new(),
             bare_name_memo: None,

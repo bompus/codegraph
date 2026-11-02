@@ -717,6 +717,23 @@ impl KernelResolver {
         Ok(in_hand.then(|| KCand { node: method.clone(), confidence: 0.7, resolved_by: "instance-method" }))
     }
 
+    /// Whether a JS file gives an object a function member of that name itself,
+    /// `Sha256.prototype.update = function…`, inside the bundle's closure where
+    /// the index holds no node for it.
+    fn js_file_assigns_member(&mut self, file: &str, name: &str) -> bool {
+        if let Some(hit) = self.js_assigned_members.get(file) {
+            return hit.contains(name);
+        }
+        let mut set = HashSet::new();
+        if let Some(src) = self.read_file(file) {
+            for caps in re!(r"\.prototype\.([\w$]+)\s*=\s*(?:async\s+)?function\b").captures_iter(src.text()) {
+                set.insert(caps[1].to_string());
+            }
+        }
+        self.js_assigned_members.insert(file.to_string(), Rc::new(set));
+        self.js_assigned_members.get(file).is_some_and(|s| s.contains(name))
+    }
+
     /// matchMethodCall(ref, context, requireReceiverEvidence=true) — the
     /// boundReceiver evidence slice. A member miss whose supertype walk needs
     /// edges the db may not hold yet is a miss.
@@ -1518,6 +1535,11 @@ if inferred.is_none() && r.language == "dart" {
                 && matches!(r.language.as_str(), "lua" | "luau")
                 && is_lua_library_call(&object_or_class, &method_name, r, &target[0]);
             if target.len() == 1 && !narrowed && target[0].language == r.language && !untyped_unnamed && !lua_library
+                // A file that gives an object a method of this name itself takes
+                // no lone guess from elsewhere.
+                && !(is_js_family(&r.language)
+                    && target[0].file_path != r.file_path
+                    && self.js_file_assigns_member(&r.file_path, &method_name))
                 && !self.unnamed_test_double(&target[0], &object_or_class, r)
                 && (target[0].id != r.from_node_id || self.same_owner_receiver_proven(&target[0], r)) {
                 return Ok(Some(KCand {
