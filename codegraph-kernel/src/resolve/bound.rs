@@ -1542,13 +1542,24 @@ Ok(self.dart_member_of(type_name, method, r, false)?
             }
         }
         let Some(enclosing) = enclosing else { return Ok(None) };
-        let Some(field) = in_file.iter().find(|n| {
-            n.kind == "field"
+        // Kotlin indexes a `val` property as a `constant`, a `var` as a
+        // `field`, and a companion-object property as a `variable`.
+        let field = in_file.iter().find(|n| {
+            (n.kind == "field"
+                || (r.language == "kotlin"
+                    && matches!(n.kind.as_str(), "constant" | "variable")))
                 && n.name == receiver
                 && n.language == r.language
                 && n.start_line >= enclosing.start_line
                 && n.end_line <= enclosing.end_line
-        }) else {
+        });
+        // Kotlin keeps no signature on a property, and a primary-constructor
+        // property (`class A(private val repo: Repo)`) is no node at all, so
+        // the declared type has to be read from the declaration itself.
+        if r.language == "kotlin" {
+            return self.kotlin_property_declared_type(receiver, field, enclosing, &in_file, r);
+        }
+        let Some(field) = field else {
             return Ok(None);
         };
         let Some(sig) = field.signature.as_deref() else {

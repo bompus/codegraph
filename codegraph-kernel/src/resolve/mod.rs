@@ -629,6 +629,7 @@ mod receivers;
 mod bound;
 mod fields;
 mod java_receiver_type;
+mod kotlin_property_type;
 mod rust_impls;
 mod ts_known;
 mod go_asserted;

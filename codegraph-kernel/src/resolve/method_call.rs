@@ -979,6 +979,39 @@ if inferred.is_none() && r.language == "dart" {
         // this.field arms: `this.` receivers are excluded by the claim gate —
         // dead inside boundReceiver.
 
+        // Kotlin: a receiver whose type is known — a local bound to a call
+        // (`val lease = HardwareLock.tryBegin()`, typed by the callee's
+        // declared return type), a local constructor call, or a property —
+        // resolves on that type. A type the project does not declare (`Regex`,
+        // a JDK or Android class) has none of the project's methods, so the
+        // call gets NO edge instead of the name-only guesses below, which bind
+        // it to whatever project class declares a method of the same name.
+        if r.language == "kotlin"
+            && dotted
+            && !object_or_class.contains('.')
+            && !local_inferred
+        {
+            match self.kotlin_receiver_declared_type(&object_or_class, r, 0)? {
+                Some(super::kotlin_property_type::KotlinDeclared::External) => return Ok(None),
+                Some(super::kotlin_property_type::KotlinDeclared::Type(declared)) => {
+                    if let Some(hit) = self.resolve_method_on_type(
+                        &declared,
+                        &method_name,
+                        r,
+                        0.9,
+                        "instance-method",
+                        None,
+                    )? {
+                        return Ok(Some(hit));
+                    }
+                    if !self.is_project_type(&declared, r)? {
+                        return Ok(None);
+                    }
+                }
+                None => {}
+            }
+        }
+
         // Kotlin (Java's fields are read in the branch above): receiver may be
         // a field whose name doesn't match the type by Kotlin's convention.
         if r.language == "kotlin" && dotted {
@@ -1230,6 +1263,11 @@ if inferred.is_none() && r.language == "dart" {
                             return Ok(hit);
                         }
                     }
+                } else if r.language == "kotlin" && self.inferred_member_type_bound(&t, r)?.is_none() {
+                    // A "type" no declaration makes a type — the `load` a
+                    // local-declaration scan takes from `Checker.load()` — is
+                    // not the receiver's declared type; the property and
+                    // chain reader further down still gets its turn.
                 } else {
                 let Some(mut t) = self.inferred_member_type_bound(&t, r)? else { return Ok(None) };
                 if is_esm_family(&r.language) && awaited_file.is_none() && t.ends_with(']') {
@@ -1297,7 +1335,18 @@ if inferred.is_none() && r.language == "dart" {
                     }
                     None if r.language == "objc" => return Ok(None),
                     None if awaited_file.is_some() => return Ok(None),
-                    None if matches!(r.language.as_str(), "java" | "kotlin" | "csharp") => {
+                    // A Kotlin receiver typed by a project class that lacks
+                    // the method gets no name-only guess (#2805). A "type"
+                    // no project class is named is not the receiver's
+                    // declared type at all (`Checker.load()` reads as
+                    // `load`), so the property and chain reader further down
+                    // still gets its turn.
+                    None if r.language == "kotlin" => {
+                        if self.resolve_bound_type(&t, r, 0)?.is_some() {
+                            return Ok(None);
+                        }
+                    }
+                    None if matches!(r.language.as_str(), "java" | "csharp") => {
                         return self.unique_csharp_extension_method(&t, &method_name, r);
                     }
                     // A C# or Ruby receiver whose type is a project class
@@ -1382,6 +1431,39 @@ if inferred.is_none() && r.language == "dart" {
                     }
                     let last = ty.name.rsplit("::").next().unwrap_or(&ty.name).to_string();
                     if self.is_undeclared_type_name(&last, r)? {
+                        return Ok(None);
+                    }
+                }
+                None => {}
+            }
+        }
+
+        // Kotlin: a receiver whose type is known — a local bound to a call
+        // (`val lease = HardwareLock.tryBegin()`, typed by the callee's
+        // declared return type), a local constructor call, or a property —
+        // resolves on that type. A type the project does not declare (`Regex`,
+        // a JDK or Android class) has none of the project's methods, so the
+        // call gets NO edge instead of the name-only guesses below, which bind
+        // it to whatever project class declares a method of the same name.
+        if r.language == "kotlin"
+            && dotted
+            && !object_or_class.contains('.')
+            && !local_inferred
+        {
+            match self.kotlin_receiver_declared_type(&object_or_class, r, 0)? {
+                Some(super::kotlin_property_type::KotlinDeclared::External) => return Ok(None),
+                Some(super::kotlin_property_type::KotlinDeclared::Type(declared)) => {
+                    if let Some(hit) = self.resolve_method_on_type(
+                        &declared,
+                        &method_name,
+                        r,
+                        0.9,
+                        "instance-method",
+                        None,
+                    )? {
+                        return Ok(Some(hit));
+                    }
+                    if !self.is_project_type(&declared, r)? {
                         return Ok(None);
                     }
                 }
@@ -1910,6 +1992,13 @@ if inferred.is_none() && r.language == "dart" {
             if hit.is_none() && r.language == "go" && self.take_go_mc_untyped() {
                 return probe!(r, "brc:mc-free", self.match_method_call_free(r));
             }
+            // A Kotlin receiver a property or chain types, or one nothing
+            // types at all (`helper` from a library base class), is answered
+            // by the free strategies and the declared-type arms there, as
+            // matchMethodCall's single pass does upstream.
+            if hit.is_none() && r.language == "kotlin" {
+                return probe!(r, "brc:mc-free", self.match_method_call_free(r));
+            }
             return Ok(hit);
         }
 
@@ -1999,6 +2088,13 @@ if inferred.is_none() && r.language == "dart" {
             return Ok(Some(c));
         }
         if r.language == "go" && self.take_go_mc_untyped() {
+            return probe!(r, "brc:mc-free", self.match_method_call_free(r));
+        }
+        // A Kotlin receiver a property or chain types, or one nothing types
+        // at all (`helper` from a library base class), is answered by the free
+        // strategies and the declared-type arms there, as matchMethodCall's
+        // single pass does upstream.
+        if r.language == "kotlin" {
             return probe!(r, "brc:mc-free", self.match_method_call_free(r));
         }
         // A Java/Scala/C# local whose `var` or inferred declaration says

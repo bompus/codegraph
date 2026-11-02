@@ -45,6 +45,29 @@ use tree_sitter::Node;
 
 
 
+/// blankKotlinFunInterface (languages/kotlin.ts): tree-sitter-kotlin predates
+/// functional interfaces (Kotlin 1.4), so `fun interface Reply { … }` parses as
+/// a broken function declaration and its error recovery swallows the NEXT
+/// declaration as well. Blanking the `fun` of a `fun interface` declaration
+/// (three spaces for three letters, so every offset holds) lets it parse as the
+/// plain interface it is. Only a declaration position is touched: the start of
+/// a line, after optional visibility / multiplatform modifiers.
+fn blank_kotlin_fun_interface(source: &str) -> std::borrow::Cow<'_, str> {
+    if !source.contains("interface") {
+        return std::borrow::Cow::Borrowed(source);
+    }
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?m)^([ 	]*(?:(?:public|private|internal|protected|expect|actual)[ 	]+)*)fun([ 	]+interface\b)",
+        )
+        .expect("fun-interface regex")
+    });
+    if !RE.is_match(source) {
+        return std::borrow::Cow::Borrowed(source);
+    }
+    std::borrow::Cow::Owned(RE.replace_all(source, "${1}   ${2}").into_owned())
+}
+
 /// A property's CODE children: the named child right after the `=` token, a
 /// `property_delegate` (`by lazy { … }`), and an accessor the grammar nested
 /// under the declaration (`val x: Int get() = compute()` — written on ONE line;
@@ -148,6 +171,8 @@ pub struct Walker<'t> {
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
     let t0 = std::time::Instant::now();
+    let source = blank_kotlin_fun_interface(source);
+    let source = source.as_ref();
     let tree = crate::langs::parse("kotlin", source)?;
 
     let mut w = Walker::new(source, file_path);

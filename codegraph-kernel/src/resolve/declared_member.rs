@@ -71,7 +71,7 @@ impl KernelResolver {
         }
         self.declared_member_memo.insert(key, found.clone()); Ok(found)
     }
-    fn declared_parameter_bound(&mut self, name: &str, cls: &KNode) -> Res<Option<Option<String>>> {
+    pub(super) fn declared_parameter_bound(&mut self, name: &str, cls: &KNode) -> Res<Option<Option<String>>> {
         let head = self.declaration_head(cls, 5);
         let head = head.split('{').next().unwrap_or("");
         let name = regex::escape(name);
