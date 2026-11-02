@@ -1263,10 +1263,11 @@ program
       // (#2913). Read-only, it leaves migrations, index repair and WAL
       // maintenance to the writer.
       const cg = await CodeGraph.open(projectPath, { readOnly: true });
-      const { isRebuildInProgress } = await import('../mcp/writer-lock');
       // A `codegraph index` in another process owns the database: the
       // numbers below are a snapshot of a graph being rebuilt.
-      const rebuildInProgress = isRebuildInProgress(projectPath);
+      const { assertNoRebuild } = await import('../mcp/writer-lock');
+      let rebuildInProgress = false;
+      try { assertNoRebuild(projectPath); } catch { rebuildInProgress = true; }
       const stats = cg.getStats();
       const changes = cg.getChangedFiles();
       const backend = cg.getBackend();
@@ -1285,11 +1286,6 @@ program
       // Files whose content is current but whose symbols are missing — the
       // content-hash check behind "up to date" cannot see them (#2336).
       const health = cg.getIndexHealth();
-      // A rebuild running in another process is replacing this index: its
-      // numbers are a snapshot, so `--strict` must not vouch for them (#3096).
-      const { assertNoRebuild } = await import('../mcp/writer-lock');
-      let rebuildInProgress = false;
-      try { assertNoRebuild(projectPath); } catch { rebuildInProgress = true; }
       // Files found against files that yielded symbols: a language can be
       // listed with its full count and have nothing in the graph.
       const coverage = cg.getLanguageCoverage();
