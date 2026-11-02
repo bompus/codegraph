@@ -1337,3 +1337,18 @@ impl KernelResolver {
         }
     }
 }
+
+#[cfg(test)]
+mod binding_order_tests {
+    /// A line inside a call's parentheses is no assignment target, however
+    /// much `Fan, through="Invitation"` reads like one; a statement's own
+    /// first line binds. The resolver reads per reference line, so a name
+    /// above a binding is the function and below it the local.
+    #[test]
+    fn a_line_inside_a_call_is_no_assignment() {
+        let inside = r#"first = wrap( Fan, through="Invitation" )"#;
+        assert!(super::python_stmt_bindings(inside, inside, "Fan", 15).ok().is_some_and(|b| b.is_empty()));
+        let binding = r#"view = wrap(view)"#;
+        assert!(super::python_stmt_bindings(binding, binding, "view", 7).ok().is_some_and(|b| !b.is_empty()));
+    }
+}
