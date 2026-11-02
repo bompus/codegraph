@@ -400,6 +400,26 @@ impl KernelResolver {
     }
 
     /// isVisibleAcrossFiles (name-matcher.ts).
+    /// Whether `candidate` is a member of a `private` type in its file — a
+    /// Kotlin test's `private class Clock { fun now() = value }`: the method
+    /// is public, the class is not, so nothing outside the file can name
+    /// `now`. Found by line range among the file's own nodes, memoised per
+    /// node.
+    fn is_inside_private_type(&mut self, candidate: &KNode) -> Res<bool> {
+        if let Some(hit) = self.private_owner_memo.get(&candidate.id) {
+            return Ok(*hit);
+        }
+        let inside = self.nodes_in_file(&candidate.file_path)?.iter().any(|n| {
+            n.id != candidate.id
+                && matches!(n.kind.as_str(), "class" | "interface" | "struct" | "enum" | "namespace")
+                && n.visibility.as_deref() == Some("private")
+                && n.start_line <= candidate.start_line
+                && n.end_line >= candidate.end_line
+        });
+        self.private_owner_memo.insert(candidate.id.clone(), inside);
+        Ok(inside)
+    }
+
     pub(super) fn is_visible_across_files(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
         self.is_visible_across_files_for(candidate, r, true)
     }
@@ -485,7 +505,12 @@ impl KernelResolver {
             return Ok(r.file_path.starts_with(&format!("{}/", owner)));
         }
         if private_is_file_local(lang) {
-            return Ok(candidate.visibility.as_deref() != Some("private"));
+            // Only Kotlin's private type keeps its members in its file: a
+            // Scala `private[pkg] class` (or one with a private constructor)
+            // is the package's, and a C# private nested class serves every
+            // file of its partial class.
+            return Ok(candidate.visibility.as_deref() != Some("private")
+                && !(lang == "kotlin" && self.is_inside_private_type(candidate)?));
         }
         // An R test file runs in an environment of its own (testthat): its
         // top-level `c <- ggplot(…)` is not what the package's `c(…)` calls

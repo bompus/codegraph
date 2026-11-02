@@ -891,6 +891,8 @@ pub struct KernelResolver {
     scala_imports_memo: HashMap<String, Rc<scala_type_scope::ScalaImports>>,
     scala_imported_ancestors_memo: HashMap<String, HashSet<String>>,
     java_file_ancestors_memo: HashMap<String, Rc<HashSet<String>>>,
+    /// node id -> "this member sits inside a `private` class/object".
+    private_owner_memo: HashMap<String, bool>,
     scala_package_object_supers: Option<HashMap<String, Vec<String>>>,
     language_jvm_packages: Option<HashSet<String>>,
     kotlin_lambda_receiver_memo: HashMap<String, Option<String>>,
@@ -1156,6 +1158,7 @@ impl KernelResolver {
             scala_imports_memo: HashMap::new(),
             scala_imported_ancestors_memo: HashMap::new(),
             java_file_ancestors_memo: HashMap::new(),
+            private_owner_memo: HashMap::new(),
             scala_package_object_supers: None,
             language_jvm_packages: None,
             kotlin_lambda_receiver_memo: HashMap::new(),
