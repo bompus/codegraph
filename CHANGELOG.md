@@ -103,6 +103,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Ordinary watcher startup can initialize a missing project index under daemon ownership and waits for fresh file indexing and queued synthesized edges before reporting readiness.
 - CodeIgniter 3 projects are now understood: every controller method and `routes.php` entry becomes a route, HMVC modules included, and calls through what `$this->load` loads, like `$this->user_model->find($id)`, link to the method they reach, so `codegraph_explore` can follow a request from its route through the model and into the view. Thanks @darkspock.
 
+- `codegraph files --format package` and `codegraph_files` with `format: "package"` now list a project's files by the package that owns them, the nearest `package.json` or `composer.json` above each file that names one, so a monorepo splits into its workspace members with no setup and files nothing claims get a section of their own (#1871). Thanks @LuisAlbertoMK.
+
 ### Fixes
 
  In Ruby, a call now follows a class's real ancestors, in the order Ruby looks a method up: the modules it includes, the one included last first, found by Ruby's constant lookup. Before, a superclass written `ActiveRecord::Base` could mean any class named `Base` in the project, so `human.name` reached an unrelated `Node#name`. A call on a class now reaches the methods it `extend`s and the `ClassMethods` of the concerns it includes, like `Topic.find` or `Topic.create`; a call on a method of the same class that hands back a new object, like `cookies.signed`, reaches that object's class; and a `?` or `!` method of Ruby's core classes, like `bad_cookies.empty?`, no longer links to a project class by a shared word.
