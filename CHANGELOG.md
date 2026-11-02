@@ -102,6 +102,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+ In Python, a call on a class or on a receiver named after it, like `Repo.save()` or `repo.save()` with `class Repo(Base[User])`, no longer links to a method of the base's type argument, like `User.save`. Before, every name in the base list counted as a supertype, so `User` was searched as if `Repo` inherited from it. The base itself, `Base`, is still searched. Re-index Python projects after upgrading. Thanks @JosefAschauer.
+
  In JavaScript and TypeScript, a line like `export default App` written inside a template literal, as code generators and build plugins write the modules they produce, no longer counts as the module's own default export. Before, when that text named a function the file declares, a default import of the module linked to that function instead of the one the real `export default` statement names, and an unnamed `export default () => …` in such text could leave the default import linked to nothing. Re-index JavaScript and TypeScript projects after upgrading. Thanks @inth3shadows for the report and @johnhldiver-beep for the first fix. (#2968)
 
  In Ruby, a call on an instance variable, like `@writer.flush`, now links to the method of the class the variable holds when the class's `initialize` sets it to a new object of one class, like `@writer = CacheWriter.new`. Before, no call on an instance variable linked. A variable that `initialize` sets to anything else, or to objects of two classes, stays unlinked rather than guessed. Re-index Ruby projects after upgrading.
