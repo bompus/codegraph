@@ -921,6 +921,10 @@ pub struct KernelResolver {
     /// Set when a module walk met a `#[cfg]`/`cfg_attr` module declaration
     /// with no one file to read; the path is then terminal.
     rust_ambiguous_module: bool,
+    /// C++ overload choices whose arguments are being typed, keyed
+    /// `file:line:column:name`; a re-entered choice takes the first tied
+    /// overload instead of recursing (#2999).
+    cpp_argument_choices_in_flight: HashSet<String>,
     rust_scope_memo: HashMap<String, Rc<rust_scope::RustScopeFacts>>,
     /// factory_initializer memo: (file, binding line, root, binding node).
     factory_init_memo: HashMap<(String, i64, String, Option<String>), Rc<method_call::FactoryInit>>,
@@ -1181,6 +1185,7 @@ impl KernelResolver {
             rust_crate_root_memo: HashMap::new(),
             rust_path_decls: None,
             rust_ambiguous_module: false,
+            cpp_argument_choices_in_flight: HashSet::new(),
             rust_scope_memo: HashMap::new(),
             factory_init_memo: HashMap::new(),
             cpp_macros: cpp::MacroCache::default(),

@@ -1268,6 +1268,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - In Rust, a module loaded with `#[path = "…"]`, like tests kept in another folder as `#[path = "../../../tests/unit/scaling_tests.rs"] mod tests;`, is now part of the module that declares it: its `use super::*` brings in that module's items, private ones included, `super::` and `crate::` start from there, and the path is read as Rust reads it, from the declaring file's folder or an inline module's own. A call through such a module, like `support::make()` in each test that loads a shared helper, reaches the file it names. A module whose `#[cfg]` alternatives each name a file of their own, or whose path a `cfg_attr` sets, depends on the build and is left alone. An example, test or bench that `Cargo.toml` places at a path of its own, like `examples/07-fullstack/handling_errors.rs`, is now its own crate, so its `crate::` starts from it. Re-index Rust projects after upgrading. Thanks @seonghobae. (#1892)
 
+- In C++, indexing no longer fails with "Maximum call stack size exceeded" on a call whose arguments call the same overloaded method, like darts-clone's `extras(extras(id).prev()).set_next(…)` on a class with a `const` and a non-`const` `extras(id)`. Choosing the overload read its arguments, which chose the same overload again without end, and the whole index run failed. Such a call now takes the first overload when the choice comes back to itself, as one whose argument types are unknown does. Thanks @JosefAschauer.
+
 ## [1.6.2] - 2026-10-03
 
 ### Highlights
