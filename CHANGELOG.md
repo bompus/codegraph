@@ -102,6 +102,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+ In Ruby, a call to a method whose name ends in `!` or `?` now links when its receiver's class is known, like `writer.flush!` or `writer.ready?` after `writer = CacheWriter.new`, or `CacheWriter.create!(…)` on the class. A method called straight on a new object, like `CacheWriter.new(key).write_cache` or `Billing::Ledger.new.charge!`, now links to that class's method or to one it inherits. Before, all of these linked nothing. The class is looked up the way Ruby does it, from the namespaces around the call outward, and one from outside your project, like rack's `Request` used inside `Rack::Protection`, links nothing rather than a project class of the same name. Re-index Ruby projects after upgrading. Thanks @ricobl.
+
  In Python, a call through a name the file imports as a module, like `other.update(…)` after `from pkg import other`, now links to that module only where nothing closer gives the name another value: a parameter, a local, a `with … as` or `except … as` target, a loop or comprehension variable, a lambda parameter or a `case` capture named `other` is that value, so its calls no longer show up as calls into the module. A `from pkg import third as other` written inside a function now links that function's `other.get()` to `third`, and no longer the rest of the file's. Re-index Python projects after upgrading. Thanks @BGamboa13. (#2632)
 
 - In JavaScript, a call in a file that gives an object that method itself, with `Sha256.prototype.update = function…`, no longer links to the only method of that name in some other file.
