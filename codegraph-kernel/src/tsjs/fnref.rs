@@ -185,7 +185,7 @@ impl<'t> Walker<'t> {
             return;
         }
 
-        crate::walker::emit_value_refs(self.src, &self.node_ids, &mut self.arena, &mut self.tables, &scopes, &targets);
+        crate::walker::emit_value_refs(self.src, &self.node_ids, &mut self.arena, &mut self.tables, &scopes, &targets, None);
     }
 
     pub(super) fn maybe_capture_fn_refs(&mut self, node: Node<'t>) {

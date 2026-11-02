@@ -118,7 +118,7 @@ impl<'t> Walker<'t> {
         // Kotlin/Swift path yields null) → declCounts stays empty → no php
         // target is ever pruned. Skipping the scan is byte-identical.
 
-        crate::walker::emit_value_refs(self.src, &self.node_ids, &mut self.arena, &mut self.tables, &scopes, &targets);
+        crate::walker::emit_value_refs(self.src, &self.node_ids, &mut self.arena, &mut self.tables, &scopes, &targets, None);
     }
 
     /// phpStringContent: the string's literal text, trimmed. An interpolated

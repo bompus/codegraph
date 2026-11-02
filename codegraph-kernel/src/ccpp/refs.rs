@@ -187,7 +187,7 @@ impl<'t> Walker<'t> {
             return;
         }
 
-        crate::walker::emit_value_refs(self.src, &self.node_ids, &mut self.arena, &mut self.tables, &scopes, &targets);
+        crate::walker::emit_value_refs(self.src, &self.node_ids, &mut self.arena, &mut self.tables, &scopes, &targets, None);
     }
 
     /// flushFnRefCandidates with the cFamily gate policy: value/list positions

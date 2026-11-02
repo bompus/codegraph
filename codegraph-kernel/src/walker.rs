@@ -137,6 +137,11 @@ pub(crate) fn emit_value_refs(
     tables: &mut crate::buffers::Tables,
     scopes: &[ValueScope],
     targets: &std::collections::HashMap<String, u32>,
+    // Java: the qualified name of each node row, so a field read through
+    // another type's qualifier (`InferenceString.PARSER` is that class's
+    // constant, not the `PARSER` of the file reading it) is not a read of this
+    // file's own.
+    qualified_names: Option<&[String]>,
 ) {
     use crate::buffers::{EdgeRow, NONE, NONE_STR};
     let refs_kind = crate::buffers::EDGE_REFERENCES;
@@ -156,7 +161,11 @@ pub(crate) fn emit_value_refs(
                 let ref_name = &src[n.byte_range()];
                 if let Some(&target_row) = targets.get(ref_name) {
                     let target_id = node_ids[target_row as usize].as_str();
-                    if target_id != node_ids[scope.row as usize] && ref_name != scope.name && seen.insert((scope.row, target_id)) {
+                    if target_id != node_ids[scope.row as usize]
+                        && ref_name != scope.name
+                        && !java_foreign_field(n, target_row, src, qualified_names)
+                        && seen.insert((scope.row, target_id))
+                    {
                         let meta = *value_ref_meta.get_or_insert_with(|| arena.put(r#"{"valueRef":true}"#));
                         tables.push_edge(&EdgeRow {
                             source_idx: scope.row,
@@ -177,4 +186,33 @@ pub(crate) fn emit_value_refs(
             }
         }
     }
+}
+
+/// isForeignJavaField: `InferenceString.PARSER` reads that class's constant,
+/// not the `PARSER` of the file reading it. This file's own is read bare,
+/// through `this`, or through the class that declares it.
+fn java_foreign_field(
+    n: Node,
+    target_row: u32,
+    src: &str,
+    qualified_names: Option<&[String]>,
+) -> bool {
+    let Some(qualified_names) = qualified_names else { return false };
+    let Some(access) = n.parent() else { return false };
+    if access.kind() != "field_access" {
+        return false;
+    }
+    let Some(object) = access.child_by_field_name("object") else { return false };
+    if access.child_by_field_name("field").map(|f| f.start_byte()) != Some(n.start_byte()) {
+        return false;
+    }
+    let written = &src[object.byte_range()];
+    let qualifier = written.rsplit('.').next().unwrap_or("").trim();
+    if qualifier == "this" {
+        return false;
+    }
+    qualified_names
+        .get(target_row as usize)
+        .and_then(|q| q.rsplit("::").nth(1))
+        != Some(qualifier)
 }
