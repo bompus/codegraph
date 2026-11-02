@@ -87,7 +87,10 @@ session. A session has `--pairs` before/after pairs (default 3) and
 noise floor. A metric qualifies when every session's median after/before ratio
 lies outside the measured noise floor — the larger of the controls' deviation
 and any `--band` declared before the first run; the band defaults to 0, so no
-fixed percentage is added — in the same direction.
+fixed percentage is added — in the same direction. The reported Change is
+the median of the per-session medians, so it matches the verdict, and the
+control deviation is symmetric so the floor does not depend on which arm ran
+first.
 
 It stops early in three cases:
 
@@ -105,7 +108,9 @@ It stops early in three cases:
   `--save-noise` stored for the same host, kernel, runtime version, corpus
   revision, edit and `--env`, and then runs no controls. Entries without
   `version: 2` (saved before full-precision floors) are ignored and remeasured.
-  A kernel or runtime upgrade changes the key, so it is measured again.
+  A stored floor is used only when both arms have a `version: 2` entry; a run
+  that measured one arm saves only that arm. A kernel or runtime upgrade changes
+  the key, so it is measured again.
 
 The saved index keeps its synthesis skip list under a fingerprint of the
 resolution code that wrote it. A build whose resolution code differs would

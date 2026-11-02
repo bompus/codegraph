@@ -251,9 +251,15 @@ if (o.proxies) {
 // Stored noise floor: the largest same-build deviation seen for this host, kernel, runtime and
 // workload. When it matches, later comparisons reuse it instead of running their own controls.
 const noiseStore = o.noise && fs.existsSync(o.noise) ? JSON.parse(fs.readFileSync(o.noise, 'utf8')) : {};
+const freshNoise = (e) => e?.version === 2 && METRICS.every((m) => typeof e.maxDev?.[m] === 'number');
+const storedA = o.noise ? noiseStore[noiseKey(A)] : undefined;
+const storedB = o.noise ? noiseStore[noiseKey(B)] : undefined;
 const storedNoise =
-  o.noise && noiseKey(A) === noiseKey(B) && noiseStore[noiseKey(A)]?.version === 2
-    ? noiseStore[noiseKey(A)]
+  freshNoise(storedA) && freshNoise(storedB)
+    ? {
+        measured: storedA.measured,
+        maxDev: Object.fromEntries(METRICS.map((m) => [m, Math.max(storedA.maxDev[m], storedB.maxDev[m])])),
+      }
     : undefined;
 const controls = storedNoise ? 0 : Number(o.controls);
 if (storedNoise) console.log(`using stored noise floor from ${storedNoise.measured} (${JSON.stringify(storedNoise.maxDev)})`);
@@ -290,8 +296,19 @@ for (let s = 1; s <= Number(o.sessions); s++) {
 function verdicts(ss) {
   const res = {};
   for (const m of METRICS) {
-    const devs = ss.flatMap(({ ctl }) => ctl.map(({ x, y }) => Math.abs(y[m] / x[m] - 1)));
-    const maxDev = devs.length ? Math.max(...devs) : (storedNoise?.maxDev[m] ?? null);
+    const devsByArm = {};
+    for (const { ctl } of ss) {
+      for (const c of ctl) {
+        // Symmetric: the same control pair gives the same floor whichever arm ran first.
+        const dev = Math.max(Math.abs(c.y[m] / c.x[m] - 1), Math.abs(c.x[m] / c.y[m] - 1));
+        (devsByArm[c.arm] ??= []).push(dev);
+      }
+    }
+    const maxDevByArm = Object.fromEntries(
+      arms.map((a) => [a.name, devsByArm[a.name]?.length ? Math.max(...devsByArm[a.name]) : null]),
+    );
+    const measured = Object.values(maxDevByArm).filter((d) => d !== null);
+    const maxDev = measured.length ? Math.max(...measured) : (storedNoise?.maxDev[m] ?? null);
     const floor = Math.max(band, maxDev ?? Infinity);
     const per = ss.map(({ pairs }) => {
       const ratios = pairs.map(({ a, b }) => b[m] / a[m]);
@@ -304,7 +321,8 @@ function verdicts(ss) {
     const base = median(ss.flatMap(({ pairs }) => pairs.map(({ a }) => a[m])));
     const cand = median(ss.flatMap(({ pairs }) => pairs.map(({ b }) => b[m])));
     res[m] = {
-      sessions: per, maxControlDev: maxDev, base, cand, change: cand / base - 1,
+      sessions: per, maxControlDev: maxDev, maxControlDevByArm: maxDevByArm, base, cand,
+      change: median(per.map((p) => p.median)) - 1,
       qualified: per.every((p) => p.clear) && per.every((p) => Math.sign(p.median - 1) === Math.sign(per[0].median - 1)),
       earlyStop: sameSide && maxDev !== null && beyondFloor(minDev, Math.max(band, 2 * maxDev)),
     };
@@ -315,13 +333,28 @@ function verdicts(ss) {
 const v = verdicts(sessions);
 if (o['save-noise'] && controls > 0) {
   const store = fs.existsSync(o['save-noise']) ? JSON.parse(fs.readFileSync(o['save-noise'], 'utf8')) : {};
-  for (const arm of arms) store[noiseKey(arm)] = { measured: meta.started, maxDev: Object.fromEntries(METRICS.map((m) => [m, v[m].maxControlDev])), runs: sessions.length * controls * 2, version: 2 };
+  const saveArm = (key, name) => {
+    const maxDev = Object.fromEntries(METRICS.map((m) => [m, v[m].maxControlDevByArm?.[name] ?? null]));
+    if (METRICS.some((m) => maxDev[m] === null)) return;
+    const runs = sessions.reduce((n, s) => n + s.ctl.filter((c) => c.arm === name).length * 2, 0);
+    store[key] = { measured: meta.started, maxDev, runs, version: 2 };
+  };
+  if (noiseKey(A) === noiseKey(B)) {
+    const maxDev = Object.fromEntries(METRICS.map((m) => [m, v[m].maxControlDev]));
+    if (METRICS.every((m) => maxDev[m] !== null)) {
+      store[noiseKey(A)] = { measured: meta.started, maxDev, runs: sessions.length * controls * 2, version: 2 };
+    }
+  } else {
+    saveArm(noiseKey(A), A.name);
+    saveArm(noiseKey(B), B.name);
+  }
   fs.writeFileSync(o['save-noise'], JSON.stringify(store, null, 1) + '\n');
 }
 
 const fmt = (x, m) => (m === 'peak' ? x.toLocaleString('en-US') : x.toFixed(2));
 const floorOf = (m) => Math.max(band, v[m].maxControlDev ?? Infinity);
 const word = (m) => {
+  if (!v[m].qualified) return 'no clear change';
   const c = v[m].change;
   if (!beyondFloor(Math.abs(c), floorOf(m))) return 'no clear change';
   return `${Math.abs(c * 100).toFixed(1)}% ${c < 0 ? 'lower' : 'higher'}`;
