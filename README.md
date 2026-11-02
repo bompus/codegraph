@@ -801,7 +801,7 @@ codegraph init [path]             # Initialize a project + build its graph (one 
 codegraph uninit [path]           # Remove CodeGraph from a project (--force to skip prompt)
 codegraph index [path]            # Full index (--force to re-index, --quiet for less output)
 codegraph sync [path]             # Incremental update
-codegraph status [path]           # Show statistics
+codegraph status [path]           # Show statistics (--json, --strict)
 codegraph ui [path]               # Browser viewer (alias: web; --port, --no-open); not released yet, needs CODEGRAPH_UI=1
 codegraph unlock [path]           # Remove a stale lock file that's blocking indexing
 codegraph query <search>          # Search symbols (--kind, --limit, --json)

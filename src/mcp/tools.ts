@@ -36,7 +36,7 @@ import {
   type WorktreeIndexMismatch,
 } from '../sync/worktree';
 import type { PendingFile } from '../sync';
-import type { Node, Edge, SearchResult, Subgraph, NodeKind, GraphStats } from '../types';
+import type { Node, Edge, SearchResult, Subgraph, NodeKind, GraphStats, Language } from '../types';
 import type { NodeSpan } from '../db/queries';
 import { isDistinctiveIdentifier, isQueryNameToken, isTestFile, isTestPath, normalizeNameToken, splitAtCjkSwitches, STOP_WORDS } from '../search/query-utils';
 import { groupDefinitions, isQualifiedSymbol, lastQualifierPart, matchesSymbol, qualifiedSymbolMatches } from '../graph/symbol-lookup';
@@ -10424,11 +10424,22 @@ export class ToolHandler {
       }
     }
 
+    // Beside the file count, how many yielded symbols: it is what tells a
+    // language that parsed from one that is only listed.
+    const coverage = cg.getLanguageCoverage();
     lines.push('', '**Languages:**');
     for (const [lang, count] of Object.entries(stats.filesByLanguage)) {
       if ((count as number) > 0) {
-        lines.push(`- ${lang}: ${count}`);
+        const parsed = coverage.parsedFilesByLanguage[lang as Language];
+        lines.push(parsed === undefined || parsed === count ? `- ${lang}: ${count}` : `- ${lang}: ${count} (${parsed} with symbols)`);
       }
+    }
+    if (coverage.unparsedLanguages.length > 0) {
+      lines.push(
+        '',
+        `**No symbols from:** ⚠ ${coverage.unparsedLanguages.join(', ')} ` +
+        `— those files are indexed, but nothing in them can be searched or traced; Read them directly.`
+      );
     }
 
     // Whole-index degradation (#876): when live watching has permanently
