@@ -675,6 +675,9 @@ use self::names::*;
 use self::object_literal::LiteralProperty;
 use self::prefilter::*;
 
+/// What a `package.json` says: its `name`, and every dependency name.
+pub(in crate::resolve) type PackageManifest = (Option<String>, HashSet<String>);
+
 #[cfg_attr(feature = "addon", napi)]
 pub struct KernelResolver {
     // Option so close() can drop the Connection deterministically — see
@@ -852,6 +855,10 @@ pub struct KernelResolver {
     /// manifest_own_packages, by directory.
     manifest_own_memo: HashMap<String, Rc<HashSet<String>>>,
     manifest_external_memo: HashMap<String, Rc<HashSet<String>>>,
+    /// packageManifest (upstream ambient-modules.ts), by directory.
+    pkg_manifest_memo: HashMap<String, Option<Rc<PackageManifest>>>,
+    /// packageFolder, by directory.
+    pkg_folder_memo: HashMap<String, String>,
     /// lexicalScopeOf, by candidate id: the scoping function body's lines.
     lexical_scope_memo: HashMap<String, Option<(i64, i64)>>,
     /// jsDeclarationReachable's candidate-side walk, by (candidate id,
@@ -1136,6 +1143,8 @@ impl KernelResolver {
             objc_hierarchy_memo: HashMap::new(),
             manifest_own_memo: HashMap::new(),
             manifest_external_memo: HashMap::new(),
+            pkg_manifest_memo: HashMap::new(),
+            pkg_folder_memo: HashMap::new(),
             lexical_scope_memo: HashMap::new(),
             js_decl_scope_memo: HashMap::new(),
             bare_name_memo: None,

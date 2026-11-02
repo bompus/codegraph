@@ -996,8 +996,21 @@ impl KernelResolver {
     pub(super) fn ts_import_target_visible(&mut self, node: &KNode, source_file: &str, r: &ResolveRefIn) -> Res<bool> {
         let Some(scan) = self.ts_scope_scan(&node.file_path) else { return Ok(true) };
         let Some(block) = scan.blocks.iter().find(|b| b.ambient && b.contains(node.start_line, node.start_column)) else { return Ok(true) };
-        Ok(self.import_mappings(source_file)?.iter().any(|m| m.source == block.name)
-            || self.import_mappings(&r.file_path)?.iter().any(|m| m.source == block.name))
+        if self.import_mappings(source_file)?.iter().any(|m| m.source == block.name) {
+            return Ok(true);
+        }
+        let mappings = self.import_mappings(&r.file_path)?;
+        if mappings.iter().any(|m| m.source == block.name) {
+            return Ok(true);
+        }
+        // Importing the declaring file itself brings its block into the
+        // program (reachesAmbientModule's `file === declaringFile`).
+        for m in mappings.iter() {
+            if self.resolve_import_path(&m.source, &r.file_path, &r.language)?.as_deref() == Some(node.file_path.as_str()) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn ts_namespace_member(&mut self, file: &str, written: &str, r: &ResolveRefIn, imported: bool) -> Res<Option<Arc<KNode>>> {
@@ -1041,6 +1054,76 @@ impl KernelResolver {
     /// The files whose script `declare module '<specifier>'` blocks declare
     /// `specifier`, indexed by name — upstream's `scanned.bySpecifier`. Built
     /// on first lookup; each file's scope scan is one text pass, memoized.
+    /// What a `package.json` in `dir` says: its `name` and every dependency
+    /// name. None for no manifest, as for a `{"type":"module"}`, which says
+    /// how Node reads a folder (upstream ambient-modules.ts parseManifest).
+    fn package_manifest(&mut self, dir: &str) -> Option<Rc<(Option<String>, HashSet<String>)>> {
+        if let Some(hit) = self.pkg_manifest_memo.get(dir) {
+            return hit.clone();
+        }
+        let path = if dir.is_empty() { "package.json".to_string() } else { format!("{dir}/package.json") };
+        let mut manifest = None;
+        if let Some(file) = self.read_file(&path) {
+            let text = file.text();
+            let name = re!(r#""name"\s*:\s*"([^"]+)""#).captures(text).map(|m| m[1].to_string());
+            let mut deps = HashSet::new();
+            for block in re!(r#""(?:dependencies|devDependencies|peerDependencies|optionalDependencies)"\s*:\s*\{([^}]*)\}"#).captures_iter(text) {
+                for key in re!(r#""([^"]+)"\s*:"#).captures_iter(&block[1]) {
+                    deps.insert(key[1].to_string());
+                }
+            }
+            if name.is_some() || !deps.is_empty() {
+                manifest = Some(Rc::new((name, deps)));
+            }
+        }
+        self.pkg_manifest_memo.insert(dir.to_string(), manifest.clone());
+        manifest
+    }
+
+    /// The folder of the package `dir` is in: the nearest at or above it with
+    /// a package of its own, `""` for the repository's.
+    fn package_folder(&mut self, dir: &str) -> String {
+        if let Some(hit) = self.pkg_folder_memo.get(dir) {
+            return hit.clone();
+        }
+        let mut chain = Vec::new();
+        let mut at = dir;
+        let answer = loop {
+            chain.push(at.to_string());
+            if at.is_empty() || self.package_manifest(at).is_some() {
+                break at.to_string();
+            }
+            at = at.rsplit_once('/').map_or("", |(d, _)| d);
+        };
+        for dir in chain {
+            self.pkg_folder_memo.insert(dir, answer.clone());
+        }
+        answer
+    }
+
+    /// Whether a `declare module` in `declaring_file` can be in the program
+    /// `from_file` is in: its own package, a package nested under it, or one
+    /// that depends on it. Each package of a monorepo has a program of its own,
+    /// so a stub in one package answers no sibling's import (upstream
+    /// ambient-modules.ts reachesProgram).
+    pub(super) fn declaring_file_answers(&mut self, declaring_file: &str, from_file: &str) -> bool {
+        let test = is_test_path(declaring_file);
+        if test && !is_test_path(from_file) {
+            return false;
+        }
+        let dir_of = |file: &str| file.rsplit_once('/').map_or("", |(d, _)| d).to_string();
+        let folder = self.package_folder(&dir_of(declaring_file));
+        if folder.is_empty() || from_file.starts_with(&format!("{folder}/")) {
+            return true;
+        }
+        if test {
+            return false;
+        }
+        let Some(name) = self.package_manifest(&folder).and_then(|m| m.0.clone()) else { return false };
+        let from_folder = self.package_folder(&dir_of(from_file));
+        self.package_manifest(&from_folder).is_some_and(|m| m.1.contains(&name))
+    }
+
     fn ts_ambient_files(&mut self, specifier: &str) -> Res<Vec<String>> {
         if self.ts_ambient_index.is_none() {
             let mut index: HashMap<String, Vec<String>> = HashMap::new();
@@ -1056,16 +1139,43 @@ impl KernelResolver {
         Ok(self.ts_ambient_index.as_ref().unwrap().get(specifier).cloned().unwrap_or_default())
     }
 
+    /// Whether `specifier` names a module of a package the repository holds (a
+    /// workspace member or path dependency) that a real file implements: that
+    /// module is what runs, and a `declare module` of its name only describes
+    /// it. A file a `paths` alias names is not that, and neither is a package
+    /// whose module is only a declaration file.
+    fn is_repository_module(&mut self, specifier: &str, file: Option<&str>, r: &ResolveRefIn) -> bool {
+        let Some(file) = file else { return false };
+        if crate::resolve::imports::is_declaration_file(file) {
+            return false;
+        }
+        self.workspace_import_targets(specifier, &r.file_path).is_some()
+    }
+
     pub(super) fn ts_ambient_lookup(&mut self, specifier: &str, exported: &str, default: bool, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
         if specifier.starts_with('.') || specifier.starts_with('/') { return Ok(None); }
         let specifier = specifier.strip_prefix("node:").unwrap_or(specifier);
+        // A module of the repository's own packages comes before a block: the
+        // module is what runs, and the block only describes it. A name only the
+        // block declares still resolves to it.
+        if let Some(file) = self.resolve_import_path(specifier, &r.file_path, &r.language)? {
+            if self.is_repository_module(specifier, Some(&file), r) {
+                if exported == "*" {
+                    return Ok(None);
+                }
+                let want = ExportWant { is_default: default, is_namespace: false, exported_name: exported.to_string(), member_name: None };
+                if self.find_exported_symbol(&file, &want, &r.language, &mut HashSet::new(), 0)?.is_some() {
+                    return Ok(None);
+                }
+            }
+        }
         let memo_key = (format!("scope-export\0{specifier}\0{}", r.file_path), format!("{default}\0{exported}"));
         let cached = self.ts_ambient_memo.get(&memo_key).cloned();
         if cached == Some(None) { return Ok(None); }
         let files = self.ts_ambient_files(specifier)?;
         let mut hits = Vec::new();
         for file in files.iter().filter(|f| cached.as_ref().is_none_or(|cached| cached.as_ref() == Some(*f))) {
-            if is_test_path(file) && !is_test_path(&r.file_path) { continue; }
+            if !self.declaring_file_answers(file, &r.file_path) { continue; }
             let Some(scan) = self.ts_scope_scan(file) else { continue };
             for block in scan.blocks.iter().filter(|b| b.ambient && b.name.strip_prefix("node:").unwrap_or(&b.name) == specifier) {
                 if exported == "*" {
@@ -1139,9 +1249,10 @@ impl KernelResolver {
         declaring_file: &str,
         r: &ResolveRefIn,
         through: bool,
+        answers: bool,
     ) -> Res<bool> {
         if source == specifier {
-            return Ok(true);
+            return Ok(answers);
         }
         if !(source.starts_with('.') || source.starts_with('/')) {
             return Ok(false);
@@ -1170,7 +1281,8 @@ impl KernelResolver {
         specifier: &str,
         declaring_file: &str,
     ) -> Res<bool> {
-        if self.ref_in_module_block(r, specifier)? {
+        let answers = self.declaring_file_answers(declaring_file, &r.file_path);
+        if answers && self.ref_in_module_block(r, specifier)? {
             return Ok(true);
         }
         let head = r.reference_name.split('.').next().unwrap_or("");
@@ -1181,7 +1293,7 @@ impl KernelResolver {
                 .and_then(|b| b.target_spec.clone())
         };
         if let Some(source) = binding {
-            return self.leads_to_ambient(&source, specifier, declaring_file, r, true);
+            return self.leads_to_ambient(&source, specifier, declaring_file, r, true, answers);
         }
         if !LAST_NAME_KINDS.contains(&r.reference_kind.as_str()) {
             return Ok(false);
@@ -1194,7 +1306,7 @@ impl KernelResolver {
                 .collect()
         };
         for source in sources {
-            if self.leads_to_ambient(&source, specifier, declaring_file, r, false)? {
+            if self.leads_to_ambient(&source, specifier, declaring_file, r, false, answers)? {
                 return Ok(true);
             }
         }

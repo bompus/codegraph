@@ -138,7 +138,7 @@ impl KernelResolver {
 
     /// workspaceImportTargets (workspace-packages.ts): what the package's
     /// manifest declares for the import, and its directory form.
-    fn workspace_import_targets(&self, import_path: &str, from_file: &str) -> Option<WorkspaceTargets> {
+    pub(super) fn workspace_import_targets(&self, import_path: &str, from_file: &str) -> Option<WorkspaceTargets> {
         let ws = self.workspaces.as_ref()?;
         let (name, dir) = self.match_workspace_package(import_path, from_file)?;
         let subpath = &import_path[name.len()..]; // '' or '/widgets'
@@ -1004,6 +1004,21 @@ impl KernelResolver {
                 .starts_with(&format!("{}.", imp.local_name));
             if imp.local_name != r.reference_name && !is_member {
                 continue;
+            }
+            // A `declare module` the import's file can see describes the
+            // module ahead of a package whose module is only a declaration
+            // file; a module of the repository's own packages is what runs
+            // (findImportedExport in import-resolver.ts). `ts_ambient_lookup`
+            // applies both rules.
+            if is_esm_family(&r.language) {
+                let want = if imp.is_namespace {
+                    r.reference_name.rsplit('.').next().unwrap_or(&r.reference_name).to_string()
+                } else {
+                    imp.exported_name.clone()
+                };
+                if let Some(node) = self.ts_ambient_lookup(&imp.source, &want, imp.is_default, r)? {
+                    return Ok(Some(KCand { node, confidence: 0.9, resolved_by: "import" }));
+                }
             }
             let mut resolved_path =
                 self.resolve_import_path(&imp.source, &r.file_path, &r.language)?;
@@ -1940,7 +1955,7 @@ impl KernelResolver {
     }
 }
 
-fn is_declaration_file(path: &str) -> bool {
+pub(super) fn is_declaration_file(path: &str) -> bool {
     [".d.ts", ".d.mts", ".d.cts"].iter().any(|ext| path.ends_with(ext))
 }
 
@@ -1996,7 +2011,7 @@ fn indexed_spelling(file_path: &str, language: &str) -> String {
 
 /// WorkspaceImportTargets (workspace-packages.ts): where an import of a
 /// project package lands before any file is probed.
-struct WorkspaceTargets {
+pub(super) struct WorkspaceTargets {
     /// The entries the package declares for the import, best first.
     declared: Vec<String>,
     /// The package's directory plus the import's subpath, extension-less.
