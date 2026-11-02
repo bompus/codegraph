@@ -587,3 +587,229 @@ impl KernelResolver {
         }))
     }
 }
+
+impl KernelResolver {
+    /// The method `method` of the type `type_qn` declared in `file`.
+    fn java_method_of(
+        &mut self,
+        type_qn: &str,
+        method: &str,
+        file: &str,
+    ) -> Res<Option<Arc<KNode>>> {
+        Ok(self
+            .nodes_by_qualified_name(&format!("{type_qn}::{method}"))?
+            .iter()
+            .find(|n| n.kind == "method" && n.file_path == file)
+            .cloned())
+    }
+
+    /// The static field `name` of Java type `owner`, its own or one it
+    /// inherits from the types it extends or implements (an interface's
+    /// constant), a few levels up. An enum's constant counts.
+    fn java_static_field(
+        &mut self,
+        owner: &KNode,
+        name: &str,
+    ) -> Res<Option<Arc<KNode>>> {
+        let mut seen: HashSet<String> = HashSet::from([owner.id.clone()]);
+        let mut frontier: Vec<Arc<KNode>> = vec![Arc::new(owner.clone())];
+        for _depth in 0..5 {
+            if frontier.is_empty() {
+                break;
+            }
+            let mut next: Vec<Arc<KNode>> = Vec::new();
+            for ty in &frontier {
+                let qn = format!("{}::{name}", ty.qualified_name);
+                if let Some(own) = self
+                    .nodes_by_qualified_name(&qn)?
+                    .iter()
+                    .find(|n| {
+                        n.file_path == ty.file_path
+                            && matches!(n.kind.as_str(), "field" | "constant" | "enum_member")
+                    })
+                    .cloned()
+                {
+                    return Ok(Some(own));
+                }
+                for sup in self.supertype_nodes(&ty.id)? {
+                    if seen.insert(sup.id.clone()) {
+                        next.push(sup);
+                    }
+                }
+            }
+            frontier = next;
+        }
+        Ok(None)
+    }
+
+    /// Java's `Type.FIELD.m()` — `Consts.HELPER.go()`,
+    /// `Outer.Inner.SHARED.run()`, `Color.RED.hex()`: a call on a value a type
+    /// holds in a static field, an interface's constant or an enum's constant.
+    /// The field is the type's own or one it inherits, and its value is typed
+    /// by its own declaration, read with its own file's imports: the method an
+    /// anonymous class it is initialized with declares (a `CREATOR`'s
+    /// `createFromParcel`), else the class a `new X(…)` initializer builds,
+    /// else the declared type's. A Kotlin object's `INSTANCE` and a class's
+    /// `Companion`, as Java writes them, are the type itself. `Some(None)` — no
+    /// edge — for a field of a type from outside the project or a value of
+    /// one; `None` when the receiver is no type's field (a local, a nested
+    /// type), for the strategies below.
+    pub(super) fn match_java_static_field_call(
+        &mut self,
+        receiver: &str,
+        method: &str,
+        r: &ResolveRefIn,
+    ) -> Res<Option<Option<KCand>>> {
+        let Some(m) = re!(r"^((?:[a-z_$][A-Za-z0-9_$]*\.)*(?:[A-Z][A-Za-z0-9_$]*\.)*[A-Z][A-Za-z0-9_$]*)\.([A-Za-z_$][A-Za-z0-9_$]*)$")
+            .captures(receiver)
+        else {
+            return Ok(None);
+        };
+        let owner_written = m[1].to_string();
+        let field_name = m[2].to_string();
+        let head = owner_written.split('.').next().unwrap_or("").to_string();
+        // A local or a field of that name holds a value, not a type.
+        if head.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            && (self.infer_local_receiver_type(&head, r, false)?.is_some()
+                || self.java_enclosing_field_type(&head, r)?.is_some())
+        {
+            return Ok(None);
+        }
+        let Some(written) = Self::java_type_name(&owner_written) else {
+            return Ok(None);
+        };
+        let Some(owner_type) = self.java_type_ref(&written, &r.file_path, r)? else {
+            return Ok(Some(None));
+        };
+        let owners: Vec<Arc<KNode>> = match &owner_type.decl {
+            Some(decl) => vec![decl.clone()],
+            None => {
+                let last = owner_type.name.rsplit("::").next().unwrap_or(&owner_type.name).to_string();
+                let mut found = Vec::new();
+                for decl in self.jvm_type_decls(&last)? {
+                    if (decl.qualified_name == owner_type.name
+                        || decl.qualified_name.ends_with(&format!("::{}", owner_type.name)))
+                        && self.is_java_type_nameable(&decl, &r.file_path, r)?
+                    {
+                        found.push(decl);
+                    }
+                }
+                found
+            }
+        };
+        let owner = if owners.len() == 1 {
+            owners.first().cloned()
+        } else {
+            owners.iter().find(|d| d.file_path == r.file_path).cloned()
+        };
+        let Some(owner) = owner else { return Ok(None) };
+        let found = |node: Option<Arc<KNode>>| -> Option<Option<KCand>> {
+            node.map(|node| Some(KCand { node, confidence: 0.9, resolved_by: "instance-method" }))
+        };
+        if owner.language == "kotlin" && (field_name == "INSTANCE" || field_name == "Companion") {
+            let hit = self.java_method_of(&owner.qualified_name, method, &owner.file_path)?;
+            return Ok(found(hit).or(Some(None)));
+        }
+        // `Outer.Inner.m()` is a static call on a nested type, not on a field.
+        if self
+            .nodes_by_qualified_name(&format!("{}::{field_name}", owner.qualified_name))?
+            .iter()
+            .any(|n| java_type_kind(&n.kind))
+        {
+            return Ok(None);
+        }
+        let Some(field) = self.java_static_field(&owner, &field_name)? else {
+            return Ok(None);
+        };
+        if field.language != "java" {
+            return Ok(None);
+        }
+        if field.kind == "enum_member" {
+            // A constant's own body overrides first (`GREEN { String hex() }`),
+            // then the enum's method.
+            let enum_qn = field
+                .qualified_name
+                .rsplit_once("::")
+                .map(|(o, _)| o.to_string())
+                .unwrap_or_default();
+            let enum_decl = self
+                .nodes_by_qualified_name(&enum_qn)?
+                .iter()
+                .find(|n| n.file_path == field.file_path && java_type_kind(&n.kind))
+                .cloned();
+            let segments: Vec<&str> = enum_qn.split("::").collect();
+            let chain = if segments.len() > 1
+                && segments[0].chars().next().is_some_and(|c| c.is_ascii_lowercase())
+            {
+                segments[1..].join("::")
+            } else {
+                enum_qn.clone()
+            };
+            if let Some(hit) = self
+                .java_method_of(&field.qualified_name, method, &field.file_path)?
+                .or(self.java_method_of(&enum_qn, method, &field.file_path)?)
+            {
+                return Ok(Some(Some(KCand { node: hit, confidence: 0.9, resolved_by: "instance-method" })));
+            }
+            return Ok(match enum_decl {
+                Some(decl) => Ok::<_, Error>(
+                    self.resolve_on_java_type(
+                        &JavaTypeRef { name: chain, decl: Some(decl) },
+                        method,
+                        r,
+                    )?
+                    .map(Some),
+                )?,
+                None => Some(None),
+            });
+        }
+        // An anonymous class the field is initialized with: its own method.
+        let anon_prefix = format!("{}::<", field.qualified_name);
+        let anons: Vec<Arc<KNode>> = self
+            .nodes_in_file(&field.file_path)?
+            .iter()
+            .filter(|n| {
+                n.kind == "class"
+                    && n.qualified_name.starts_with(&anon_prefix)
+                    && n.name.contains("$anon@")
+            })
+            .cloned()
+            .collect();
+        for anon in anons {
+            if let Some(hit) = self.java_method_of(&anon.qualified_name, method, &field.file_path)? {
+                return Ok(Some(Some(KCand { node: hit, confidence: 0.9, resolved_by: "instance-method" })));
+            }
+        }
+        // A `new X(…)` initializer builds X, the declared type's subtype at
+        // most.
+        if let Some(lines) = self.read_file(&field.file_path) {
+            let from = ((field.start_line - 1).max(0) as usize).min(lines.len());
+            let to = (field.end_line.max(0) as usize).clamp(from, lines.len());
+            let decl_text = lines[from..to].join("\n");
+            if let Ok(built) = Self::cached_regex(&format!(
+                r"\b{}\s*=\s*new\s+((?:[\w$]+\s*\.\s*)*[\w$]+)\s*(?:<[^()]*>)?\s*\(",
+                regex::escape(&field.name)
+            )) {
+                if let Some(m) = built.captures(&decl_text) {
+                    let built_name = m[1].chars().filter(|c| !c.is_whitespace()).collect::<String>();
+                    if let Some(name) = Self::java_type_name(&built_name) {
+                        if let Some(built_type) = self.java_type_ref(&name, &field.file_path, r)? {
+                            if let Some(hit) = self.resolve_on_java_type(&built_type, method, r)? {
+                                return Ok(Some(Some(hit)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let Some(declared) = Self::field_signature_type(&field) else {
+            return Ok(Some(None));
+        };
+        Ok(match self.java_type_ref(&declared, &field.file_path, r)? {
+            Some(declared_type) => Ok::<_, Error>(
+                self.resolve_on_java_type(&declared_type, method, r)?.map(Some),
+            )?,
+            None => Some(None),
+        })
+    }
+}

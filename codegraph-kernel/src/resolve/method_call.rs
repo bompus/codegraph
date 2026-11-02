@@ -705,6 +705,14 @@ impl KernelResolver {
             return Ok(None);
         }
         if r.language == "cpp" && self.cpp_external_receiver(&object_or_class, r)? { return Ok(None); }
+        // A Java call on a value a type holds in a static field,
+        // `Consts.HELPER.go()`: typed by the field's declaration, or no edge
+        // for a library type's field.
+        if r.language == "java" && dotted {
+            if let Some(result) = self.match_java_static_field_call(&object_or_class, &method_name, r)? {
+                return Ok(result);
+            }
+        }
         if matches!(r.language.as_str(), "java" | "kotlin") {
             if let Some(hit) = self.enum_constant_call(&object_or_class, &method_name, r)? { return Ok(Some(hit)); }
         }
@@ -1178,6 +1186,14 @@ if inferred.is_none() && r.language == "dart" {
             McShape::Parsed { receiver, method, inferable, dotted } => (receiver, method, inferable, dotted),
             McShape::Done(res) => return Ok(res),
         };
+        // A Java call on a value a type holds in a static field,
+        // `Consts.HELPER.go()`: typed by the field's declaration, or no edge
+        // for a library type's field.
+        if r.language == "java" && dotted {
+            if let Some(result) = self.match_java_static_field_call(&object_or_class, &method_name, r)? {
+                return Ok(result);
+            }
+        }
         if matches!(r.language.as_str(), "java" | "kotlin") {
             if let Some(hit) = self.enum_constant_call(&object_or_class, &method_name, r)? { return Ok(Some(hit)); }
         }
