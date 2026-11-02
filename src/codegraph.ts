@@ -2823,6 +2823,14 @@ export class CodeGraph {
   }
 
   /**
+   * Every ordered pair of files where one imports the other — the edge list
+   * circular imports are found on. See {@link QueryBuilder.getFileImportPairs}.
+   */
+  getFileImportPairs(): Array<{ source: string; target: string }> {
+    return this.queries.getFileImportPairs();
+  }
+
+  /**
    * References from a symbol that never resolved to an indexed node — the
    * calls and type mentions that leave the index. Lets a reader account for
    * the call sites that have no callee row instead of implying there are none.

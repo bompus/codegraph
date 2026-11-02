@@ -127,6 +127,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `codegraph status` now shows how many of a language's files yielded symbols when that isn't all of them, and warns when none did, so a parser that isn't working no longer looks healthy, and `codegraph status --strict` exits non-zero on that or on an index that's missing, unfinished or out of date, so packaging and CI can gate on it (#1658). Thanks @ferrine.
 
 - In C#, a MediatR `Send` or `Publish` now reaches a handler written against the project's own interface, like `ICommandHandler<T>` or `IQueryHandler<T, R>`, or one from a package, such as the Mediator library or Ardalis.SharedKernel, with nothing to configure. A command built by a mapper, like `mapper.Map<CreateBooking>(request)`, is read as what it is, and two solutions kept side by side in one repository no longer link to each other's handlers. Thanks @PressXtoChris.
+- New `codegraph cycles` command lists the groups of files that import each other in a circle, as text or `--json`, and exits 1 when it finds any, so it works as a pre-commit or CI check (#888). Thanks @jiangyq9 and @goutham80808.
 
 ### Fixes
 
