@@ -1186,7 +1186,7 @@ impl KernelResolver {
         let decl = lines[from..to].join("\n");
         for pat in pats {
             let Some(type_name) =
-                self.infer_match_text(&decl, &value.name, std::slice::from_ref(pat), false)?
+                self.infer_match_text(&decl, &value.name, std::slice::from_ref(pat), false, &value.language)?
             else {
                 continue;
             };

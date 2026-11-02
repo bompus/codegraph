@@ -284,7 +284,9 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
         "java",
         vec![
             both(r"\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.]*)", b"=", 0),
-            rp(r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)(?:\s*<[^;=(){}<>]*(?:<[^;=(){}<>]*>[^;=(){}<>]*)*>)?(?:\s*\[[\s,]*\])*\s+", r"\s*[=;,:)]", false, true, true, 0),
+            // A package written before the type is kept (`org.app.Message message`):
+            // it, not a same-named import, says which type the local is.
+            rp(r"(?-u:\b)((?:[a-z_$][A-Za-z0-9_$]*\.)*[A-Z][A-Za-z0-9_.]*)(?:\s*<[^;=(){}<>]*(?:<[^;=(){}<>]*>[^;=(){}<>]*)*>)?(?:\s*\[[\s,]*\])*\s+", r"\s*[=;,:)]", false, true, true, 0),
         ],
     );
     m.insert(

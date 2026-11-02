@@ -68,11 +68,12 @@ impl KernelResolver {
         receiver: &str,
         pats: &'static [ReceiverPattern],
         preserve: bool,
+        language: &str,
     ) -> Res<Option<String>> {
         if utf16_len_exceeds(line, 10_000) {
             return Ok(None);
         }
-        self.infer_match_text(line, receiver, pats, preserve)
+        self.infer_match_text(line, receiver, pats, preserve, language)
     }
 
     /// infer_match_line without the long-line cap: resolveImportedInstanceMember
@@ -83,6 +84,7 @@ impl KernelResolver {
         receiver: &str,
         pats: &'static [ReceiverPattern],
         preserve: bool,
+        language: &str,
     ) -> Res<Option<String>> {
         for pat in pats {
             let mut from = 0;
@@ -147,9 +149,18 @@ impl KernelResolver {
                         continue;
                     }
                 }
-                match self.normalize_inferred_type_name(m1)? {
+                let normalized = if language == "java" {
+                    Self::java_type_name(m1)
+                } else {
+                    self.normalize_inferred_type_name(m1)?
+                };
+                match normalized {
                     Some(t) => {
-                        return Ok(Some(if preserve { m1.to_string() } else { t }));
+                        return Ok(Some(if preserve && language != "java" {
+                            m1.to_string()
+                        } else {
+                            t
+                        }));
                     }
                     None => break,
                 }
@@ -204,7 +215,7 @@ impl KernelResolver {
                 // An unknown replacement must not revive an earlier type;
                 // nested scopes' assignments never participate in this lookup.
                 return match lines.get((binding.line - 1).max(0) as usize) {
-                    Some(line) => self.infer_match_line(line, receiver, pats, preserve),
+                    Some(line) => self.infer_match_line(line, receiver, pats, preserve, &site.language),
                     None => Ok(None),
                 };
             }
@@ -236,7 +247,7 @@ impl KernelResolver {
                     break;
                 }
                 let line = &lines[i as usize];
-                if let Some(t) = self.infer_match_line(line, &scan_receiver, pats, preserve)? {
+                if let Some(t) = self.infer_match_line(line, &scan_receiver, pats, preserve, &site.language)? {
                     hit = Some(t);
                     break;
                 }
@@ -259,7 +270,7 @@ impl KernelResolver {
         }
         if component_scoped {
             for line in lines.iter().skip(call_idx + 1) {
-                if let Some(t) = self.infer_match_line(line, &scan_receiver, pats, preserve)? {
+                if let Some(t) = self.infer_match_line(line, &scan_receiver, pats, preserve, &site.language)? {
                     return Ok(Some(t));
                 }
             }
@@ -325,7 +336,7 @@ impl KernelResolver {
                     for (index, pattern) in patterns.iter().enumerate() {
                         if contains_receiver(*pattern) {
                             let end = patterns.get(index + 1).map_or(declaration.end_byte(), |n| n.start_byte());
-                            return self.infer_match_text(&text[pattern.start_byte()..end], receiver, pats, preserve);
+                            return self.infer_match_text(&text[pattern.start_byte()..end], receiver, pats, preserve, &site.language);
                         }
                     }
                 }
@@ -338,7 +349,7 @@ impl KernelResolver {
                         let binds_receiver = children.windows(2).any(|pair|
                             pair[0].kind() == "value_binding_pattern" && pair[1].kind() == "simple_identifier"
                             && &text[pair[1].start_byte()..pair[1].end_byte()] == receiver);
-                        if binds_receiver { return self.infer_match_text(header, receiver, pats, preserve); }
+                        if binds_receiver { return self.infer_match_text(header, receiver, pats, preserve, &site.language); }
                     }
                 }
             }
@@ -362,7 +373,7 @@ impl KernelResolver {
                     } else if matches!(parameter.kind(), "parameter" | "lambda_parameter") {
                         let name = named_children(parameter).into_iter().rfind(|n| n.kind() == "simple_identifier");
                         if name.is_some_and(|name| &text[name.start_byte()..name.end_byte()] == receiver) {
-                            return self.infer_match_text(&text[parameter.start_byte()..parameter.end_byte()], receiver, pats, preserve);
+                            return self.infer_match_text(&text[parameter.start_byte()..parameter.end_byte()], receiver, pats, preserve, &site.language);
                         }
                     }
                 }
@@ -621,7 +632,7 @@ impl KernelResolver {
         for i in (0..=ai).rev() {
             let line = &lines[i];
             if !line.is_empty() && !utf16_len_exceeds(line, 10_000) {
-                if let Some(t) = self.infer_match_line(line, &vn, pats, false)? {
+                if let Some(t) = self.infer_match_line(line, &vn, pats, false, "php")? {
                     return Ok(Some(t));
                 }
             }

@@ -68,7 +68,7 @@ impl KernelResolver {
 
     /// The innermost enclosing Java class/interface/method declaring `ty` as
     /// a type parameter: that declaration and the declaring scope's site.
-    fn java_type_parameter(&mut self, ty: &str, r: &ResolveRefIn) -> Res<Option<(String, ResolveRefIn)>> {
+    pub(super) fn java_type_parameter(&mut self, ty: &str, r: &ResolveRefIn) -> Res<Option<(String, ResolveRefIn)>> {
         let in_file = self.nodes_in_file(&r.file_path)?;
         let mut scopes: Vec<&Arc<KNode>> = in_file
             .iter()
@@ -833,7 +833,7 @@ if site.language == "dart" && site.reference_kind == "calls" {
     /// The type declarations `type_name` names for the supertype walk: every
     /// same-language, supertype-bearing node of that name (or qualified
     /// name), narrowed as `supertype_names` describes.
-    fn supertype_type_nodes(&mut self, type_name: &str, r: &ResolveRefIn, from_site: bool, qualified: bool) -> Res<Vec<Arc<KNode>>> {
+    pub(super) fn supertype_type_nodes(&mut self, type_name: &str, r: &ResolveRefIn, from_site: bool, qualified: bool) -> Res<Vec<Arc<KNode>>> {
         let named = if qualified { self.nodes_by_qualified_name(type_name)? } else { self.nodes_by_name(type_name)? };
         let mut type_nodes: Vec<Arc<KNode>> = named
             .iter()
@@ -1315,6 +1315,16 @@ Ok(self.dart_member_of(type_name, method, r, false)?
         // name; none of them when it names another (cpp_specialization_pool).
         let matches = self.cpp_specialization_pool(matches, r);
         if matches.is_empty() { return Ok(None); }
+        // Java: a same-named type in another JVM language (Scala's
+        // `play.api.data.Form` beside Java's `play.data.Form`) is the weaker
+        // candidate when no import pins one — a wildcard `import play.data.*`
+        // or the same package names none.
+        let matches = if r.language == "java" {
+            let java: Vec<Arc<KNode>> = matches.iter().filter(|m| m.language == "java").cloned().collect();
+            if java.is_empty() { matches } else { java }
+        } else {
+            matches
+        };
         let matches = self.cpp_visible_first(matches, r)?;
         let matches = self.within_cpp_translation_unit(matches, r, false)?;
         // A C++ call on a typed receiver takes the overload its arguments fit, not the first one

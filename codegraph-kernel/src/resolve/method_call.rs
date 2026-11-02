@@ -716,7 +716,11 @@ impl KernelResolver {
                 }
             }
         }
-
+        // Java: what the receiver's declaration says, read below as its
+        // declaration writes it, with the package or outer class the member
+        // reader drops (`PauseTest.Suite`, `io.kestra...HttpRequest`).
+        let mut java_declared: Option<super::java_receiver_type::JavaDeclared> = None;
+        let mut local_inferred = false;
 
         if inferable {
             if r.language == "go" {
@@ -829,7 +833,13 @@ impl KernelResolver {
 if inferred.is_none() && r.language == "dart" {
     inferred = self.infer_dart_field_receiver_type(&object_or_class, r)?;
 }
-            if inferred.is_none() { inferred = self.infer_declared_member_receiver_type(&object_or_class, r)?; }
+            // A Java field the class around the call declares is read below as
+            // its declaration writes it; the member reader still types a field
+            // the class inherits.
+            if inferred.is_none() && dotted && r.language == "java" {
+                java_declared = self.java_receiver_declared_type(&object_or_class, r)?;
+            }
+            if inferred.is_none() && java_declared.is_none() { inferred = self.infer_declared_member_receiver_type(&object_or_class, r)?; }
             if inferred.is_none() && r.language == "go" {
                 if let Some(c) = self.match_go_factory_receiver(&object_or_class, &method_name, r)? {
                     return Ok(Some(c));
@@ -866,6 +876,16 @@ if inferred.is_none() && r.language == "dart" {
                 }
             }
             if let Some(t) = inferred.take() {
+                if r.language == "java" {
+                    local_inferred = true;
+                    // A type parameter goes to its bound, which is the type
+                    // whose method the call runs (`TState extends State`).
+                    if let Some(bound) = self.inferred_member_type_bound(&t, r)? {
+                        if let Some(hit) = self.java_typed_receiver(&bound, &method_name, r)? {
+                            return Ok(hit);
+                        }
+                    }
+                } else {
                 let Some(mut t) = self.inferred_member_type_bound(&t, r)? else { return Ok(None) };
                 if is_esm_family(&r.language) && t.ends_with(']') {
                     match self.ts_bracketed_type(&t, &method_name, r)? {
@@ -921,6 +941,31 @@ if inferred.is_none() && r.language == "dart" {
                         .map(|node| KCand { node, confidence: 0.9, resolved_by: "instance-method" }));
                 }
                 return Ok(member);
+                }
+            }
+        }
+
+        // Java: a field receiver — `mRepo`, `this.mRepo`,
+        // `Outer.this.mRepo`, or a chain of fields `mState.menu` — resolves
+        // on its declared type, and a library type (`Handler`, `Context`)
+        // gets NO edge rather than the name-only guesses below.
+        if r.language == "java" && dotted && !local_inferred {
+            let declared = match java_declared.take() {
+                Some(d) => Some(d),
+                None => self.java_receiver_declared_type(&object_or_class, r)?,
+            };
+            match declared {
+                Some(super::java_receiver_type::JavaDeclared::External) => return Ok(None),
+                Some(super::java_receiver_type::JavaDeclared::Type(ty)) => {
+                    if let Some(hit) = self.resolve_on_java_type(&ty, &method_name, r)? {
+                        return Ok(Some(hit));
+                    }
+                    let last = ty.name.rsplit("::").next().unwrap_or(&ty.name).to_string();
+                    if self.is_undeclared_type_name(&last, r)? {
+                        return Ok(None);
+                    }
+                }
+                None => {}
             }
         }
 
@@ -934,7 +979,9 @@ if inferred.is_none() && r.language == "dart" {
         // this.field arms: `this.` receivers are excluded by the claim gate —
         // dead inside boundReceiver.
 
-        if (r.language == "java" || r.language == "kotlin") && dotted {
+        // Kotlin (Java's fields are read in the branch above): receiver may be
+        // a field whose name doesn't match the type by Kotlin's convention.
+        if r.language == "kotlin" && dotted {
             if let Some(hit) = self.jvm_field_receiver(&object_or_class, &method_name, r)? {
                 return Ok(Some(hit));
             }
@@ -1090,6 +1137,8 @@ if inferred.is_none() && r.language == "dart" {
         if matches!(r.language.as_str(), "java" | "kotlin") {
             if let Some(hit) = self.enum_constant_call(&object_or_class, &method_name, r)? { return Ok(Some(hit)); }
         }
+        let mut java_declared: Option<super::java_receiver_type::JavaDeclared> = None;
+        let mut local_inferred = false;
         if inferable {
             if r.language == "go" {
                 if let Some(verdict) = self.go_asserted_member(&object_or_class, &method_name, r)? { return Ok(verdict); }
@@ -1134,7 +1183,14 @@ if inferred.is_none() && r.language == "dart" {
 if inferred.is_none() && r.language == "dart" {
     inferred = self.infer_dart_field_receiver_type(&object_or_class, r)?;
 }
-            if inferred.is_none() && cpp_alias.is_none() { inferred = self.infer_declared_member_receiver_type(&object_or_class, r)?; }
+            // A Java field the class around the call declares is read as its
+            // declaration writes it, with the package or outer class the
+            // member reader drops; the member reader still types an inherited
+            // field.
+            if inferred.is_none() && dotted && r.language == "java" {
+                java_declared = self.java_receiver_declared_type(&object_or_class, r)?;
+            }
+            if inferred.is_none() && cpp_alias.is_none() && java_declared.is_none() { inferred = self.infer_declared_member_receiver_type(&object_or_class, r)?; }
             let mut awaited_file: Option<String> = None;
             if inferred.is_none() && is_esm_family(&r.language) {
                 if let Some(a) = self.infer_esm_awaited_call_type(&object_or_class, r)? {
@@ -1165,6 +1221,16 @@ if inferred.is_none() && r.language == "dart" {
                 }
             }
             if let Some(t) = inferred {
+                if r.language == "java" {
+                    local_inferred = true;
+                    // A type parameter goes to its bound, which is the type
+                    // whose method the call runs (`TState extends State`).
+                    if let Some(bound) = self.inferred_member_type_bound(&t, r)? {
+                        if let Some(hit) = self.java_typed_receiver(&bound, &method_name, r)? {
+                            return Ok(hit);
+                        }
+                    }
+                } else {
                 let Some(mut t) = self.inferred_member_type_bound(&t, r)? else { return Ok(None) };
                 if is_esm_family(&r.language) && awaited_file.is_none() && t.ends_with(']') {
                     match self.ts_bracketed_type(&t, &method_name, r)? {
@@ -1257,6 +1323,7 @@ if inferred.is_none() && r.language == "dart" {
                         }
                     }
                 }
+                }
             }
             if let Some(alias) = &cpp_alias {
                 let dot = self.cpp_receiver_operator_is(&object_or_class, ".", r);
@@ -1298,9 +1365,34 @@ if inferred.is_none() && r.language == "dart" {
             return self.match_ts_this_field_call(field, &method_name, r, element);
         }
 
-        // Java/Kotlin field receiver inference — non-exclusive (a miss still
-        // reaches the name strategies, exactly like TS).
-        if (r.language == "java" || r.language == "kotlin") && dotted {
+        // Java: a field receiver — `mRepo`, `this.mRepo`,
+        // `Outer.this.mRepo`, or a chain of fields — resolves on its declared
+        // type, and a library type gets NO edge rather than the name-only
+        // guesses below.
+        if r.language == "java" && dotted && !local_inferred {
+            let declared = match java_declared.take() {
+                Some(d) => Some(d),
+                None => self.java_receiver_declared_type(&object_or_class, r)?,
+            };
+            match declared {
+                Some(super::java_receiver_type::JavaDeclared::External) => return Ok(None),
+                Some(super::java_receiver_type::JavaDeclared::Type(ty)) => {
+                    if let Some(hit) = self.resolve_on_java_type(&ty, &method_name, r)? {
+                        return Ok(Some(hit));
+                    }
+                    let last = ty.name.rsplit("::").next().unwrap_or(&ty.name).to_string();
+                    if self.is_undeclared_type_name(&last, r)? {
+                        return Ok(None);
+                    }
+                }
+                None => {}
+            }
+        }
+
+        // Kotlin (Java's fields are read in the branch above): receiver may be
+        // a field whose name doesn't match the type by Kotlin's convention.
+        // Non-exclusive (a miss still reaches the name strategies, as in TS).
+        if r.language == "kotlin" && dotted {
             if let Some(hit) = self.jvm_field_receiver(&object_or_class, &method_name, r)? {
                 return Ok(Some(hit));
             }

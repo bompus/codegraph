@@ -6,7 +6,7 @@ pub(crate) struct LanguageTypeScope {
     pub(super) package: String,
     namespaces: Vec<String>,
     imports: HashSet<String>,
-    demand: HashSet<String>,
+    pub(super) demand: HashSet<String>,
     package_object: Option<String>,
     has_package_object: bool,
 }
@@ -28,7 +28,7 @@ fn visible_type(kind: &str) -> bool {
 pub(super) type ScalaBlockScope = (Rc<SourceFile>, Option<(i64, i64)>);
 
 impl KernelResolver {
-    fn language_file_scope(&mut self, file: &str, language: &str) -> Res<Rc<LanguageTypeScope>> {
+    pub(super) fn language_file_scope(&mut self, file: &str, language: &str) -> Res<Rc<LanguageTypeScope>> {
         if let Some(hit) = self.language_type_scope_memo.get(file) {
             return Ok(hit.clone());
         }
