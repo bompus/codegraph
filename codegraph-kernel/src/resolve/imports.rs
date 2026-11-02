@@ -1992,10 +1992,10 @@ impl KernelResolver {
         if !is_static_member_container(&container.kind) {
             return Ok(None);
         }
-        let member = js_slice(&r.reference_name, utf16_len(local_name) + 1)
-            .split('.')
-            .next()
-            .unwrap_or("");
+        let chain = js_slice(&r.reference_name, utf16_len(local_name) + 1);
+        let mut parts = chain.split('.');
+        let member = parts.next().unwrap_or("");
+        let rest: Vec<&str> = parts.collect();
         if member.is_empty() {
             return Ok(None);
         }
@@ -2008,6 +2008,17 @@ impl KernelResolver {
             .collect();
         if candidates.is_empty() {
             return Ok(None);
+        }
+        // A Python reference keeps its whole chain, and it reads the chain's
+        // last link: `Foo.bar.fset()` is no call of `bar`, nor
+        // `Foo.Inner.objects.create()` a new `Inner`, but `Foo.Inner.run()` is
+        // `Inner`'s `run`.
+        if r.language == "python" && !rest.is_empty() {
+            let next = candidates.iter().find(|n| is_static_member_container(&n.kind)).cloned();
+            let Some(next) = next else { return Ok(None) };
+            let mut inner = r.clone();
+            inner.reference_name = format!("{}.{}", member, rest.join("."));
+            return self.resolve_static_member(&next, &inner, member);
         }
         if r.reference_kind == "calls" {
             if let Some(callable) = candidates
