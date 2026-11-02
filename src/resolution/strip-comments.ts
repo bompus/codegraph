@@ -180,19 +180,42 @@ function stripUncached(content: string, lang: CommentLang): string {
 }
 
 /**
- * Replace every char in a slice with spaces, but keep newlines so line
- * numbers computed downstream remain valid.
+ * A source with ranges blanked, keeping newlines so line numbers computed
+ * downstream remain valid. The strippers scan forward, so ranges arrive in
+ * order and the text between them is copied by the slice: a file used to be
+ * split into an array of characters and joined back, which made stripping one
+ * of the larger costs of resolving a big repo.
  */
-function blankRange(buf: string[], start: number, end: number, src: string): void {
-  for (let i = start; i < end; i++) {
-    buf[i] = src[i] === '\n' ? '\n' : ' ';
+class BlankedText {
+  private readonly parts: string[] = [];
+  /** Where the text not yet in `parts` starts. */
+  private copied = 0;
+
+  constructor(private readonly src: string) {}
+
+  blank(start: number, end: number): void {
+    if (end <= start) return;
+    const { src, parts } = this;
+    parts.push(src.slice(this.copied, start));
+    let at = start;
+    for (let nl = src.indexOf('\n', at); nl >= 0 && nl < end; nl = src.indexOf('\n', at)) {
+      parts.push(' '.repeat(nl - at), '\n');
+      at = nl + 1;
+    }
+    parts.push(' '.repeat(end - at));
+    this.copied = end;
+  }
+
+  text(): string {
+    this.parts.push(this.src.slice(this.copied));
+    return this.parts.join('');
   }
 }
 
 // ---------- Python ----------
 
 function stripPython(src: string): string {
-  const out = src.split('');
+  const out = new BlankedText(src);
   let i = 0;
   const n = src.length;
 
@@ -217,7 +240,7 @@ function stripPython(src: string): string {
         }
         i++;
       }
-      blankRange(out, start, i, src);
+      out.blank(start, i);
       continue;
     }
 
@@ -241,20 +264,20 @@ function stripPython(src: string): string {
     if (c === '#') {
       const start = i;
       while (i < n && src[i] !== '\n') i++;
-      blankRange(out, start, i, src);
+      out.blank(start, i);
       continue;
     }
 
     i++;
   }
 
-  return out.join('');
+  return out.text();
 }
 
 // ---------- Ruby ----------
 
 function stripRuby(src: string): string {
-  const out = src.split('');
+  const out = new BlankedText(src);
   let i = 0;
   const n = src.length;
   let atLineStart = true;
@@ -281,7 +304,7 @@ function stripRuby(src: string): string {
         }
         i++;
       }
-      blankRange(out, start, i, src);
+      out.blank(start, i);
       atLineStart = i > 0 && src[i - 1] === '\n';
       continue;
     }
@@ -307,7 +330,7 @@ function stripRuby(src: string): string {
     if (c === '#') {
       const start = i;
       while (i < n && src[i] !== '\n') i++;
-      blankRange(out, start, i, src);
+      out.blank(start, i);
       atLineStart = false;
       continue;
     }
@@ -326,7 +349,7 @@ function stripRuby(src: string): string {
     i++;
   }
 
-  return out.join('');
+  return out.text();
 }
 
 // ---------- C-style (JS/TS/Java/C#/Swift) ----------
@@ -411,7 +434,7 @@ function blankSlice(src: string, start: number, end: number): string {
 // ---------- PHP ----------
 
 function stripPhp(src: string): string {
-  const out = src.split('');
+  const out = new BlankedText(src);
   let i = 0;
   const n = src.length;
 
@@ -425,7 +448,7 @@ function stripPhp(src: string): string {
       i += 2;
       while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++;
       if (i < n) i += 2;
-      blankRange(out, start, i, src);
+      out.blank(start, i);
       continue;
     }
 
@@ -433,7 +456,7 @@ function stripPhp(src: string): string {
     if (c === '/' && c2 === '/') {
       const start = i;
       while (i < n && src[i] !== '\n') i++;
-      blankRange(out, start, i, src);
+      out.blank(start, i);
       continue;
     }
 
@@ -441,7 +464,7 @@ function stripPhp(src: string): string {
     if (c === '#') {
       const start = i;
       while (i < n && src[i] !== '\n') i++;
-      blankRange(out, start, i, src);
+      out.blank(start, i);
       continue;
     }
 
@@ -465,13 +488,13 @@ function stripPhp(src: string): string {
     i++;
   }
 
-  return out.join('');
+  return out.text();
 }
 
 // ---------- Go ----------
 
 function stripGo(src: string): string {
-  const out = src.split('');
+  const out = new BlankedText(src);
   let i = 0;
   const n = src.length;
 
@@ -485,7 +508,7 @@ function stripGo(src: string): string {
       i += 2;
       while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++;
       if (i < n) i += 2;
-      blankRange(out, start, i, src);
+      out.blank(start, i);
       continue;
     }
 
@@ -493,7 +516,7 @@ function stripGo(src: string): string {
     if (c === '/' && c2 === '/') {
       const start = i;
       while (i < n && src[i] !== '\n') i++;
-      blankRange(out, start, i, src);
+      out.blank(start, i);
       continue;
     }
 
@@ -538,13 +561,13 @@ function stripGo(src: string): string {
     i++;
   }
 
-  return out.join('');
+  return out.text();
 }
 
 // ---------- Rust ----------
 
 function stripRust(src: string): string {
-  const out = src.split('');
+  const out = new BlankedText(src);
   let i = 0;
   const n = src.length;
 
@@ -568,7 +591,7 @@ function stripRust(src: string): string {
           i++;
         }
       }
-      blankRange(out, start, i, src);
+      out.blank(start, i);
       continue;
     }
 
@@ -576,7 +599,7 @@ function stripRust(src: string): string {
     if (c === '/' && c2 === '/') {
       const start = i;
       while (i < n && src[i] !== '\n') i++;
-      blankRange(out, start, i, src);
+      out.blank(start, i);
       continue;
     }
 
@@ -613,7 +636,7 @@ function stripRust(src: string): string {
     i++;
   }
 
-  return out.join('');
+  return out.text();
 }
 
 // ---------- Erlang ----------
@@ -625,7 +648,7 @@ function stripRust(src: string): string {
  * comment text is blanked.
  */
 function stripErlang(src: string): string {
-  const out = src.split('');
+  const out = new BlankedText(src);
   let i = 0;
   const n = src.length;
 
@@ -657,7 +680,7 @@ function stripErlang(src: string): string {
     if (c === '%') {
       let end = i;
       while (end < n && src[end] !== '\n') end++;
-      blankRange(out, i, end, src);
+      out.blank(i, end);
       i = end;
       continue;
     }
@@ -665,5 +688,5 @@ function stripErlang(src: string): string {
     i++;
   }
 
-  return out.join('');
+  return out.text();
 }

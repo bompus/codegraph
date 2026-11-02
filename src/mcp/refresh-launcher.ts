@@ -66,6 +66,7 @@ class Backend {
       process.execPath,
       [
         "--disable-warning=ExperimentalWarning",
+        "--max-semi-space-size=16",
         join(directory, "dist", "bin", "codegraph.js"),
         ...args,
       ],

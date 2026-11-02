@@ -266,6 +266,84 @@ function rowToNode(row: NodeRow): Node {
 }
 
 /**
+ * rowToNode for rows that arrive as arrays, whose columns are in `columns` order.
+ * Name and id lookups are most of what resolving a reference spends in SQLite,
+ * and a row as an array costs about a third less to read than one as an object.
+ */
+function arrayToNode(columns: string[]): (row: unknown[]) => Node {
+  const at = (column: keyof NodeRow): number => columns.indexOf(column);
+  const id = at('id');
+  const kind = at('kind');
+  const name = at('name');
+  const qualifiedName = at('qualified_name');
+  const filePath = at('file_path');
+  const language = at('language');
+  const startLine = at('start_line');
+  const endLine = at('end_line');
+  const startColumn = at('start_column');
+  const endColumn = at('end_column');
+  const docstring = at('docstring');
+  const signature = at('signature');
+  const searchText = at('search_text');
+  const visibility = at('visibility');
+  const isExported = at('is_exported');
+  const isAsync = at('is_async');
+  const isStatic = at('is_static');
+  const isAbstract = at('is_abstract');
+  const decorators = at('decorators');
+  const typeParameters = at('type_parameters');
+  const returnType = at('return_type');
+  const updatedAt = at('updated_at');
+  return (row) => ({
+    id: row[id] as string,
+    kind: row[kind] as NodeKind,
+    name: row[name] as string,
+    qualifiedName: row[qualifiedName] as string,
+    filePath: row[filePath] as string,
+    language: row[language] as Language,
+    startLine: row[startLine] as number,
+    endLine: row[endLine] as number,
+    startColumn: row[startColumn] as number,
+    endColumn: row[endColumn] as number,
+    docstring: (row[docstring] ?? undefined) as string | undefined,
+    signature: (row[signature] ?? undefined) as string | undefined,
+    searchText: (row[searchText] ?? undefined) as string | undefined,
+    visibility: row[visibility] as Node['visibility'],
+    isExported: row[isExported] === 1,
+    isAsync: row[isAsync] === 1,
+    isStatic: row[isStatic] === 1,
+    isAbstract: row[isAbstract] === 1,
+    decorators: row[decorators] ? safeJsonParse(row[decorators] as string, undefined) : undefined,
+    typeParameters: row[typeParameters] ? safeJsonParse(row[typeParameters] as string, undefined) : undefined,
+    returnType: (row[returnType] ?? undefined) as string | undefined,
+    updatedAt: row[updatedAt] as number,
+  });
+}
+
+/** A prepared `SELECT * FROM nodes …`, whose rows come back as nodes. */
+interface NodeStatement {
+  all(...params: unknown[]): Node[];
+  get(...params: unknown[]): Node | undefined;
+  iterate(...params: unknown[]): IterableIterator<Node>;
+}
+
+function prepareNodeStatement(db: SqliteDatabase, sql: string): NodeStatement {
+  const stmt = db.prepare(sql);
+  const columns = stmt.rowsAsArrays();
+  const toNode = (columns ? arrayToNode(columns) : rowToNode) as (row: unknown) => Node;
+  return {
+    all: (...params) => (stmt.all(...params) as unknown[]).map(toNode),
+    get: (...params) => {
+      const row = stmt.get(...params);
+      return row === undefined ? undefined : toNode(row);
+    },
+    *iterate(...params) {
+      for (const row of stmt.iterate(...params)) yield toNode(row);
+    },
+  };
+}
+
+/**
  * Convert database row to Edge object
  */
 /** A failed python ref through one attribute (`self.c.send`), a call receiver
@@ -423,9 +501,9 @@ export class QueryBuilder {
     getImportBindingsByFile?: SqliteStatement;
     hasBindingNamed?: SqliteStatement;
     getTextScanFiles?: SqliteStatement;
-    getNodeById?: SqliteStatement;
-    getNodesByFile?: SqliteStatement;
-    getNodesByKind?: SqliteStatement;
+    getNodeById?: NodeStatement;
+    getNodesByFile?: NodeStatement;
+    getNodesByKind?: NodeStatement;
     insertEdge?: SqliteStatement;
     upsertFile?: SqliteStatement;
     deleteEdgesBySource?: SqliteStatement;
@@ -444,13 +522,13 @@ export class QueryBuilder {
     insertUnresolved?: SqliteStatement;
     deleteUnresolvedByNode?: SqliteStatement;
     getUnresolvedByName?: SqliteStatement;
-    getNodesByName?: SqliteStatement;
+    getNodesByName?: NodeStatement;
     getNodesByNamePrefix?: SqliteStatement;
     existingNodeIdsFull?: SqliteStatement;
     getNodeIdentitiesByFile?: SqliteStatement;
     getFileNodesByNamePrefix?: SqliteStatement;
-    getNodesByQualifiedNameExact?: SqliteStatement;
-    getNodesByLowerName?: SqliteStatement;
+    getNodesByQualifiedNameExact?: NodeStatement;
+    getNodesByLowerName?: NodeStatement;
     hasFilesOfLanguage?: SqliteStatement;
     getCobolIncludesByMember?: SqliteStatement;
     getCobolFilesByStem?: SqliteStatement;
@@ -1256,14 +1334,13 @@ export class QueryBuilder {
     }
 
     if (!this.stmts.getNodeById) {
-      this.stmts.getNodeById = this.db.prepare('SELECT * FROM nodes WHERE id = ?');
+      this.stmts.getNodeById = prepareNodeStatement(this.db, 'SELECT * FROM nodes WHERE id = ?');
     }
-    const row = this.stmts.getNodeById.get(id) as NodeRow | undefined;
-    if (!row) {
+    const node = this.stmts.getNodeById.get(id);
+    if (!node) {
       return null;
     }
 
-    const node = rowToNode(row);
     this.cacheNode(node);
     return node;
   }
@@ -1385,12 +1462,12 @@ export class QueryBuilder {
 
   getNodesByFile(filePath: string): Node[] {
     if (!this.stmts.getNodesByFile) {
-      this.stmts.getNodesByFile = this.db.prepare(
+      this.stmts.getNodesByFile = prepareNodeStatement(
+        this.db,
         'SELECT * FROM nodes WHERE file_path = ? ORDER BY start_line, id'
       );
     }
-    const rows = this.stmts.getNodesByFile.all(filePath) as NodeRow[];
-    return rows.map(rowToNode);
+    return this.stmts.getNodesByFile.all(filePath);
   }
 
   /**
@@ -1678,10 +1755,9 @@ export class QueryBuilder {
    */
   getNodesByKind(kind: NodeKind): Node[] {
     if (!this.stmts.getNodesByKind) {
-      this.stmts.getNodesByKind = this.db.prepare('SELECT * FROM nodes WHERE kind = ? ORDER BY file_path, start_line, id');
+      this.stmts.getNodesByKind = prepareNodeStatement(this.db, 'SELECT * FROM nodes WHERE kind = ? ORDER BY file_path, start_line, id');
     }
-    const rows = this.stmts.getNodesByKind.all(kind) as NodeRow[];
-    return rows.map(rowToNode);
+    return this.stmts.getNodesByKind.all(kind);
   }
 
   /**
@@ -1706,21 +1782,15 @@ export class QueryBuilder {
     // rowid order is what the kind index yields unfiltered; pin it so a filter
     // that makes the planner pick another index cannot reorder the scan.
     if (filter) sql += ' ORDER BY rowid';
-    for (const row of this.db.prepare(sql).iterate(...params)) {
-      yield rowToNode(row as NodeRow);
-    }
+    yield* prepareNodeStatement(this.db, sql).iterate(...params);
   }
 
   *iterateNodesByKindIn(kind: NodeKind | readonly NodeKind[], languages: readonly string[]): IterableIterator<Node> {
     const kinds: readonly NodeKind[] = typeof kind === 'string' ? [kind] : kind;
     if (kinds.length === 0 || languages.length === 0) return;
     const kindTest = kinds.length === 1 ? 'kind = ?' : `kind IN (${kinds.map(() => '?').join(', ')})`;
-    const stmt = this.db.prepare(
-      `SELECT * FROM nodes WHERE ${kindTest} AND language IN (${languages.map(() => '?').join(', ')}) ORDER BY file_path, start_line, id`
-    );
-    for (const row of stmt.iterate(...kinds, ...languages)) {
-      yield rowToNode(row as NodeRow);
-    }
+    const sql = `SELECT * FROM nodes WHERE ${kindTest} AND language IN (${languages.map(() => '?').join(', ')}) ORDER BY file_path, start_line, id`;
+    yield* prepareNodeStatement(this.db, sql).iterate(...kinds, ...languages);
   }
 
   /**
@@ -1758,12 +1828,10 @@ export class QueryBuilder {
   *iterateNodesByLanguageWithDecorator(language: Language, decorator: string): IterableIterator<Node> {
     // Fresh statement per call — an iterator holds an open cursor (see
     // iterateNodesByKind).
-    const stmt = this.db.prepare(
+    yield* prepareNodeStatement(
+      this.db,
       "SELECT * FROM nodes WHERE language = ? AND decorators LIKE '%' || ? || '%' ORDER BY file_path, start_line, id"
-    );
-    for (const row of stmt.iterate(language, `"${decorator}"`)) {
-      yield rowToNode(row as NodeRow);
-    }
+    ).iterate(language, `"${decorator}"`);
   }
 
   /**
@@ -1797,12 +1865,12 @@ export class QueryBuilder {
    */
   getNodesByName(name: string): Node[] {
     if (!this.stmts.getNodesByName) {
-      this.stmts.getNodesByName = this.db.prepare(
+      this.stmts.getNodesByName = prepareNodeStatement(
+        this.db,
         'SELECT * FROM nodes WHERE name = ? ORDER BY file_path, start_line, id'
       );
     }
-    const rows = this.stmts.getNodesByName.all(name) as NodeRow[];
-    return rows.map(rowToNode);
+    return this.stmts.getNodesByName.all(name);
   }
 
   /**
@@ -1838,12 +1906,12 @@ export class QueryBuilder {
    */
   getNodesByQualifiedNameExact(qualifiedName: string): Node[] {
     if (!this.stmts.getNodesByQualifiedNameExact) {
-      this.stmts.getNodesByQualifiedNameExact = this.db.prepare(
+      this.stmts.getNodesByQualifiedNameExact = prepareNodeStatement(
+        this.db,
         'SELECT * FROM nodes WHERE qualified_name = ? ORDER BY file_path, start_line, id'
       );
     }
-    const rows = this.stmts.getNodesByQualifiedNameExact.all(qualifiedName) as NodeRow[];
-    return rows.map(rowToNode);
+    return this.stmts.getNodesByQualifiedNameExact.all(qualifiedName);
   }
 
   /**
@@ -1862,12 +1930,12 @@ export class QueryBuilder {
    */
   getNodesByLowerName(name: string): Node[] {
     if (!this.stmts.getNodesByLowerName) {
-      this.stmts.getNodesByLowerName = this.db.prepare(
+      this.stmts.getNodesByLowerName = prepareNodeStatement(
+        this.db,
         'SELECT * FROM nodes WHERE lower(name) = lower(?)'
       );
     }
-    const rows = this.stmts.getNodesByLowerName.all(name) as NodeRow[];
-    return rows.map(rowToNode);
+    return this.stmts.getNodesByLowerName.all(name);
   }
 
   /** Does the index hold any file of this language? One seek on idx_files_language. */

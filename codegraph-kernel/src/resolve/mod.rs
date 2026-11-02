@@ -752,6 +752,9 @@ pub struct KernelResolver {
     c_static_memo: HashMap<String, bool>,
     /// cppMemberMacroArguments, by class declaration id.
     cpp_macro_arguments_memo: HashMap<String, Rc<Vec<String>>>,
+    /// A C++ alias declaration's own text, by node id (cpp_alias_text): one
+    /// alias is asked about by every reference that names it.
+    cpp_alias_text_memo: HashMap<String, Option<String>>,
     /// cppProjectScopeNames: every name a C or C++ qualifier may start with in this project.
     cpp_scope_names: Option<Rc<HashSet<String>>>,
     rust_trait_memo: HashMap<String, bool>,
@@ -979,6 +982,9 @@ pub struct KernelResolver {
     file_cache: FileCache,
     /// Trees the iteration and guard inference walk, by language and file.
     tree_cache: TreeCache,
+    /// The last reference's own line read and split (see RefLine): one
+    /// reference is checked against every candidate of its name.
+    ref_line: Option<((String, i64, i64), Rc<name_scope::RefLine>)>,
 }
 
 /// Open `db_path` read-only without ever writing its `-shm` wal-index.
@@ -1131,6 +1137,7 @@ impl KernelResolver {
             js_host_receiver_only: HashMap::new(),
             c_static_memo: HashMap::new(),
             cpp_macro_arguments_memo: HashMap::new(),
+            cpp_alias_text_memo: HashMap::new(),
             cpp_scope_names: None,
             rust_trait_memo: HashMap::new(),
             rust_typed_refs: HashSet::new(),
@@ -1250,6 +1257,7 @@ impl KernelResolver {
             python_hierarchies: HashMap::new(),
             python_rebinds: HashMap::new(),
             file_cache: FileCache::new(1024),
+            ref_line: None,
             tree_cache: TreeCache::new(32),
         })
     }
@@ -1267,6 +1275,7 @@ impl KernelResolver {
         self.table.take();
         self.file_cache.clear();
         self.tree_cache.clear();
+        self.ref_line = None;
         self.bindings_cache.clear();
         self.js_objects.clear();
         self.vb = Default::default();

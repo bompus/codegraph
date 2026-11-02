@@ -99,6 +99,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Installers can start or reuse a checkout's active watcher without replacing existing writers, and MCP launchers can preserve existing daemons across reconnects with `--preserve-existing`.
 
 - Ordinary watcher startup can initialize a missing project index under daemon ownership and waits for fresh file indexing and queued synthesized edges before reporting readiness.
+- Indexing a large project takes about a quarter less memory at its peak.
+- Indexing a small project takes much less CPU and memory: CodeGraph starts only the threads a project needs, and a file that's slow to parse no longer holds up the others.
 
 ### Fixes
 

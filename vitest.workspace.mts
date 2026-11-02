@@ -1,5 +1,6 @@
 import { svelte, vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 import { defineWorkspace } from 'vitest/config';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Two projects, one command (`npm test` still runs everything).
@@ -31,6 +32,16 @@ export default defineWorkspace([
       name: 'engine',
       include: ['__tests__/**/*.test.ts'],
       exclude: ['**/node_modules/**', '**/dist/**', '__tests__/ui-package.test.ts'],
+    },
+    resolve: {
+      alias: [
+        {
+          // The suite's module transform can't service a lazy `require` of a
+          // `.ts` module (see src/extraction/lazy-frameworks.ts).
+          find: /^\.\/lazy-frameworks$/,
+          replacement: fileURLToPath(new URL('./__tests__/lazy-frameworks-eager.ts', import.meta.url)),
+        },
+      ],
     },
   },
   {

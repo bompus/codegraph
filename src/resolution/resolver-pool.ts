@@ -105,6 +105,15 @@ export const ADAPTIVE_ENGAGE_MIN_REFS = 20_000;
 export const ADAPTIVE_ENGAGE_RESOLVE_MS = 400;
 
 /**
+ * What a resolver worker's heap may hold of new objects. Resolving keeps many
+ * of them alive for a while, so V8 grows this space as far as it may: 192 MB a
+ * worker on Node 24, where it was the larger part of a big repo's peak memory,
+ * and 48 MB on Node 22. At 48 MB the peak is about a quarter lower and CPU time
+ * doesn't move.
+ */
+const WORKER_YOUNG_GENERATION_MB = 48;
+
+/**
  * The longest a run that starts the pool before its first batch waits for it, in
  * ms. A full index's workers are up in a second or two; a sync's detect the
  * project's frameworks for themselves, which can read every source file. Past
@@ -291,12 +300,13 @@ export class ResolverPool {
     kernelDbPath: string | null = null,
     supertypesComplete = false,
     pendingRefs?: number,
+    frameworks?: readonly string[],
   ): ResolverPool | null {
     const size = ResolverPool.preflight(dbPath, pendingRefs);
     if (size === null) return null;
     const pool = ResolverPool.spawn(size);
     if (pool === null) return null;
-    pool.open(dbPath, projectRoot, kernelDbPath, supertypesComplete);
+    pool.open(dbPath, projectRoot, kernelDbPath, supertypesComplete, frameworks);
     return pool;
   }
 
@@ -306,6 +316,7 @@ export class ResolverPool {
     projectRoot: string,
     kernelDbPath: string | null,
     supertypesComplete: boolean,
+    frameworks?: readonly string[],
   ): void {
     if (this.opened) return;
     this.opened = true;
@@ -314,13 +325,16 @@ export class ResolverPool {
     // same path can never pick up this run's table.
     const kernelGeneration = kernelDbPath ? `${process.pid}-${Date.now().toString(36)}-${++ResolverPool.poolSeq}` : undefined;
     for (const pw of this.workers) {
-      pw.worker.postMessage({ type: 'open', dbPath, projectRoot, kernelDbPath, kernelGeneration, supertypesComplete });
+      pw.worker.postMessage({ type: 'open', dbPath, projectRoot, kernelDbPath, kernelGeneration, supertypesComplete, frameworks });
     }
   }
 
   private constructor(workerScript: string, size: number) {
     for (let i = 0; i < size; i++) {
-      const worker = new Worker(workerScript, { workerData: { spawnedAt: Date.now() } });
+      const worker = new Worker(workerScript, {
+        workerData: { spawnedAt: Date.now() },
+        resourceLimits: { maxYoungGenerationSizeMb: WORKER_YOUNG_GENERATION_MB },
+      });
       const started = workerStarted(worker);
       let readyResolve!: () => void;
       let readyReject!: (e: Error) => void;

@@ -616,10 +616,9 @@ impl KernelResolver {
             fqn = format!("{}.{}", candidate.package, fqn);
         }
         let owner_fqn = fqn.rsplit_once('.').map(|(owner, _)| owner).unwrap_or("");
-        let line = self
-            .read_file(&r.file_path)
-            .and_then(|f| f.get((r.line - 1).max(0) as usize).cloned())
-            .unwrap_or_default();
+        // One reference is asked about every candidate of its name: read and
+        // split its line once (javaNameRead).
+        let line = self.ref_line(r).line.clone();
         let qualifier = Self::cached_regex(&format!(
             r"([A-Za-z_$][\w$.]*)\s*\.\s*(?:@[\w.]+(?:\([^)]*\))?\s+)*{}\b",
             regex::escape(&r.reference_name)
@@ -681,17 +680,16 @@ impl KernelResolver {
     /// What's written right before this very reference, when its column is on
     /// the name: `java.util`, `Bucket`.
     fn java_qualifier_before(&mut self, r: &ResolveRefIn) -> Option<String> {
-        let lines = self.read_file(&r.file_path)?;
-        let line = lines.get((r.line - 1).max(0) as usize)?;
-        let col = super::names::js_unit_to_byte(line, r.column.max(0) as usize).min(line.len());
-        if !line[col..].starts_with(&r.reference_name) {
+        let read = self.ref_line(r);
+        if !read.at.starts_with(&r.reference_name) {
             return None;
         }
         // A type annotation may sit between (jsoup's `Range.@Nullable Spans`).
         let flat = re!(r"([A-Za-z_$][\w$.]*)\s*\.\s*(?:@[\w.]+(?:\([^)]*\))?\s*)*$");
         // Walk back over as much of the line as the pattern can need.
-        let start = super::names::js_unit_to_byte(line, col.saturating_sub(240));
-        flat.captures(&line[start..col]).map(|m| m[1].to_string())
+        let before = &read.before;
+        let start = super::names::js_unit_to_byte(before, (r.column.max(0) as usize).saturating_sub(240));
+        flat.captures(&before[start..]).map(|m| m[1].to_string())
     }
 
     /// Whether a type of `name` is nested in the type `qualifier` ends in.

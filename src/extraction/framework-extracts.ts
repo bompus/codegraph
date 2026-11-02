@@ -1,4 +1,4 @@
-import { getAllFrameworkResolvers, getApplicableFrameworks } from '../resolution/frameworks';
+import { frameworks } from './lazy-frameworks';
 import type { ExtractionResult, Language } from '../types';
 
 /**
@@ -16,6 +16,7 @@ export function applyFrameworkExtracts(
   frameworkNames: string[] | undefined
 ): void {
   if (!frameworkNames || frameworkNames.length === 0) return;
+  const { getAllFrameworkResolvers, getApplicableFrameworks } = frameworks();
   const applicable = getApplicableFrameworks(
     getAllFrameworkResolvers().filter((r) => frameworkNames.includes(r.name)),
     language
