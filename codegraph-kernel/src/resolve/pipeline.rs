@@ -1056,6 +1056,15 @@ if super::lang_scope::is_dart_member_read(r) {
                 }
             }
         }
+        // In Objective-C only a type can be named there, and a class in some
+        // other `.m` yields to its own header.
+        if r.language == "objc" && r.reference_kind == "references" {
+            if let Some(holder) = self.node_by_id(&r.from_node_id)? {
+                if matches!(holder.kind.as_str(), "struct" | "union" | "type_alias") {
+                    return self.match_objc_declared_type(r);
+                }
+            }
+        }
         if let Some(result) = self.ts_scoped_reference(r)? {
             return match result {
                 Some(mut candidate) => {

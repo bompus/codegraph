@@ -25,7 +25,7 @@ fn cpp_overload_set(nodes: &[Arc<KNode>]) -> bool {
     nodes.first().is_some_and(|first| nodes.iter().all(|n| n.kind == "function" && n.language == "cpp" && n.qualified_name == first.qualified_name))
 }
 
-fn objc_file_local_elsewhere(n: &KNode, r: &ResolveRefIn) -> bool {
+pub(super) fn objc_file_local_elsewhere(n: &KNode, r: &ResolveRefIn) -> bool {
     n.language == "objc" && n.file_path != r.file_path
         && matches!(n.kind.as_str(), "struct" | "union" | "enum" | "type_alias" | "variable" | "constant")
         && c_source_ext_re().is_match(&n.file_path)

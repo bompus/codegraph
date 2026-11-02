@@ -269,6 +269,39 @@ impl KernelResolver {
     /// what C++ name lookup finds from inside the class, widened to enums and
     /// stopping at an alias. Only a type declaration can be named there.
     /// (matchCppDeclaredType, cpp-supertypes.ts.)
+    /// The type an Objective-C struct's member or an alias is declared with:
+    /// only a type declaration can be named there. A class's own header is its
+    /// home before a category or `@implementation` in a `.m` file (GNUstep's
+    /// `NSString` has fourteen nodes, in test files too).
+    pub(super) fn match_objc_declared_type(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
+        let kinds = ["class", "protocol", "struct", "union", "enum", "type_alias"];
+        let name = r.reference_name.rsplit('.').next().unwrap_or(&r.reference_name);
+        let candidates: Vec<Arc<KNode>> = self
+            .nodes_by_name(name)?
+            .iter()
+            .filter(|n| n.language == "objc" && kinds.contains(&n.kind.as_str()))
+            .filter(|n| !crate::resolve::names::objc_file_local_elsewhere(n, r))
+            .cloned()
+            .collect();
+        if candidates.is_empty() {
+            return Ok(ResolveOutcome::unresolved());
+        }
+        let is_source = |file: &str| re!(r"(?i)\.(?:m|mm)$").is_match(file);
+        let visible: Vec<Arc<KNode>> = candidates
+            .iter()
+            .filter(|n| n.file_path == r.file_path || !is_source(&n.file_path))
+            .cloned()
+            .collect();
+        let pool = if visible.is_empty() { candidates } else { visible };
+        let own: Vec<Arc<KNode>> = pool
+            .iter()
+            .filter(|n| n.file_path == format!("{name}.h") || n.file_path.ends_with(&format!("/{name}.h")))
+            .cloned()
+            .collect();
+        let chosen = if own.is_empty() { &pool } else { &own };
+        Ok(ResolveOutcome::resolved(&chosen[0], 0.9, "exact-match", true, None))
+    }
+
     pub(super) fn match_cpp_declared_type(
         &mut self,
         r: &ResolveRefIn,
