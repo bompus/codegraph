@@ -300,12 +300,13 @@ export class ResolverPool {
     kernelDbPath: string | null = null,
     supertypesComplete = false,
     pendingRefs?: number,
+    frameworks?: readonly string[],
   ): ResolverPool | null {
     const size = ResolverPool.preflight(dbPath, pendingRefs);
     if (size === null) return null;
     const pool = ResolverPool.spawn(size);
     if (pool === null) return null;
-    pool.open(dbPath, projectRoot, kernelDbPath, supertypesComplete);
+    pool.open(dbPath, projectRoot, kernelDbPath, supertypesComplete, frameworks);
     return pool;
   }
 
@@ -315,6 +316,7 @@ export class ResolverPool {
     projectRoot: string,
     kernelDbPath: string | null,
     supertypesComplete: boolean,
+    frameworks?: readonly string[],
   ): void {
     if (this.opened) return;
     this.opened = true;
@@ -323,7 +325,7 @@ export class ResolverPool {
     // same path can never pick up this run's table.
     const kernelGeneration = kernelDbPath ? `${process.pid}-${Date.now().toString(36)}-${++ResolverPool.poolSeq}` : undefined;
     for (const pw of this.workers) {
-      pw.worker.postMessage({ type: 'open', dbPath, projectRoot, kernelDbPath, kernelGeneration, supertypesComplete });
+      pw.worker.postMessage({ type: 'open', dbPath, projectRoot, kernelDbPath, kernelGeneration, supertypesComplete, frameworks });
     }
   }
 

@@ -51,7 +51,7 @@ let queries: QueryBuilder | null = null;
 let resolver: ReferenceResolver | null = null;
 
 type InMessage =
-  | { type: 'open'; dbPath: string; projectRoot: string; kernelDbPath?: string | null; kernelGeneration?: string; supertypesComplete?: boolean }
+  | { type: 'open'; dbPath: string; projectRoot: string; kernelDbPath?: string | null; kernelGeneration?: string; supertypesComplete?: boolean; frameworks?: string[] }
   | { type: 'recycle'; id: number; kernel?: { dbPath: string; generation: string } }
   | { type: 'resolve'; id: number; refs: UnresolvedReference[] }
   | { type: 'synth'; id: number; pass: string; shard?: { index: number; count: number; from?: number; to?: number } }
@@ -73,7 +73,7 @@ port.on('message', (msg: InMessage) => {
         const tDb = Date.now();
         queries = new QueryBuilder(db);
         resolver = new ReferenceResolver(msg.projectRoot, queries);
-        resolver.initialize(false);
+        resolver.initialize(false, msg.frameworks);
         // This worker's own KernelResolver over the pool's checkpointed
         // SNAPSHOT copy — never the live file. The kernel links a second
         // SQLite build whose intra-process wal-index locks can't see

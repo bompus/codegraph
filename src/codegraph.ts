@@ -846,6 +846,7 @@ export class CodeGraph {
               });
             },
             walValve,
+            true,
             true
           );
           if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] resolution: ${Date.now() - tResolve}ms`);
@@ -2343,10 +2344,14 @@ export class CodeGraph {
     // -shm header under a writer commit). Structural so tests can fake it.
     walValve?: { stop(): void; start(): void; drain(): Promise<void>; backpressure(): Promise<void> | null } | null,
     /** Run the near-duplicate refresh inside the resolver's pool lifetime. */
-    withNearDuplicates = false
+    withNearDuplicates = false,
+    // The caller has just re-detected the frameworks on this index, so the
+    // resolver pool's workers needn't each read the project again to do it.
+    frameworksCurrent = false
   ): Promise<ResolutionResult> {
     return this.resolver.resolveAndPersistBatched(onProgress, undefined, onSynthesisProgress, {
       dbPath: this.db.getPath(),
+      shareFrameworks: frameworksCurrent,
       nearDuplicates: withNearDuplicates
         ? (pool) => {
             const sign: NearDupSigner | undefined = pool
