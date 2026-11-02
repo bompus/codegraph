@@ -178,12 +178,23 @@ pub(super) fn receiver_link(receiver: &str) -> &str {
     if re!(r"^[A-Z][A-Z0-9_]+$").is_match(last) { links.next().unwrap_or(last) } else { last }
 }
 
+/// Python's list, dict, set and str methods, and the regex match object's:
+/// names a collection's elements are not the project's.
+const PYTHON_STD_METHODS: &[&str] = &[
+    "get", "setdefault", "pop", "popitem", "update", "items", "keys", "values", "copy", "clear",
+    "append", "extend", "insert", "remove", "index", "count", "sort", "reverse", "add", "discard",
+    "union", "intersection", "difference", "split", "rsplit", "join", "strip", "lstrip", "rstrip",
+    "replace", "startswith", "endswith", "lower", "upper", "format", "encode", "decode", "find",
+    "rfind", "splitlines", "read", "readline", "readlines", "write", "writelines", "close", "seek",
+    "flush", "group", "groups", "match", "search", "sub", "findall", "fullmatch",
+];
+
 pub(super) fn is_std_method(language: &str, name: &str) -> bool {
     if language == "vbnet" { return CSHARP_STD_METHODS.iter().any(|m| m.eq_ignore_ascii_case(name)); }
     match language {
         "rust" => RUST_STD_METHODS, "go" => GO_STD_METHODS,
         "kotlin" => KOTLIN_STD_METHODS, "csharp" => CSHARP_STD_METHODS, "dart" => DART_STD_METHODS,
-        "scala" => SCALA_STD_METHODS, "java" => JAVA_STD_METHODS,
+        "scala" => SCALA_STD_METHODS, "java" => JAVA_STD_METHODS, "python" => PYTHON_STD_METHODS,
         _ => &[],
     }.contains(&name)
 }

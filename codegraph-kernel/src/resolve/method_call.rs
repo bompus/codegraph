@@ -684,10 +684,46 @@ impl KernelResolver {
         Ok(McShape::Parsed { receiver, method, inferable, dotted: dot_match.is_some() })
     }
 
+    /// A Python call on an element of a collection, like `stats[i].write()`.
+    /// The collection's name says nothing of the element's class, so only the
+    /// project's one method of the name will do, in a module the file has in
+    /// hand: its own, or one it imports. Not a name a list or a dict has, or a
+    /// dunder a container answers itself.
+    pub(super) fn match_python_element_call(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        let name = r.reference_name.rsplit('.').next().unwrap_or("");
+        if !re!(r"^\w+$").is_match(name) || re!(r"^__\w+__$").is_match(name) || crate::resolve::call_shape::is_std_method("python", name) {
+            return Ok(None);
+        }
+        let methods: Vec<_> = self
+            .nodes_by_name(name)?
+            .iter()
+            .filter(|n| n.kind == "method" && n.language == "python")
+            .cloned()
+            .collect();
+        let [method] = methods.as_slice() else { return Ok(None) };
+        if self.unnamed_test_double(method, "", r) {
+            return Ok(None);
+        }
+        let mut in_hand = method.file_path == r.file_path;
+        if !in_hand {
+            let mappings = self.import_mappings(&r.file_path)?;
+            for mapping in mappings.iter() {
+                if self.resolve_import_path(&mapping.source, &r.file_path, "python")?.as_deref() == Some(method.file_path.as_str()) {
+                    in_hand = true;
+                    break;
+                }
+            }
+        }
+        Ok(in_hand.then(|| KCand { node: method.clone(), confidence: 0.7, resolved_by: "instance-method" }))
+    }
+
     /// matchMethodCall(ref, context, requireReceiverEvidence=true) — the
     /// boundReceiver evidence slice. A member miss whose supertype walk needs
     /// edges the db may not hold yet is a miss.
     pub(super) fn match_method_call(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        if r.language == "python" && r.reference_kind == "calls" && re!(r"\]\.\w+$").is_match(&r.reference_name) {
+            return self.match_python_element_call(r);
+        }
         let (object_or_class, method_name, inferable, dotted) = match probe!(r, "mc:shape", self.method_call_shape(r)?) {
             McShape::Parsed { receiver, method, inferable, dotted } => (receiver, method, inferable, dotted),
             McShape::Done(res) => return Ok(res),

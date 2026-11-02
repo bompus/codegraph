@@ -938,6 +938,16 @@ if super::lang_scope::is_dart_member_read(r) {
     }
 
     fn resolve_ref_scoped(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
+        // A Python call on an element of a collection is the project's one
+        // method of the name in a module the file has in hand, or nothing: the
+        // collection's name says nothing of the element's class, and no name
+        // a list or a dict has is it.
+        if r.language == "python" && r.reference_kind == "calls" && re!(r"\]\.\w+$").is_match(&r.reference_name) {
+            return Ok(match self.match_python_element_call(r)? {
+                Some(c) => self.finish_pre_framework(r, c)?,
+                None => ResolveOutcome::unresolved(),
+            });
+        }
         let attribute = if r.language == "python" && r.reference_kind == "calls" {
             Some(self.resolve_python_attribute(r.clone())?)
         } else { None };
