@@ -102,6 +102,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- In Python, a class written with PEP 695 type parameters, like `class Repo[T](Base[T]):` or `class Pair[K, V: (int, str)](Base[V]):`, now reaches the methods its bases declare, through a module global and through the class name, as a class without type parameters already did. Before, the type parameter list stood where the base list was expected, so such a class seemed to have no bases there, although its `extends` edge was already right. Re-index Python projects after upgrading. Thanks @JosefAschauer.
+
 - In Python, a base class your file imports from outside the project, like `class Color(Enum)` after `from enum import Enum` or `class Item(BaseModel)` after `from pydantic import BaseModel`, no longer links to a project class that only shares its name. Re-index Python projects after upgrading.
 
 - In Python, a class with a parameterized base, like `class Leaf(Base[str])`, `class Repo(models.Base[int])` or `class Both(Mixin, Base[str])`, is now linked to that base, as `class Leaf(Base)` already was, and a call through a module global holding such a class, like `current = Leaf()` then `current.run()`, reaches the method the base declares. Before, such a base was skipped, so the class had no `extends` edge and anything that follows the class hierarchy missed it. Re-index Python projects after upgrading. Thanks @JosefAschauer.

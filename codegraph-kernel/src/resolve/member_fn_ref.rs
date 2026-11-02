@@ -941,31 +941,63 @@ pub(super) fn python_interpolates(b: &[u8], q: usize) -> bool {
 
 /// The base-class names of the `class` statement at `lines[at]`, read across
 /// lines to the closing parenthesis: `Store[int]` names `Store`, keyword
-/// arguments (`metaclass=ABCMeta`) name no base.
+/// arguments (`metaclass=ABCMeta`) name no base. A PEP 695 type parameter
+/// list between the name and the bases, `class Repo[T: (int, str)](Base[T])`,
+/// is skipped whole, wrapped or not, so a constraint tuple in it is not
+/// taken for the base list.
 fn python_base_names(lines: &[String], at: usize) -> Vec<String> {
     let Some(first) = lines.get(at) else { return Vec::new() };
-    let Some(m) = re!(r"^\s*class\s+\w+\s*\(").find(first) else {
+    let Some(m) = re!(r"^\s*class\s+\w+").find(first) else {
         return Vec::new();
     };
+    // The header from just after the name, comments removed.
+    let mut header = String::new();
+    for line in std::iter::once(&first[m.end()..]).chain(lines[at + 1..].iter().take(64).map(String::as_str)) {
+        header.push_str(match line.find('#') {
+            Some(i) => &line[..i],
+            None => line,
+        });
+        header.push('\n');
+    }
+    // The base list starts at `(` after an optional balanced type parameter
+    // list. Anything else before it, such as the `:` of `class A[T]:`, means
+    // the class has no base list.
+    let mut params = 0i32;
+    let mut open = None;
+    for (i, ch) in header.char_indices() {
+        match ch {
+            '[' => params += 1,
+            ']' => params -= 1,
+            '(' if params == 0 => {
+                open = Some(i);
+                break;
+            }
+            c if params == 0 && !c.is_whitespace() => return Vec::new(),
+            _ => {}
+        }
+    }
+    let Some(open) = open else { return Vec::new() };
     let mut names = Vec::new();
     let mut current = String::new();
     let mut depth = 0usize;
-    let text = std::iter::once(&first[m.end()..]).chain(lines[at + 1..].iter().take(64).map(String::as_str));
-    'lines: for line in text {
-        for ch in line.chars() {
-            match ch {
-                '#' => break,
-                '(' | '[' | '{' => depth += 1,
-                ')' if depth == 0 => break 'lines,
-                ')' | ']' | '}' => depth -= 1,
-                ',' if depth == 0 => names.push(std::mem::take(&mut current)),
-                _ if depth == 0 => current.push(ch),
-                _ => {}
+    let mut closed = false;
+    for ch in header[open + 1..].chars() {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' if depth == 0 => {
+                names.push(std::mem::take(&mut current));
+                closed = true;
+                break;
             }
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => names.push(std::mem::take(&mut current)),
+            _ if depth == 0 => current.push(ch),
+            _ => {}
         }
-        current.push(' ');
     }
-    names.push(current);
+    if !closed {
+        return Vec::new();
+    }
     names
         .into_iter()
         .map(|n| n.trim().to_string())
@@ -1076,6 +1108,18 @@ mod tests {
         let code = super::python_field_code_lines(&lines, 0, 4);
         assert_eq!(code.iter().map(|(s, _)| *s).collect::<Vec<_>>(), [true, false, false, true]);
         assert_eq!(code[1].1, lines[1]);
+    }
+
+    #[test]
+    fn reads_a_base_list_after_pep695_type_parameters() {
+        let names = |src: &str| super::python_base_names(&src.lines().map(String::from).collect::<Vec<_>>(), 0);
+        assert_eq!(names("class Classic(Mixin, Base):"), ["Mixin", "Base"]);
+        assert_eq!(names("class Repo[T](Base[T]):"), ["Base"]);
+        assert_eq!(names("class Bounded[T: dict[str, int], *Ts, **P](Mixin, Base[T]):"), ["Mixin", "Base"]);
+        assert_eq!(names("class Constrained[T: (int, str)](Mixin, Base[T]):"), ["Mixin", "Base"]);
+        assert_eq!(names("class Wrapped[\n    K: (int, str),\n](\n    Mixin,\n    Base[K],\n):"), ["Mixin", "Base"]);
+        assert!(names("class NoBases[T]:").is_empty());
+        assert!(names("class Plain:").is_empty());
     }
 }
 
