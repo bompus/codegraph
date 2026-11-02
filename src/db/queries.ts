@@ -2716,8 +2716,8 @@ export class QueryBuilder {
    * Get outgoing edges from a node. Preserve the source/kind index order
    * (calls before imports/references), then break ties deterministically.
    */
-  getOutgoingEdges(sourceId: string, kinds?: EdgeKind[], provenance?: string): Edge[] {
-    if ((kinds && kinds.length > 0) || provenance) {
+  getOutgoingEdges(sourceId: string, kinds?: EdgeKind[], provenance?: string, limit?: number): Edge[] {
+    if ((kinds && kinds.length > 0) || provenance || limit !== undefined) {
       let sql = 'SELECT * FROM edges WHERE source = ?';
       const params: (string | number)[] = [sourceId];
 
@@ -2732,6 +2732,10 @@ export class QueryBuilder {
       }
 
       sql += ' ORDER BY kind, id';
+      if (limit !== undefined) {
+        sql += ' LIMIT ?';
+        params.push(Math.max(0, Math.floor(limit)));
+      }
       const rows = this.shapeStmt(sql).all(...params) as EdgeRow[];
       return rows.map(rowToEdge);
     }
@@ -2749,10 +2753,20 @@ export class QueryBuilder {
    * displace actual calls in capped caller lists. Keep deterministic ties
    * without changing the target/kind index's established kind precedence.
    */
-  getIncomingEdges(targetId: string, kinds?: EdgeKind[]): Edge[] {
-    if (kinds && kinds.length > 0) {
-      const sql = `SELECT * FROM edges WHERE target = ? AND kind IN (${kinds.map(() => '?').join(',')}) ORDER BY kind, id`;
-      const rows = this.shapeStmt(sql).all(targetId, ...kinds) as EdgeRow[];
+  getIncomingEdges(targetId: string, kinds?: EdgeKind[], limit?: number): Edge[] {
+    if ((kinds && kinds.length > 0) || limit !== undefined) {
+      let sql = 'SELECT * FROM edges WHERE target = ?';
+      const params: (string | number)[] = [targetId];
+      if (kinds && kinds.length > 0) {
+        sql += ` AND kind IN (${kinds.map(() => '?').join(',')})`;
+        params.push(...kinds);
+      }
+      sql += ' ORDER BY kind, id';
+      if (limit !== undefined) {
+        sql += ' LIMIT ?';
+        params.push(Math.max(0, Math.floor(limit)));
+      }
+      const rows = this.shapeStmt(sql).all(...params) as EdgeRow[];
       return rows.map(rowToEdge);
     }
 

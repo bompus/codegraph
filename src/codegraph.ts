@@ -30,6 +30,7 @@ import {
   UnresolvedReference,
   IndexHealth,
   Language,
+  ImpactOptions,
 } from './types';
 import { DatabaseConnection, getDatabasePath, removeDatabaseFiles } from './db';
 import { WalCheckpointValve, resolveWalValveMb } from './db/wal-valve';
@@ -3264,10 +3265,11 @@ export class CodeGraph {
    *
    * @param nodeId - ID of the node
    * @param maxDepth - Maximum depth to traverse (default: 3)
+   * @param options - Node and edge safety budgets
    * @returns Subgraph containing potentially impacted nodes
    */
-  getImpactRadius(nodeId: string, maxDepth: number = 3): Subgraph {
-    return this.traverser.getImpactRadius(nodeId, maxDepth);
+  getImpactRadius(nodeId: string, maxDepth: number = 3, options: ImpactOptions = {}): Subgraph {
+    return this.traverser.getImpactRadius(nodeId, maxDepth, options);
   }
 
   /**

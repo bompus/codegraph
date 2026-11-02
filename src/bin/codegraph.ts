@@ -2691,18 +2691,21 @@ program
         const collected = groups.map((group) => {
           const nodes = new Map<string, Node>();
           const edges = new Map<string, Edge>();
+          let truncated = false;
           for (const target of group) {
             const impact = cg.getImpactRadius(target.id, depth);
+            truncated ||= impact.truncated === true;
             for (const [id, node] of impact.nodes) nodes.set(id, node);
             for (const edge of impact.edges) edges.set(`${edge.source}->${edge.target}:${edge.kind}`, edge);
           }
-          return { group, nodes, edges };
+          return { group, nodes, edges, truncated };
         });
+        const truncated = collected.some((c) => c.truncated);
 
         if (options.json) {
           const unionNodes = new Map<string, Node>();
           const unionEdges = new Map<string, Edge>();
-          const definitions = collected.map(({ group, nodes, edges }) => {
+          const definitions = collected.map(({ group, nodes, edges, truncated }) => {
             for (const [id, node] of nodes) unionNodes.set(id, node);
             for (const [key, edge] of edges) unionEdges.set(key, edge);
             const code = [...nodes.values()].filter((n) => !isDocumentationNode(n));
@@ -2711,6 +2714,7 @@ program
               ...cliDefinition(group),
               nodeCount: code.length,
               edgeCount: edges.size,
+              ...(truncated ? { truncated } : {}),
               affected: code.map((node) => ({ id: node.id, ...cliNode(node) })),
               docs: docs.map((node) => ({ id: node.id, ...cliNode(node) })),
               edges: [...edges.values()],
@@ -2728,6 +2732,7 @@ program
             definitions,
             nodeCount: [...unionNodes.values()].filter((n) => !isDocumentationNode(n)).length,
             edgeCount: unionEdges.size,
+            ...(truncated ? { truncated } : {}),
             affected: [...unionNodes.values()].filter((n) => !isDocumentationNode(n)).map(cliNode),
             docs: [...unionNodes.values()].filter(isDocumentationNode).map(cliNode),
           }, null, 2));
@@ -2765,6 +2770,7 @@ program
               console.log();
             }
           }
+          if (truncated) warn('Result truncated at the safety limit. Narrow it with --file or a smaller --depth.');
         }
       } finally {
         cg.destroy();
