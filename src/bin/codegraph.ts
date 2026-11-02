@@ -64,7 +64,7 @@ try {
 import { Command } from 'commander';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getCodeGraphDir, isInitialized, hasSchemalessDb, hasForeignDbFile, unsafeIndexRootReason, findNearestCodeGraphRoot, capPromptHookInjection, codeGraphDirName, DEFAULT_CODEGRAPH_DIR } from '../directory';
+import { getCodeGraphDir, makeGitignoreLocalOnly, isInitialized, hasSchemalessDb, hasForeignDbFile, unsafeIndexRootReason, findNearestCodeGraphRoot, capPromptHookInjection, codeGraphDirName, DEFAULT_CODEGRAPH_DIR } from '../directory';
 import { detectWorktreeIndexMismatch, worktreeMismatchWarning } from '../sync/worktree';
 import { createShimmerProgress } from '../ui/shimmer-progress';
 import { getGlyphs } from '../ui/glyphs';
@@ -702,6 +702,28 @@ async function recordIndexTelemetry(
 // Commands
 // =============================================================================
 
+/** `init --local-only`: make the project's `.gitignore` ignore itself, and say what happened. */
+function applyLocalOnlyGitignore(
+  clack: { log: { success(message: string): void; info(message: string): void; warn(message: string): void } },
+  projectPath: string,
+): void {
+  const file = `${path.basename(getCodeGraphDir(projectPath))}/.gitignore`;
+  switch (makeGitignoreLocalOnly(projectPath)) {
+    case 'written':
+      clack.log.success(`${file} now ignores itself, so nothing of CodeGraph's shows in git.`);
+      break;
+    case 'unchanged':
+      clack.log.info(`${file} already ignores itself.`);
+      break;
+    case 'customized':
+      clack.log.warn(`Left ${file} as it is because it has your own rules. A lone * in it would keep the whole folder out of git.`);
+      break;
+    case 'tracked':
+      clack.log.warn(`Left ${file} as it is because it is committed to this repository, so changing it would show up in git.`);
+      break;
+  }
+}
+
 /**
  * The `init` flow — shared by `codegraph init` and `codegraph install --init`
  * (#1578): refuse an unsafe root, create `.codegraph/`, build the initial
@@ -712,7 +734,7 @@ async function recordIndexTelemetry(
  */
 async function runInit(
   projectPath: string,
-  options: { index?: boolean; force?: boolean; verbose?: boolean; yes?: boolean; seed?: boolean },
+  options: { index?: boolean; force?: boolean; verbose?: boolean; yes?: boolean; seed?: boolean; localOnly?: boolean },
 ): Promise<void> {
   const clack = await importESM('@clack/prompts');
 
@@ -734,6 +756,7 @@ async function runInit(
     if (isInitialized(projectPath)) {
       clack.log.warn(`Already initialized in ${projectPath}`);
       clack.log.info('Use "codegraph index" to re-index or "codegraph sync" to update');
+      if (options.localOnly) applyLocalOnlyGitignore(clack, projectPath);
       try {
         const { offerWatchFallback } = await import('../installer');
         await offerWatchFallback(clack, projectPath, { yes: options.yes });
@@ -789,6 +812,7 @@ async function runInit(
 
     const cg = await CodeGraph.init(projectPath, { index: false });
     clack.log.success(`Initialized in ${projectPath}`);
+    if (options.localOnly) applyLocalOnlyGitignore(clack, projectPath);
     // A fresh index on a Windows drive under WSL gets its own directory (#995).
     // It isn't the documented name, so say where it went and why.
     const dataDir = path.basename(getCodeGraphDir(projectPath));
@@ -859,7 +883,8 @@ program
   .option('-v, --verbose', 'Show detailed worker lifecycle and memory info')
   .option('-y, --yes', 'Non-interactive: skip every prompt and take the defaults (for scripts / CI / container bootstraps)')
   .option('--no-seed', 'In a git worktree, index from scratch instead of starting from a sibling worktree\'s index')
-  .action(async (pathArg: string | undefined, options: { index?: boolean; force?: boolean; verbose?: boolean; yes?: boolean; seed?: boolean }) => {
+  .option('--local-only', 'Keep .codegraph/ out of git entirely: its .gitignore ignores itself too. Also converts an initialized project')
+  .action(async (pathArg: string | undefined, options: { index?: boolean; force?: boolean; verbose?: boolean; yes?: boolean; seed?: boolean; localOnly?: boolean }) => {
     await runInit(path.resolve(pathArg || process.cwd()), options);
   });
 

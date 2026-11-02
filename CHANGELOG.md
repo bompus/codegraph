@@ -133,6 +133,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - In C#, a MediatR `Send` or `Publish` now reaches a handler written against the project's own interface, like `ICommandHandler<T>` or `IQueryHandler<T, R>`, or one from a package, such as the Mediator library or Ardalis.SharedKernel, with nothing to configure. A command built by a mapper, like `mapper.Map<CreateBooking>(request)`, is read as what it is, and two solutions kept side by side in one repository no longer link to each other's handlers. Thanks @PressXtoChris.
 - New `codegraph cycles` command lists the groups of files that import each other in a circle, as text or `--json`, and exits 1 when it finds any, so it works as a pre-commit or CI check (#888). Thanks @jiangyq9 and @goutham80808.
 - CodeGraph's MCP server now gives agents and editors its display name and icon, so one that shows them, like the Codex app, lists CodeGraph by name and logo instead of a plain `codegraph`. Thanks @fedosov.
+- `codegraph init --local-only` keeps `.codegraph/` out of git entirely, so nothing of CodeGraph's shows in `git status`, and it works on a project that's already set up, leaving a `.codegraph/.gitignore` you've edited or committed alone (#910). Thanks @jadchene, @jiangyq9, @Wood-Q and @walterf3.
 
 ### Fixes
 
