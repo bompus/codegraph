@@ -1,17 +1,20 @@
 //! Native f40db4b9 named-object matching.
 use super::*;
+use super::awaited::{blank_string_contents, strip_ts_comments};
 use super::js_object_facts_upstream::JsObjectFacts;
 
 pub(super) struct JsObjects {
     pub files: Lru<Rc<JsObjectFacts>>,
     owners: HashMap<String,Option<Arc<KNode>>>,
+    /// literalBlockOf, by (holder id, function id).
+    literal_blocks: HashMap<(String,String),Option<(i64,i64)>>,
     this_callers: HashMap<String,Arc<KNode>>,
     globals: HashMap<String,bool>,
 }
 
 impl Default for JsObjects {
     fn default() -> Self {
-        Self { files: Lru::new(32), owners: HashMap::new(),
+        Self { files: Lru::new(32), owners: HashMap::new(), literal_blocks: HashMap::new(),
             this_callers: HashMap::new(), globals: HashMap::new() }
     }
 }
@@ -66,7 +69,7 @@ pub(super) enum CollapsedCall {
 }
 
 impl KernelResolver {
-    fn js_object_parent(&mut self,n: &KNode) -> Res<Option<Arc<KNode>>> {
+    pub(super) fn js_object_parent(&mut self,n: &KNode) -> Res<Option<Arc<KNode>>> {
         let Some(cut) = n.qualified_name.rfind("::").filter(|cut| *cut > 0) else { return Ok(None) };
         Ok(self.nodes_by_qualified_name(&n.qualified_name[..cut])?.iter()
             .find(|p| p.file_path == n.file_path && p.id != n.id && range_within(n,p)).cloned())
@@ -75,9 +78,71 @@ impl KernelResolver {
     fn js_member_owner(&mut self,n: &KNode) -> Res<Option<Arc<KNode>>> {
         if n.kind != "function" || !is_js_family(&n.language) { return Ok(None); }
         if let Some(hit) = self.js_objects.owners.get(&n.id) { return Ok(hit.clone()); }
-        let hit = self.js_object_parent(n)?.filter(|p| literal_owner(p));
+        let holder = self.js_object_parent(n)?.filter(|p| literal_owner(p));
+        // A function deeper than the literal's own braces — in a method of a
+        // nested object, under a computed key, in a callback a member's value
+        // passes on, or in a method behind `satisfies`/`as const`, whose
+        // methods have no node — is an ordinary local of the block it is
+        // written in, not a member of the literal.
+        let hit = match holder {
+            Some(holder) if self.literal_block_of(n, &holder)?.is_none() => Some(holder),
+            _ => None,
+        };
         self.js_objects.owners.insert(n.id.clone(),hit.clone());
         Ok(hit)
+    }
+
+    /// The block lines a function qualified under an object literal's holder
+    /// is written in, when it lies below the literal's own braces; None for a
+    /// direct member and for anything unreadable. The holder's own text is
+    /// read, not the file's: a component's template and styles are not code.
+    pub(super) fn literal_block_of(&mut self, n: &KNode, holder: &KNode) -> Res<Option<(i64, i64)>> {
+        let key = (holder.id.clone(), n.id.clone());
+        if let Some(hit) = self.js_objects.literal_blocks.get(&key) { return Ok(*hit); }
+        let block = self.literal_block_of_uncached(n, holder)?;
+        self.js_objects.literal_blocks.insert(key, block);
+        Ok(block)
+    }
+
+    fn literal_block_of_uncached(&mut self, n: &KNode, holder: &KNode) -> Res<Option<(i64, i64)>> {
+        let Some(lines) = self.read_file(&holder.file_path) else { return Ok(None) };
+        let from = ((holder.start_line - 1).max(0) as usize).min(lines.len());
+        let to = (holder.end_line.max(0) as usize).clamp(from, lines.len());
+        if from == to { return Ok(None); }
+        let mut extent_lines: Vec<&str> = lines[from..to].iter().map(String::as_str).collect();
+        let last = extent_lines.len() - 1;
+        extent_lines[last] = js_prefix(extent_lines[last], holder.end_column.max(0) as usize);
+        extent_lines[0] = js_slice(extent_lines[0], holder.start_column.max(0) as usize);
+        let extent = strip_ts_comments(&extent_lines.join("\n"));
+        let code: Vec<u16> = blank_string_contents(&extent).encode_utf16().collect();
+        let Some(open) = re!(r"^(?:[^=]|=>)*=\s*(?:(?:Object\.(?:freeze|seal)\s*)?\(\s*)*\{")
+            .find(&String::from_utf16_lossy(&code))
+            .map(|m| utf16_len(m.as_str()).saturating_sub(1))
+        else { return Ok(None) };
+        // Where the function starts, in the holder's extent (UTF-16 units).
+        let rel_line = (n.start_line - holder.start_line).max(0) as usize;
+        let mut line_starts = vec![0usize];
+        for (i, &u) in code.iter().enumerate() {
+            if u == b'\n' as u16 { line_starts.push(i + 1); }
+        }
+        let Some(&line_start) = line_starts.get(rel_line) else { return Ok(None) };
+        let column = if n.start_line == holder.start_line { n.start_column.max(0) as usize } else { 0 };
+        let at = line_start + column.saturating_sub(holder.start_column.max(0) as usize).min(column);
+        // Brace spans, innermost containing the start wins; the literal's own
+        // braces (at `open`) are the boundary, not a block below it.
+        let mut spans = Vec::new();
+        let mut stack = Vec::new();
+        for (i, &u) in code.iter().enumerate() {
+            if u == b'{' as u16 { stack.push(i); }
+            else if u == b'}' as u16 { if let Some(start) = stack.pop() { spans.push((start, i)); } }
+        }
+        let mut best: Option<(usize, usize)> = None;
+        for (start, end) in spans.into_iter().filter(|(start, end)| *start < at && at < *end && *start != open) {
+            if best.is_none_or(|(s, e)| end - start < e - s) { best = Some((start, end)); }
+        }
+        let Some((start, end)) = best else { return Ok(None) };
+        let line_of = |off: usize| -> i64 { holder.start_line + code[..off].iter().filter(|&&u| u == b'\n' as u16).count() as i64 };
+        Ok(Some((line_of(start), line_of(end))))
     }
 
     fn js_arrow_member(&mut self,n: &KNode) -> bool {

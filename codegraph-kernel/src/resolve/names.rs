@@ -218,6 +218,13 @@ impl KernelResolver {
             }
             break;
         }
+        // A function qualified under an object literal's holder but written
+        // below its braces is a local of the block it is written in.
+        if scope.is_none() {
+            if let Some(holder) = self.js_object_parent(candidate)?.filter(|p| js_objects_upstream::literal_owner(p)) {
+                scope = self.literal_block_of(candidate, &holder)?;
+            }
+        }
         self.lexical_scope_memo.insert(candidate.id.clone(), scope);
         Ok(scope)
     }
