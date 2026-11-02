@@ -110,6 +110,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
 - A search with a `path:` or `name:` filter, in `codegraph query`, the `codegraph_search` tool or the library's `searchNodes()`, now finds the symbols it asks for at any limit, and an offset pages through those symbols alone. Before, the filter was applied only after the results had been cut to the limit, so `codegraph query "authenticate path:src/api"` could find nothing while a much larger `--limit` showed the match. Thanks @rudycelekli.
+### Security
+
+- CodeGraph's refusal to use a sensitive folder such as `~/.ssh`, `~/.config`, `/etc` or `C:\Windows` as a project can no longer be sidestepped: a link or junction that leads to one, a differently capitalized name on Windows and macOS, a `\\?\` spelling on Windows, and a path to a missing folder inside one are now refused like the folder itself. Before, any of these let an AI agent's query read the files inside. Thanks @mixxer for finding it.
 
 ### Fixes
 
