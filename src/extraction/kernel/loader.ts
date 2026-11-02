@@ -303,6 +303,8 @@ export interface KernelResolverLike {
   resolveDeferredThisMembers(refs: ResolveRefIn[]): ResolveOutcome[];
   /** The import arm for one ref, behind `context.resolveImport`. */
   resolveViaImportRef(ref: ResolveRefIn): ResolveOutcome;
+  /** A known node's object-literal member, behind `context.resolveNodeMember`. */
+  resolveNodeMember(nodeId: string, member: string, ref: ResolveRefIn): ResolveOutcome;
   resolvePythonModule(spec: string, from: string): string | null;
   pythonPackageRoots(): string;
   pythonPackageReopenScope(files: string[]): { targetFiles: string[]; sourceDirs: string[]; moduleLeaves: string[] };

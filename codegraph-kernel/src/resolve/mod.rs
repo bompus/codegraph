@@ -1480,6 +1480,30 @@ impl KernelResolver {
         }
     }
 
+    /// resolveObjectLiteralMember + resolveObjectLiteralBinding for one known
+    /// node and member name: what the const-alias synthesizer reads through an
+    /// object a value holds (upstream 9d3abb84). A class's static member is
+    /// resolved in TS from the node table; this answers object literals only.
+    #[cfg_attr(feature = "addon", napi)]
+    pub fn resolve_node_member(&mut self, node_id: String, member: String, r: ResolveRefIn) -> Result<ResolveOutcome> {
+        match per_ref(&r, None, || {
+            let Some(container) = self.node_by_id(&node_id)? else { return Ok(None) };
+            let mut member_ref = r.clone();
+            member_ref.reference_name = member.clone();
+            member_ref.reference_kind = "calls".to_string();
+            if let Some(hit) =
+                self.resolve_object_literal_member(&container, &member, &member_ref, 0.9, "import")?
+            {
+                return Ok(Some(hit));
+            }
+            self.resolve_object_literal_binding(&container, &member, &member_ref)
+        }) {
+            Ok(Some(c)) => Ok(ResolveOutcome::resolved(&c.node, c.confidence, c.resolved_by, true, None)),
+            Ok(None) => Ok(ResolveOutcome::unresolved()),
+            Err(Halt::Napi(e)) => Err(e),
+        }
+    }
+
     /// resolveDeferredThisMemberRefs' per-ref match (matchDeferredThisMember),
     /// run after the main pass wrote every implements/extends edge.
     #[cfg_attr(feature = "addon", napi)]

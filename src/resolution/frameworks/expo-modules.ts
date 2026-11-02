@@ -260,7 +260,8 @@ interface NativeBinding {
   file: string;
 }
 
-const bindingMemo = new WeakMap<ResolutionContext, Map<string, NativeBinding | null>>();
+/** Per context, renewed with the route list (whose identity changes when the resolver's caches do). */
+const bindingMemo = new WeakMap<ResolutionContext, { source: readonly Node[]; memo: Map<string, NativeBinding | null> }>();
 
 /**
  * What `name` is bound to where `ref` reads it: a declaration in scope whose
@@ -275,8 +276,10 @@ function nativeBinding(name: string, ref: UnresolvedRef, context: ResolutionCont
   const file = ref.filePath;
   const binding = innermostBinding(context.getBindings?.(file) ?? [], name, ref.line);
   if (!binding) return null;
-  let memo = bindingMemo.get(context);
-  if (!memo) bindingMemo.set(context, (memo = new Map()));
+  const source = context.getNodesByKind('route');
+  let entry = bindingMemo.get(context);
+  if (!entry || entry.source !== source) bindingMemo.set(context, (entry = { source, memo: new Map() }));
+  const memo = entry.memo;
   const key = `${file}\0${name}\0${binding.kind}\0${binding.line}`;
   if (memo.has(key)) return memo.get(key)!;
   let found: NativeBinding | null = null;

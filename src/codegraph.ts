@@ -1060,7 +1060,7 @@ export class CodeGraph {
   private stampModuleConfigSnapshot(): void {
     try {
       const stored = this.queries.getMetadata(MODULE_CONFIG_METADATA_KEY);
-      this.queries.setMetadata(MODULE_CONFIG_METADATA_KEY, JSON.stringify(this.resolver.getModuleConfigSnapshot(stored)));
+      this.queries.setMetadata(MODULE_CONFIG_METADATA_KEY, JSON.stringify(this.resolver.getModuleConfigSnapshot(stored, true)));
     } catch { /* metadata is advisory */ }
   }
 
@@ -1704,9 +1704,8 @@ export class CodeGraph {
           if (walValve) { walValve.stop(); await walValve.drain(); }
           try {
             const stored = this.queries.getMetadata(MODULE_CONFIG_METADATA_KEY);
-            const snapshot = this.resolver.getModuleConfigSnapshot(stored);
-            const was = resolution().parseModuleConfigSnapshot(stored);
-            const changed = stored === null ? [] : Object.keys(snapshot).filter((rel) => (was[rel] ?? 'absent') !== snapshot[rel]);
+            const snapshot = this.resolver.getModuleConfigSnapshot(stored, result.filesAdded > 0 || result.filesRemoved > 0);
+            const changed = stored === null ? [] : resolution().changedModuleConfigs(resolution().parseModuleConfigSnapshot(stored), snapshot);
             if (changed.length > 0) {
               this.resolver.resetModuleConfig();
               let reopened = 0;
@@ -1791,10 +1790,13 @@ export class CodeGraph {
           // to the `Team` this sync adds. A component with no markup of its own
           // (`return null`, a wrapper) matches none of the input patterns; the
           // definition delta gates it instead. Removing one needs no check: a
-          // component a tag rendered had synthesized edges into its file.
+          // component a tag rendered had synthesized edges into its file. A
+          // function a const in an unchanged file names is the same: `const late
+          // = fns.join` links to the `join` this sync adds.
           if (result.definitionDelta && result.changedFilePaths) {
             const delta = new Set(result.definitionDelta);
-            if (this.queries.getNodesByFiles(result.changedFilePaths).some((n) => delta.has(n.name) && resolution().isJsxChildCandidate(n))) {
+            const defined = this.queries.getNodesByFiles(result.changedFilePaths).filter((n) => delta.has(n.name));
+            if (defined.some((n) => resolution().isJsxChildCandidate(n)) || resolution().aliasMayName(this.queries, defined)) {
               for (const p of result.changedFilePaths) this.synthesisDirty.add(p);
             }
           }
