@@ -580,6 +580,8 @@ impl KernelResolver {
                 default_component = Some(n.clone());
             }
             if default_fn_class.is_none() && (n.kind == "function" || n.kind == "class") {
+                // Only the expression-default fallback below reads this; it
+                // narrows to a node the expression names.
                 default_fn_class = Some(n.clone());
             }
         }
@@ -592,19 +594,42 @@ impl KernelResolver {
             .map(|r| r.line)
             .collect();
         let mut default_expr = false;
+        let source = self.read_file(file_path);
+        let text = source.as_ref().map(|s| s.text()).unwrap_or("");
         if !marker_lines.is_empty() {
-            if let Some(lines) = self.read_file(file_path) {
-                let text = lines.text();
-                let mut anonymous = false;
+            let mut anonymous = false;
+            for &line in marker_lines.iter() {
+                let head = text.split('\n').nth(line.saturating_sub(1) as usize).unwrap_or("");
+                if export_default_head_is_anonymous(head) {
+                    anonymous = true;
+                } else {
+                    default_expr = true;
+                }
+            }
+            default_expr &= !anonymous;
+            // The node an expression default names is one of its arguments —
+            // `export default observable(Model)` names `Model` — not the
+            // module's first export, which a fork guard keeps out of alias
+            // flow (`export default build()` links nothing).
+            if default_expr {
+                let mut chosen = None;
                 for &line in marker_lines.iter() {
                     let head = text.split('\n').nth(line.saturating_sub(1) as usize).unwrap_or("");
-                    if export_default_head_is_anonymous(head) {
-                        anonymous = true;
-                    } else {
-                        default_expr = true;
+                    let Some(at) = re!(r"(?-u:\b)export\s+default\s+").find(head) else { continue };
+                    let expr = &head[at.end()..];
+                    for word in re!(r"[A-Za-z_$][\w$]*").find_iter(expr).map(|m| m.as_str()).skip(1) {
+                        if let Some(node) = nodes.iter().find(|n| {
+                            n.name == word
+                                && n.is_exported
+                                && matches!(n.kind.as_str(), "function" | "class" | "component" | "constant" | "variable")
+                        }) {
+                            chosen = Some(node.clone());
+                            break;
+                        }
                     }
+                    if chosen.is_some() { break; }
                 }
-                default_expr &= !anonymous;
+                default_fn_class = chosen;
             }
         }
         let by_id: HashMap<&str, &Arc<KNode>> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
