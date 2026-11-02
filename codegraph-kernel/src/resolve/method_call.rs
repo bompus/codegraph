@@ -892,7 +892,18 @@ if inferred.is_none() && r.language == "dart" {
                 if let Some(f) = &go_type_file {
                     bsite.file_path = f.clone();
                 }
-                let member = self.match_bound_type_member(&t, &method_name, &bsite)?;
+                let mut member = self.match_bound_type_member(&t, &method_name, &bsite)?;
+                // A Scala call never lands on another language's constructor
+                // here: a `def f(): T = T.Inner(...)` return annotation reads
+                // as `T`'s type and hands `Inner::Inner` over. Falling through
+                // lets the Scala type lookup answer it.
+                if r.language == "scala"
+                    && member
+                        .as_ref()
+                        .is_some_and(|m| is_other_language_constructor(&m.node, &r.language))
+                {
+                    member = None;
+                }
                 if member.is_none() && r.language == "go" {
                     // A Go standard method name the declared type lacks is no
                     // other type's (`err.Error()`, `context.Done()`); any
@@ -1207,7 +1218,16 @@ if inferred.is_none() && r.language == "dart" {
                                 return Ok(None);
                             }
                         }
-                        return Ok(Some(c));
+                        // A Scala call never lands on another language's
+                        // constructor here: a `def f(): T = T.Inner(...)`
+                        // return annotation reads as `T`'s type and hands
+                        // `Inner::Inner` over. Fall through to the Scala type
+                        // lookup below.
+                        if !(r.language == "scala"
+                            && is_other_language_constructor(&c.node, &r.language))
+                        {
+                            return Ok(Some(c));
+                        }
                     }
                     None if r.language == "objc" => return Ok(None),
                     None if awaited_file.is_some() => return Ok(None),
@@ -1376,6 +1396,26 @@ if inferred.is_none() && r.language == "dart" {
                     || self.same_owner_receiver_proven(&hit.node, r) {
                     return Ok(Some(hit));
                 }
+            }
+        }
+
+        // Scala `Outer.Inner(args)`: a case-class / companion `apply` on the
+        // nested Scala type `Outer::Inner` (Scala qualified names carry no
+        // package), before the receiver-word guesses hand it a same-named
+        // constructor or method of another class.
+        if r.language == "scala"
+            && dotted
+            && method_name
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_uppercase())
+        {
+            if let Some(chosen) = self.scala_nested_apply(&object_or_class, &method_name, r)? {
+                return Ok(Some(KCand {
+                    node: chosen,
+                    confidence: 0.85,
+                    resolved_by: "qualified-name",
+                }));
             }
         }
 
@@ -2164,6 +2204,18 @@ pub(super) fn shares_receiver_word(receiver: &str, method: &KNode) -> bool {
     }
     let owner: HashSet<String> = split_camel_case(owner_qn).iter().map(|w| flat(w)).filter(|w| w.len() > 2).collect();
     split_camel_case(receiver).iter().any(|w| owner.contains(&flat(w)))
+}
+
+/// isOtherLanguageConstructor (name-matcher.ts): a constructor node of
+/// another language — a method named like its owner
+/// (`pkg::Outer::Inner::Inner`), which is how the Java/Kotlin extractors
+/// record an explicit constructor.
+pub(super) fn is_other_language_constructor(node: &KNode, language: &str) -> bool {
+    if node.language == language {
+        return false;
+    }
+    let segs: Vec<&str> = node.qualified_name.split("::").collect();
+    segs.len() >= 2 && segs[segs.len() - 1] == segs[segs.len() - 2]
 }
 
 /// Lua's standard and host libraries: a call through one of these tables is

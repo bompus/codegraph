@@ -147,6 +147,39 @@ impl KernelResolver {
         Ok(imports)
     }
 
+    /// Scala `Outer.Inner(args)`: the nested `Outer::Inner` a case class's
+    /// `apply` (or a nested object's) builds. Scala qualified names carry no
+    /// package, so the written name is the whole lookup. Taken only when every
+    /// match sits in one file — a class and its companion share the name — or
+    /// else from the call site's own file; a class or trait of the name wins
+    /// over its companion object before the same-file tie-break.
+    pub(super) fn scala_nested_apply(
+        &mut self,
+        receiver: &str,
+        method: &str,
+        r: &ResolveRefIn,
+    ) -> Res<Option<Arc<KNode>>> {
+        let type_qn = format!("{}::{}", receiver.replace('.', "::"), method);
+        let mut types: Vec<Arc<KNode>> = self
+            .nodes_by_qualified_name(&type_qn)?
+            .iter()
+            .filter(|n| {
+                n.language == "scala" && matches!(n.kind.as_str(), "class" | "trait" | "module")
+            })
+            .cloned()
+            .collect();
+        // Stable: classes and traits keep their file order ahead of objects.
+        types.sort_by_key(|n| n.kind == "module");
+        let one_file = types
+            .first()
+            .is_some_and(|first| types.iter().all(|n| n.file_path == first.file_path));
+        Ok(if one_file {
+            types.first().cloned()
+        } else {
+            types.iter().find(|n| n.file_path == r.file_path).cloned()
+        })
+    }
+
     /// A binder in the innermost function, or in a still-open class-body block.
     pub(super) fn scala_local_binder(&mut self, r: &ResolveRefIn) -> Res<Option<(i64, i64)>> {
         let Some(source) = self.read_file(&r.file_path) else {
