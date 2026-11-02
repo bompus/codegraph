@@ -103,8 +103,9 @@ It stops early in three cases:
   (default `peak`).
 - **The noise floor is already known.** `--noise FILE` reuses the floor that
   `--save-noise` stored for the same host, kernel, runtime version, corpus
-  revision, edit and `--env`, and then runs no controls. A kernel or runtime
-  upgrade changes the key, so it is measured again.
+  revision, edit and `--env`, and then runs no controls. Entries without
+  `version: 2` (saved before full-precision floors) are ignored and remeasured.
+  A kernel or runtime upgrade changes the key, so it is measured again.
 
 The saved index keeps its synthesis skip list under a fingerprint of the
 resolution code that wrote it. A build whose resolution code differs would

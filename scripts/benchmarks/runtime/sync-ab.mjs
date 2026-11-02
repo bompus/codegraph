@@ -213,6 +213,9 @@ function prepare(arm) {
 
 const median = (xs) => { const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 const r3 = (x) => Math.round(x * 1000) / 1000;
+// A boundary is inclusive: a change mathematically at the floor is no clear change.
+const EPS = 1e-12;
+const beyondFloor = (deviation, floor) => deviation - floor > EPS;
 
 const corpusRev = execFileSync('git', ['-C', corpus, 'rev-parse', '--short=8', 'HEAD'], { encoding: 'utf8' }).trim();
 const noiseKey = (arm) => [os.hostname(), os.release(), arm.runtime, arm.version, path.basename(corpus), corpusRev, o.file, sha(appendText), JSON.stringify(extraEnv), wrap.join(' '), pristineHash[path.resolve(o.index)] ?? treeHash(path.resolve(o.index))].join('|');
@@ -248,7 +251,10 @@ if (o.proxies) {
 // Stored noise floor: the largest same-build deviation seen for this host, kernel, runtime and
 // workload. When it matches, later comparisons reuse it instead of running their own controls.
 const noiseStore = o.noise && fs.existsSync(o.noise) ? JSON.parse(fs.readFileSync(o.noise, 'utf8')) : {};
-const storedNoise = o.noise && noiseKey(A) === noiseKey(B) ? noiseStore[noiseKey(A)] : undefined;
+const storedNoise =
+  o.noise && noiseKey(A) === noiseKey(B) && noiseStore[noiseKey(A)]?.version === 2
+    ? noiseStore[noiseKey(A)]
+    : undefined;
 const controls = storedNoise ? 0 : Number(o.controls);
 if (storedNoise) console.log(`using stored noise floor from ${storedNoise.measured} (${JSON.stringify(storedNoise.maxDev)})`);
 
@@ -290,7 +296,7 @@ function verdicts(ss) {
     const per = ss.map(({ pairs }) => {
       const ratios = pairs.map(({ a, b }) => b[m] / a[m]);
       const med = median(ratios);
-      return { ratios: ratios.map(r3), median: r3(med), clear: Math.abs(med - 1) > floor };
+      return { ratios, median: med, clear: beyondFloor(Math.abs(med - 1), floor) };
     });
     const all = per.flatMap((p) => p.ratios);
     const sameSide = all.every((r) => r < 1) || all.every((r) => r > 1);
@@ -298,9 +304,9 @@ function verdicts(ss) {
     const base = median(ss.flatMap(({ pairs }) => pairs.map(({ a }) => a[m])));
     const cand = median(ss.flatMap(({ pairs }) => pairs.map(({ b }) => b[m])));
     res[m] = {
-      sessions: per, maxControlDev: maxDev === null ? null : r3(maxDev), base, cand, change: r3(cand / base - 1),
+      sessions: per, maxControlDev: maxDev, base, cand, change: cand / base - 1,
       qualified: per.every((p) => p.clear) && per.every((p) => Math.sign(p.median - 1) === Math.sign(per[0].median - 1)),
-      earlyStop: sameSide && maxDev !== null && minDev > Math.max(band, 2 * maxDev),
+      earlyStop: sameSide && maxDev !== null && beyondFloor(minDev, Math.max(band, 2 * maxDev)),
     };
   }
   return res;
@@ -309,17 +315,22 @@ function verdicts(ss) {
 const v = verdicts(sessions);
 if (o['save-noise'] && controls > 0) {
   const store = fs.existsSync(o['save-noise']) ? JSON.parse(fs.readFileSync(o['save-noise'], 'utf8')) : {};
-  for (const arm of arms) store[noiseKey(arm)] = { measured: meta.started, maxDev: Object.fromEntries(METRICS.map((m) => [m, v[m].maxControlDev])), runs: sessions.length * controls * 2 };
+  for (const arm of arms) store[noiseKey(arm)] = { measured: meta.started, maxDev: Object.fromEntries(METRICS.map((m) => [m, v[m].maxControlDev])), runs: sessions.length * controls * 2, version: 2 };
   fs.writeFileSync(o['save-noise'], JSON.stringify(store, null, 1) + '\n');
 }
 
 const fmt = (x, m) => (m === 'peak' ? x.toLocaleString('en-US') : x.toFixed(2));
-const word = (c) => (Math.abs(c) <= band ? 'no clear change' : `${Math.abs(c * 100).toFixed(1)}% ${c < 0 ? 'lower' : 'higher'}`);
+const floorOf = (m) => Math.max(band, v[m].maxControlDev ?? Infinity);
+const word = (m) => {
+  const c = v[m].change;
+  if (!beyondFloor(Math.abs(c), floorOf(m))) return 'no clear change';
+  return `${Math.abs(c * 100).toFixed(1)}% ${c < 0 ? 'lower' : 'higher'}`;
+};
 const lines = [
   `| Metric (${path.basename(corpus)} one-file sync) | ${A.name} | ${B.name} | Change | Qualified |`, '|---|---:|---:|---|---|',
-  ...METRICS.map((m) => `| ${{ peak: 'Peak memory', wall: 'Wall time', cpu: 'CPU time' }[m]} | ${fmt(v[m].base, m)} ${UNIT[m]} | ${fmt(v[m].cand, m)} ${UNIT[m]} | ${word(v[m].change)} | ${v[m].qualified ? 'yes' : 'no'} |`),
+  ...METRICS.map((m) => `| ${{ peak: 'Peak memory', wall: 'Wall time', cpu: 'CPU time' }[m]} | ${fmt(v[m].base, m)} ${UNIT[m]} | ${fmt(v[m].cand, m)} ${UNIT[m]} | ${word(m)} | ${v[m].qualified ? 'yes' : 'no'} |`),
   '',
-  `Per-session median ${B.name}/${A.name} ratio: ${METRICS.map((m) => `${m} ${v[m].sessions.map((s) => s.median).join(', ')}`).join('; ')}.`,
+  `Per-session median ${B.name}/${A.name} ratio: ${METRICS.map((m) => `${m} ${v[m].sessions.map((s) => r3(s.median)).join(', ')}`).join('; ')}.`,
   `Largest same-build deviation: ${METRICS.map((m) => `${m} ${v[m].maxControlDev === null ? 'n/a' : `${(v[m].maxControlDev * 100).toFixed(1)}%`}`).join(', ')}${storedNoise ? ` (stored, measured ${storedNoise.measured})` : ''}.`,
   `Runs: ${sessions.length} session(s), ${sessions.reduce((n, s) => n + s.pairs.length * 2 + s.ctl.length * 2, 0)} timed runs plus 2 warm-ups; graph identical on every run: ${new Set(readRuns().map((r) => `${r.edgesHash}/${r.nearDupHash}`)).size === 1 ? 'yes' : 'NO'}.`,
 ];
