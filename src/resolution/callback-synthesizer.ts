@@ -34,6 +34,7 @@ import { drupalHookEdges } from './drupal-hook-synthesizer';
 import { goframeRouteEdges } from './goframe-synthesizer';
 import { expoRouterReturnEdges } from './expo-router-synthesizer';
 import { nextLinkEdges } from './next-router-synthesizer';
+import { constAliasEdges, hasConstAliasShape } from './const-alias-synthesizer';
 import { reactRouterLinkEdges } from './react-router-synthesizer';
 import { tanstackLinkEdges } from './tanstack-router-synthesizer';
 import { vueRouterLinkEdges } from './vue-router-synthesizer';
@@ -7209,6 +7210,7 @@ export function hasSynthesisPattern(filePath: string, content: string): boolean 
   if (/\b(?:render|build|setState|defineStore|createStore|createApi|Store|href|sendEvent|sendEventWithName)\b|<\/|\/>/.test(content)) return true;
   // A wrapper renders the component it wraps (jsxEdges), in a file with no markup of its own too.
   if (WRAPPER_CALL_RE.test(content)) return true;
+  if (hasConstAliasShape(filePath, content)) return true;
   // windowMessageEdges (postMessage/addEventListener) and ngrxEdges (dispatch/ofType/@ngrx).
   if (/\bpostMessage\s*\(|@ngrx|\bofType\s*\(|\bcreateEffect\s*\(/.test(content)) return true;
   // rnDynamicModuleEdges / fabric / expo passes read the native-module names.
@@ -7346,6 +7348,8 @@ export const SYNTH_PASSES: SynthPassDef[] = [
   },
   { name: 'ginEdges', gate: (has) => has('go'), run: (q, c, y) => ginMiddlewareChainEdges(q, c, y) },
   { name: 'thunkEdges', gate: (has) => has(...JS_FAMILY), run: (q, c, y) => reduxThunkEdges(q, c, y) },
+  // `export const extname = isWin ? win32.extname : posix.extname` onto each function it can hold.
+  { name: 'constAliasEdges', gate: (has) => has(...JS_FAMILY), run: (q, c, y) => constAliasEdges(q, c, y) },
   { name: 'registryEdges', gate: ALWAYS, run: (_q, c, y, _sp, shard) => objectRegistryEdges(c, y, shard) },
   { name: 'rtkEdges', gate: (has) => has(...JS_FAMILY), run: (q, c, y) => rtkQueryEdges(q, c, y) },
   { name: 'piniaEdges', gate: (has) => has('vue', ...JS_FAMILY), run: (_q, c, y) => piniaStoreEdges(c, y) },

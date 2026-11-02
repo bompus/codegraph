@@ -106,6 +106,7 @@ function cppConstructorForType(type: Node, queries: QueryBuilder): Node | null {
 // Re-export types
 export * from './types';
 export { hasSynthesisPattern, isJsxChildCandidate, mayFeedSynthesis } from './callback-synthesizer';
+export { aliasMayName } from './const-alias-synthesizer';
 
 /** The module-config files at the project root a resolver reads, present or not (#2977). */
 const MODULE_CONFIG_ROOT_FILES = ['tsconfig.json', 'jsconfig.json', 'tsconfig.base.json', 'go.mod'] as const;
@@ -705,6 +706,21 @@ export class ReferenceResolver {
         // (runPostExtract closes it again).
         const kernel = this.kernelResolver ?? this.liveKernel(1);
         return this.kernelVerdict(ref, kernel.resolveViaImportRef({
+          rowId: ref.rowId,
+          fromNodeId: ref.fromNodeId,
+          referenceName: ref.referenceName,
+          referenceKind: ref.referenceKind,
+          line: ref.line,
+          column: ref.column,
+          filePath: ref.filePath,
+          language: ref.language,
+        }));
+      },
+      // The kernel's object-literal member arm, for the const-alias
+      // synthesizer's `const api = { load }; const f = api.load`.
+      resolveNodeMember: (nodeId, member, ref) => {
+        const kernel = this.kernelResolver ?? this.liveKernel(1);
+        return this.kernelVerdict(ref, kernel.resolveNodeMember(nodeId, member, {
           rowId: ref.rowId,
           fromNodeId: ref.fromNodeId,
           referenceName: ref.referenceName,

@@ -228,6 +228,12 @@ export interface ResolutionContext {
    * Minimal contexts without import resolution may omit this capability. */
   resolveImport?(ref: UnresolvedRef): ResolvedRef | null;
   /**
+   * The object-literal member `member` of the known container node `nodeId`:
+   * what a module-level const hands on (`const api = { load }; api.load`),
+   * supplied by the coordinator's kernel for the const-alias synthesizer.
+   */
+  resolveNodeMember?(nodeId: string, member: string, ref: UnresolvedRef): ResolvedRef | null;
+  /**
    * Whether an import specifier, written in `fromFile`, names a module outside
    * the repository: a package that is not a relative path, a tsconfig alias, a
    * workspace member or the repository's own package name, and that resolves

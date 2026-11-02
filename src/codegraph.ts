@@ -1782,10 +1782,13 @@ export class CodeGraph {
           // to the `Team` this sync adds. A component with no markup of its own
           // (`return null`, a wrapper) matches none of the input patterns; the
           // definition delta gates it instead. Removing one needs no check: a
-          // component a tag rendered had synthesized edges into its file.
+          // component a tag rendered had synthesized edges into its file. A
+          // function a const in an unchanged file names is the same: `const late
+          // = fns.join` links to the `join` this sync adds.
           if (result.definitionDelta && result.changedFilePaths) {
             const delta = new Set(result.definitionDelta);
-            if (this.queries.getNodesByFiles(result.changedFilePaths).some((n) => delta.has(n.name) && resolution().isJsxChildCandidate(n))) {
+            const defined = this.queries.getNodesByFiles(result.changedFilePaths).filter((n) => delta.has(n.name));
+            if (defined.some((n) => resolution().isJsxChildCandidate(n)) || resolution().aliasMayName(this.queries, defined)) {
               for (const p of result.changedFilePaths) this.synthesisDirty.add(p);
             }
           }
