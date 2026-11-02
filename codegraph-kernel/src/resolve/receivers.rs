@@ -1131,7 +1131,7 @@ fn go_bare_result(
         let best = if candidates.len() == 1 {
             candidates[0].clone()
         } else {
-            pick_closest_jvm_candidate(&candidates, &r.file_path)
+            pick_jvm_declaration(&candidates, r)
         };
         Ok(Some(KCand {
             node: best,
@@ -1230,6 +1230,100 @@ pub(super) fn pick_closest_jvm_candidate(candidates: &[Arc<KNode>], from_path: &
         }
     }
     best.clone()
+}
+
+/// The source set a file is in: `androidMain` of
+/// `lib/src/androidMain/kotlin/a/Util.kt`; None outside any `src/<set>/`.
+fn kmp_source_set(file_path: &str) -> Option<String> {
+    re!(r"(?:^|/)src/([^/]+)/")
+        .captures(file_path)
+        .map(|m| m[1].to_string())
+}
+
+/// What a source set builds for: `android` of `androidMain` and
+/// `androidUnitTest`, `common` of `commonTest`.
+fn kmp_build_target(set: &str) -> String {
+    re!(r"(?:Main|(?:Unit|Instrumented|Device|Host)?Test)$")
+        .replace(set, "")
+        .to_string()
+}
+
+/// Kotlin Multiplatform targets that build for the JVM.
+fn kmp_jvm_target(target: &str) -> bool {
+    re!(r"^(?:android|jvm|desktop)").is_match(target)
+}
+
+fn jvm_actual(node: &KNode) -> bool {
+    node.decorators
+        .as_ref()
+        .is_some_and(|ds| ds.iter().any(|d| d == "actual"))
+}
+
+/// Which of a declaration's same-named Kotlin Multiplatform declarations a JVM
+/// reference reaches. A file compiled for common code sees the `expect`, so
+/// commonMain and commonTest keep the nearest declaration, the `expect` on a
+/// tie. Anything built for a platform sees the `actual`: Kotlin of that
+/// target's source sets its own (an androidUnitTest the androidMain one) or
+/// that of a target it builds on (`iosArm64Main` from `iosMain`), and with
+/// neither the `expect`, as an intermediate source set does. Java, and a Kotlin
+/// module with no source sets of its own, run against JVM bytecode, where no
+/// `expect` exists. Of the JVM's targets the one its path names, else not
+/// Android's.
+pub(super) fn pick_jvm_declaration(candidates: &[Arc<KNode>], r: &ResolveRefIn) -> Arc<KNode> {
+    let actuals: Vec<&Arc<KNode>> = candidates.iter().filter(|n| jvm_actual(n)).collect();
+    if actuals.is_empty() || actuals.len() == candidates.len() {
+        return pick_closest_jvm_candidate(candidates, &r.file_path);
+    }
+    let set = kmp_source_set(&r.file_path);
+    let target = set.as_deref().map(kmp_build_target);
+    let target_of = |n: &KNode| kmp_build_target(&kmp_source_set(&n.file_path).unwrap_or_default());
+    if target.as_deref().is_some_and(|t| t.starts_with("common"))
+        || (target.is_none() && r.language != "java")
+    {
+        return pick_closest_jvm_candidate(candidates, &r.file_path);
+    }
+    let own: Vec<Arc<KNode>> = actuals
+        .iter()
+        .filter(|n| target.as_deref() == Some(target_of(n).as_str()))
+        .map(|n| (*n).clone())
+        .collect();
+    if !own.is_empty() {
+        return pick_closest_jvm_candidate(&own, &r.file_path);
+    }
+    if r.language == "java" || matches!(target.as_deref(), Some("main" | "test") | Some("")) {
+        let jvm: Vec<Arc<KNode>> = actuals
+            .iter()
+            .filter(|n| kmp_jvm_target(&target_of(n)))
+            .map(|n| (*n).clone())
+            .collect();
+        let android = re!(r"(?i)android").is_match(&r.file_path);
+        let named: Vec<Arc<KNode>> = jvm
+            .iter()
+            .filter(|n| target_of(n).starts_with("android") == android)
+            .cloned()
+            .collect();
+        let pool = if !named.is_empty() {
+            named
+        } else if !jvm.is_empty() {
+            jvm
+        } else {
+            actuals.iter().map(|n| (*n).clone()).collect()
+        };
+        return pick_closest_jvm_candidate(&pool, &r.file_path);
+    }
+    let above: Vec<Arc<KNode>> = actuals
+        .iter()
+        .filter(|n| {
+            let t = target_of(n);
+            !t.is_empty() && target.as_deref().is_some_and(|target| target.starts_with(&t))
+        })
+        .map(|n| (*n).clone())
+        .collect();
+    if above.is_empty() {
+        pick_closest_jvm_candidate(candidates, &r.file_path)
+    } else {
+        pick_closest_jvm_candidate(&above, &r.file_path)
+    }
 }
 
 fn go_result_from_node(resolver: &mut KernelResolver, node: &KNode) -> Option<String> {
