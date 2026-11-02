@@ -95,9 +95,11 @@ function launcherIn(dir) {
   return null;
 }
 
-// The one runtime flag every spawned Node wants: node:sqlite's ExperimentalWarning is noise.
+// The runtime flags every spawned Node wants: node:sqlite's ExperimentalWarning
+// is noise, and --max-semi-space-size=16 keeps V8's space for new objects at
+// Node 22's size in every thread (a sync's peak memory is that space).
 function runtimeArgs(entry) {
-  return ['--disable-warning=ExperimentalWarning', entry].concat(process.argv.slice(2));
+  return ['--disable-warning=ExperimentalWarning', '--max-semi-space-size=16', entry].concat(process.argv.slice(2));
 }
 
 // Download + cache the platform bundle from GitHub Releases. Returns

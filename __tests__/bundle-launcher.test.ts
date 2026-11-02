@@ -64,10 +64,34 @@ function checkForwarding(bundle: string) {
   expect(result.status, result.stderr).toBe(23);
   const output = JSON.parse(result.stdout);
   expect(output.args).toEqual(args);
-  expect(output.flags).toEqual(['--disable-warning=ExperimentalWarning']);
+  expect(output.flags).toEqual(['--disable-warning=ExperimentalWarning', '--max-semi-space-size=16']);
   expect(output.host).toBe('12345');
   expect(fs.realpathSync(output.exe)).toBe(fs.realpathSync(path.join(bundle, windows ? 'node.exe' : 'node')));
 }
+
+describe('the CLI keeps V8\'s new space at 16 MB a semi-space', () => {
+  const FLAG = '--max-semi-space-size=16';
+  it('names the flag in every launcher', () => {
+    // The bundle recipe writes the bundled launchers, the shim launches a
+    // bundle for npm installs, and the refresh launcher replaces a daemon.
+    expect(recipe).toContain(FLAG);
+    expect(fs.readFileSync(path.resolve('scripts/npm-shim.js'), 'utf8')).toContain(FLAG);
+    expect(fs.readFileSync(path.resolve('src/mcp/refresh-launcher.ts'), 'utf8')).toContain(FLAG);
+  });
+
+  it('holds the space a thread allocates in', () => {
+    // Without the flag Node 24 grows the new space to 64 MB a side; a run that
+    // allocates a little more than before lands on the higher size and its peak
+    // memory moves with it.
+    const res = spawnSync(
+      process.execPath,
+      [FLAG, '-e', 'let a = []; for (let i = 0; i < 4e6; i++) { a.push({ i }); if (a.length > 2e5) a = []; } console.log(require("v8").getHeapSpaceStatistics().find((s) => s.space_name === "new_space").space_size)'],
+      { encoding: 'utf8' }
+    );
+    expect(res.status, res.stderr).toBe(0);
+    expect(Number(res.stdout)).toBeLessThanOrEqual(33 * 1024 * 1024);
+  });
+});
 
 afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });

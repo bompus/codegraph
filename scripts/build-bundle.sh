@@ -123,9 +123,10 @@ fi
 #    path, so no system Node is ever needed).
 #
 # --disable-warning=ExperimentalWarning: node:sqlite's warning is noise for users.
+# --max-semi-space-size=16: V8's space for new objects at Node 22's size, in every thread.
 if [ "$OSFAM" = "win32" ]; then
   cp "$NODE_BIN" "$STAGE/node.exe"
-  printf '@"%%~dp0..\\node.exe" --disable-warning=ExperimentalWarning "%%~dp0..\\lib\\dist\\bin\\codegraph.js" %%*\r\n' \
+  printf '@"%%~dp0..\\node.exe" --disable-warning=ExperimentalWarning --max-semi-space-size=16 "%%~dp0..\\lib\\dist\\bin\\codegraph.js" %%*\r\n' \
     > "$STAGE/bin/codegraph.cmd"
   # Git Bash (including Claude Code hooks) does not resolve .cmd via PATHEXT.
   cat > "$STAGE/bin/codegraph" <<'LAUNCH'
@@ -133,7 +134,7 @@ if [ "$OSFAM" = "win32" ]; then
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # Preserve an inherited CODEGRAPH_HOST_PPID; do not replace it with MSYS's
 # $PPID, which is not a native Windows PID usable by the orphan watchdog.
-exec "$DIR/node.exe" --disable-warning=ExperimentalWarning "$DIR/lib/dist/bin/codegraph.js" "$@"
+exec "$DIR/node.exe" --disable-warning=ExperimentalWarning --max-semi-space-size=16 "$DIR/lib/dist/bin/codegraph.js" "$@"
 LAUNCH
   chmod +x "$STAGE/bin/codegraph"
 else
@@ -158,7 +159,8 @@ CODEGRAPH_HOST_PPID="${CODEGRAPH_HOST_PPID:-$PPID}"
 export CODEGRAPH_HOST_PPID
 # --disable-warning=ExperimentalWarning: mute node:sqlite's per-thread
 # "experimental feature" warning that otherwise interleaves with the progress UI.
-exec "$DIR/node" --disable-warning=ExperimentalWarning "$DIR/lib/dist/bin/codegraph.js" "$@"
+# --max-semi-space-size=16: V8's space for new objects at Node 22's size.
+exec "$DIR/node" --disable-warning=ExperimentalWarning --max-semi-space-size=16 "$DIR/lib/dist/bin/codegraph.js" "$@"
 LAUNCH
   chmod +x "$STAGE/bin/codegraph"
 fi
