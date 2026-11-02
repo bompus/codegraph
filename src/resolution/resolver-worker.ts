@@ -15,10 +15,7 @@
  */
 
 // Compile cache FIRST — same worker-boot rationale as parse-worker.ts.
-try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  (require('node:module') as { enableCompileCache?: () => void }).enableCompileCache?.();
-} catch { /* cache is best-effort */ }
+import '../compile-cache';
 
 import { parentPort, workerData } from 'worker_threads';
 import * as fs from 'fs';

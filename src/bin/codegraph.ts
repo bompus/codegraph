@@ -52,11 +52,11 @@ if (earlyPromptHook === null) {
 
 // Persist V8 compile artifacts across runs (Node ≥22.8). Every invocation —
 // and every worker thread, which re-requires the whole extraction module
-// graph — skips recompiling unchanged sources. Worth hundreds of ms of
-// worker-boot latency per bulk index; harmless no-op when unavailable.
+// graph — skips recompiling unchanged sources. A require, not an import, so it
+// runs here and not above the prompt-hook precheck.
 try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  (require('node:module') as { enableCompileCache?: () => void }).enableCompileCache?.();
+  require('../compile-cache');
 } catch { /* cache is best-effort */ }
 
 import { Command } from 'commander';
