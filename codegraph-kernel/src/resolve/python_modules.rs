@@ -15,6 +15,39 @@ pub struct PythonImportBinding {
     pub binding: Option<String>,
 }
 
+/// `sys.stdlib_module_names`, less the private `_x` modules. A folder only a
+/// script has on its path never takes one of these: `from html import escape` in
+/// `django/utils/text.py` is the stdlib's, though `django/utils/html.py` beside
+/// it defines `escape`. CPython's own `test` package isn't one, as Python leaves
+/// it out too, so `from test import TestCase` stays open to a project's runner.
+const PYTHON_STDLIB_MODULES: &[&str] = &[
+    "__future__", "abc", "annotationlib", "antigravity", "argparse", "array", "ast", "asyncio", "atexit",
+    "base64", "bdb", "binascii", "bisect", "builtins", "bz2", "cProfile", "calendar", "cmath", "cmd", "code",
+    "codecs", "codeop", "collections", "colorsys", "compileall", "compression", "concurrent", "configparser",
+    "contextlib", "contextvars", "copy", "copyreg", "csv", "ctypes", "curses", "dataclasses", "datetime",
+    "dbm", "decimal", "difflib", "dis", "doctest", "email", "encodings", "ensurepip", "enum", "errno",
+    "faulthandler", "fcntl", "filecmp", "fileinput", "fnmatch", "fractions", "ftplib", "functools", "gc",
+    "genericpath", "getopt", "getpass", "gettext", "glob", "graphlib", "grp", "gzip", "hashlib", "heapq",
+    "hmac", "html", "http", "idlelib", "imaplib", "importlib", "inspect", "io", "ipaddress", "itertools",
+    "json", "keyword", "linecache", "locale", "logging", "lzma", "mailbox", "marshal", "math", "mimetypes",
+    "mmap", "modulefinder", "msvcrt", "multiprocessing", "netrc", "nt", "ntpath", "nturl2path", "numbers",
+    "opcode", "operator", "optparse", "os", "pathlib", "pdb", "pickle", "pickletools", "pkgutil", "platform",
+    "plistlib", "poplib", "posix", "posixpath", "pprint", "profile", "profiling", "pstats", "pty", "pwd",
+    "py_compile", "pyclbr", "pydoc", "pydoc_data", "pyexpat", "queue", "quopri", "random", "re", "readline",
+    "reprlib", "resource", "rlcompleter", "runpy", "sched", "secrets", "select", "selectors", "shelve",
+    "shlex", "shutil", "signal", "site", "smtplib", "socket", "socketserver", "sqlite3", "ssl", "stat",
+    "statistics", "string", "stringprep", "struct", "subprocess", "symtable", "sys", "sysconfig", "syslog",
+    "tabnanny", "tarfile", "tempfile", "termios", "textwrap", "this", "threading", "time", "timeit",
+    "tkinter", "token", "tokenize", "tomllib", "trace", "traceback", "tracemalloc", "tty", "turtle",
+    "turtledemo", "types", "typing", "unicodedata", "unittest", "urllib", "uuid", "venv", "warnings", "wave",
+    "weakref", "webbrowser", "winreg", "winsound", "wsgiref", "xml", "xmlrpc", "zipapp", "zipfile",
+    "zipimport", "zlib", "zoneinfo",
+];
+
+fn python_stdlib_module(name: &str) -> bool {
+    PYTHON_STDLIB_MODULES.contains(&name)
+}
+
 #[derive(Default)]
 pub(super) struct PythonModules {
     files: HashSet<String>,
@@ -382,6 +415,12 @@ impl KernelResolver {
         from: &str,
         index: &PythonModules,
     ) -> Res<Option<String>> {
+        // A folder only a script has on its path never takes a stdlib name:
+        // `from html import escape` in `django/utils/text.py` is the stdlib's,
+        // though `django/utils/html.py` beside it defines `escape`.
+        if python_stdlib_module(spec.split('.').next().unwrap_or(spec)) {
+            return Ok(None);
+        }
         let rel = spec.replace('.', "/");
         let taken: Vec<String> = self
             .import_mappings(from)?
@@ -392,13 +431,22 @@ impl KernelResolver {
         if taken.is_empty() {
             return Ok(None);
         }
-        let mut dir = parent(from).to_string();
+        let importer_dir = parent(from).to_string();
+        let mut dir = importer_dir.clone();
         while !dir.is_empty() {
-            if index.packages.contains(&dir) {
+            // The importer's own folder is on its path even when it holds an
+            // `__init__.py` (a script run from there); a package above it is not.
+            if dir != importer_dir && index.packages.contains(&dir) {
                 dir = parent(&dir).to_string();
                 continue;
             }
             if let Some(file) = index.under(&dir, &rel) {
+                // A module that imports its own name wraps the real one, which
+                // that name then means; a file is never its own answer.
+                if self.import_mappings(&file)?.iter().any(|imp| imp.source == spec) {
+                    dir = parent(&dir).to_string();
+                    continue;
+                }
                 let defined: HashSet<String> = self
                     .nodes_in_file(&file)?
                     .iter()
@@ -453,9 +501,11 @@ impl KernelResolver {
     /// What an edit of these Python files can move through
     /// `python_module_above_script`: such a module binds only while it defines
     /// the names its importers take, so an edit links or unlinks them though no
-    /// file appeared or vanished. Only a module in a folder that is neither a
-    /// package nor a root, with Python folders below it, can be one, so any
-    /// other edit re-opens nothing.
+    /// file appeared or vanished. Import nodes are named by their specifier, so
+    /// each folder above a module asks for the spelling that reaches it from
+    /// there: a file in a package folder, or a file anywhere below a plain
+    /// folder that isn't a root. An edit nobody imports that way re-opens
+    /// nothing, however many other importers the module has.
     #[cfg_attr(feature = "addon", napi)]
     pub fn python_script_module_scope(
         &mut self,
@@ -466,20 +516,43 @@ impl KernelResolver {
         let mut leaves = Vec::new();
         for raw in edited_files {
             let file = raw.replace('\\', "/");
-            let dir = parent(&file);
-            if !file.ends_with(".py")
-                || dir.is_empty()
-                || index.packages.contains(dir)
-                || index.project.contains(dir)
-                || index.local.contains_key(dir)
-            {
+            if !file.ends_with(".py") {
                 continue;
             }
-            if !index.dirs.iter().any(|d| d.starts_with(&format!("{dir}/"))) {
-                continue;
+            let module = file
+                .strip_suffix("/__init__.py")
+                .or_else(|| (file == "__init__.py").then_some(""))
+                .or_else(|| file.strip_suffix(".py"))
+                .unwrap_or(&file)
+                .to_string();
+            let mut dir = parent(&module).to_string();
+            while !dir.is_empty() {
+                let specifier = module[dir.len() + 1..].replace('/', ".");
+                if python_stdlib_module(specifier.split('.').next().unwrap_or(&specifier)) {
+                    dir = parent(&dir).to_string();
+                    continue;
+                }
+                let importers: Vec<String> = self
+                    .nodes_by_name(&specifier)?
+                    .iter()
+                    .filter(|n| n.kind == "import" && n.file_path.ends_with(".py"))
+                    .map(|n| parent(&n.file_path).to_string())
+                    .collect();
+                let reached = if index.packages.contains(&dir) {
+                    importers.iter().any(|d| d == &dir)
+                } else {
+                    !index.project.contains(&dir)
+                        && !index.local.contains_key(&dir)
+                        && importers.iter().any(|d| d.starts_with(&format!("{dir}/")))
+                };
+                if !reached {
+                    dir = parent(&dir).to_string();
+                    continue;
+                }
+                leaves.push(module.rsplit('/').next().unwrap_or(&module).to_string());
+                targets.push(file);
+                break;
             }
-            leaves.push(file[dir.len() + 1..file.len() - ".py".len()].to_string());
-            targets.push(file);
         }
         Ok(PythonReopenScope {
             target_files: targets,
