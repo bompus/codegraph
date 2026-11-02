@@ -50,11 +50,11 @@ describe('resolution file reads', () => {
   it('rejects an oversized package archive before decoding and caches the rejection', () => {
     const relative = sparseArchive();
     const read = vi.spyOn(fs, 'readFileSync');
-    const stat = vi.spyOn(fs, 'statSync');
+    const open = vi.spyOn(fs, 'openSync');
     expect(context.readFile(relative)).toBeNull();
     expect(context.readFile(relative)).toBeNull();
     expect(read).not.toHaveBeenCalled();
-    expect(stat).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledTimes(1);
     fs.writeFileSync(path.join(root, relative), 'export const repaired = true;');
     resolver.clearCaches();
     expect(context.readFile(relative)).toBe('export const repaired = true;');
@@ -74,13 +74,13 @@ describe('resolution file reads', () => {
   it('rejects directories before reading and caches missing files', () => {
     fs.mkdirSync(path.join(root, 'directory'));
     const read = vi.spyOn(fs, 'readFileSync');
-    const stat = vi.spyOn(fs, 'statSync');
+    const open = vi.spyOn(fs, 'openSync');
     for (const name of ['directory', 'missing.ts']) {
       expect(context.readFile(name)).toBeNull();
       expect(context.readFile(name)).toBeNull();
     }
     expect(read).not.toHaveBeenCalled();
-    expect(stat).toHaveBeenCalledTimes(2);
+    expect(open).toHaveBeenCalledTimes(2);
   });
 
   // Import resolution runs in the kernel, which never reads a file over the
