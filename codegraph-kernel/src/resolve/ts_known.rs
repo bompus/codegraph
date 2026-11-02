@@ -584,6 +584,9 @@ impl TsScopeBlock {
 
 pub(super) struct TsScopeScan {
     module_file: bool,
+    /// A `declare` statement at the file's top level (a Flow library), never a
+    /// call `declare(…)`.
+    declares: bool,
     pub(super) blocks: Vec<TsScopeBlock>,
 }
 
@@ -1036,7 +1039,7 @@ impl KernelResolver {
         let text = source.text();
         // Nothing the scan can find: not a module file, no blocks to name.
         if !re!(r"\b(?:declare|namespace|module|import|export)\b").is_match(text) {
-            return Some(TsScopeScan { module_file: false, blocks: Vec::new() });
+            return Some(TsScopeScan { module_file: false, declares: false, blocks: Vec::new() });
         }
         let (script, ambient) = ts_scan_ambient(text);
         let top_level_global = re!(r"\.d\.[cm]?ts$").is_match(file) && script;
@@ -1052,7 +1055,10 @@ impl KernelResolver {
         }
         ts_scan_namespaces(text, top_level_global, &mut blocks);
         blocks.sort_by_key(|b| b.start);
-        Some(TsScopeScan { module_file: !script, blocks })
+        // A `.js` script of top-level `declare` statements is a Flow library;
+        // a call `declare(…)` is no statement.
+        let declares = re!(r"(?m)^\s*declare\s+(?:class|function|var|const|let|type|interface|module|namespace|export|opaque|component)\b").is_match(text);
+        Some(TsScopeScan { module_file: !script, declares, blocks })
     }
 
     fn ts_scope_candidate(&mut self, n: &KNode, r: &ResolveRefIn) -> bool {
@@ -1068,7 +1074,15 @@ impl KernelResolver {
         }
         if is_test_path(&n.file_path) && !is_test_path(&r.file_path) { return false; }
         if containing.iter().any(|b| b.ambient || !global_block(b)) { return false; }
-        containing.iter().any(global_block) || (!scan.module_file && re!(r"\.d\.[cm]?ts$").is_match(&n.file_path) && !n.qualified_name.contains("::"))
+        // A Flow library's top level is global to the JavaScript files Flow
+        // reads, as a `.d.ts` is; a TypeScript file's `ReadableStream` is its own.
+        let flow_library = !scan.module_file
+            && scan.declares
+            && re!(r"(?i)\.(?:[cm]?jsx?)$").is_match(&n.file_path)
+            && !re!(r"(?i)\.[cm]?tsx?$").is_match(&r.file_path);
+        containing.iter().any(global_block)
+            || (!scan.module_file && re!(r"\.d\.[cm]?ts$").is_match(&n.file_path) && !n.qualified_name.contains("::"))
+            || (flow_library && !n.qualified_name.contains("::"))
     }
 
     pub(super) fn ts_import_target_visible(&mut self, node: &KNode, source_file: &str, r: &ResolveRefIn) -> Res<bool> {

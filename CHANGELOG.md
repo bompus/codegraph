@@ -102,6 +102,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+ In TypeScript, a type a file uses without importing it, like `Omit<T, K>`, `Record<K, V>`, the DOM's `Event`, or a generic's own `T`, no longer links to a type of that name another module of your project declares, like a local `export type Omit` or an enum member `T`: it links to the file's own type or a global one, declared in a script `.d.ts` or a `declare global` block. A type you import, write qualified (`vscode.TextDocument`), bring in with `import X = ns.X`, or name inside a `declare module` block links as before. Re-index TypeScript projects after upgrading. The declarations of a Flow library, like a `flow-typed` folder, are still global to the JavaScript files Flow reads, and to no TypeScript file.
+
  In TypeScript and Flow, a parameter, local or field typed by an alias of a class, like `bridge: BackendBridge` with `type BackendBridge = Bridge<A, B>`, now calls that class's methods, through a nullable alias and an alias of an alias too. Before, such a call linked to nothing.
 
  In JavaScript and TypeScript, a member of a module loaded with `require('./x')` or a default import, like `utils.clean()` or `named.second()`, now links to what that module exports under the name. Before, a CommonJS module of `exports.x = …` assignments or `module.exports = { … }`, and an ES module with no default of its own, sent every such call to the first function it declares, or linked nothing, and a name the module doesn't export linked there too. `module.exports = X` beside an `exports.y = function …` now means `X`, so `new Mocha()` no longer lands on a neighbour of `Mocha`.
