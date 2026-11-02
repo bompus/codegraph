@@ -1272,6 +1272,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - In C and C++, a struct, class or union now links to the types its members are declared with, whether held by value, by pointer, in an array, through a function pointer or inside a template like `std::vector<Foo>`, and a `typedef` or `using` alias links to the type it names, so impact on a type reaches every struct that holds one, like redis's `redisServer` for `pause_event`. A member's type is the one C++ name lookup finds from the class, so a builtin, a macro or a function of the same name links nothing. Re-index C and C++ projects after upgrading.
 
+- In C, a function that writes a block macro before a block, like redis's `TEST_CONTEXT("…") {` or xxhash's `XXH_ASSERT(c)`, still counts as using the macro: a statement of a function body keeps the macro's name in the blanked span, so a change to the macro reaches the function. Elsewhere — an initializer, a struct or enum body, another macro's arguments, the rest of an expression, or the body of an `if`, `for`, `else` or `do` — the whole call is still blanked, as before. Re-index C projects after upgrading. (#3172)
+
 ## [1.6.2] - 2026-10-03
 
 ### Highlights
