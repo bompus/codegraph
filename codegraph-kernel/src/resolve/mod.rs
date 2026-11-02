@@ -637,6 +637,7 @@ mod method_call;
 mod pipeline;
 mod file_refs;
 mod rust_modules;
+mod rust_scope;
 mod rust_crates;
 mod awaited;
 mod iteration;
@@ -914,6 +915,7 @@ pub struct KernelResolver {
     /// getRazorUsings memo, by file.
     razor_usings_memo: HashMap<String, Rc<Vec<String>>>,
     rust_crate_root_memo: HashMap<String, Option<String>>,
+    rust_scope_memo: HashMap<String, Rc<rust_scope::RustScopeFacts>>,
     /// factory_initializer memo: (file, binding line, root, binding node).
     factory_init_memo: HashMap<(String, i64, String, Option<String>), Rc<method_call::FactoryInit>>,
     /// C/C++ directive summaries and per-root macro timelines (#1838).
@@ -1171,6 +1173,7 @@ impl KernelResolver {
             cobol_copybooks: None,
             razor_usings_memo: HashMap::new(),
             rust_crate_root_memo: HashMap::new(),
+            rust_scope_memo: HashMap::new(),
             factory_init_memo: HashMap::new(),
             cpp_macros: cpp::MacroCache::default(),
             cpp_namespaces: cpp_namespace::NamespaceCache::default(),

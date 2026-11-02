@@ -34,10 +34,17 @@ pub(in super::super) fn rust_at<'a>(
     line: i64,
     col: i64,
 ) -> tree_sitter::Node<'a> {
+    // The extractor writes JS (UTF-16) columns; tree-sitter points count
+    // bytes, so a line holding an emoji before the call would land past it.
+    let line_text = text
+        .split('\n')
+        .nth((line - 1).max(0) as usize)
+        .unwrap_or("");
+    let byte_col = super::super::names::js_unit_to_byte(line_text, col.max(0) as usize);
     descendant_for_position(
         tree.root_node(),
         text,
-        ((line - 1).max(0) as usize, col.max(0) as usize),
+        ((line - 1).max(0) as usize, byte_col),
     )
 }
 pub(in super::super) fn rust_inline_at(mut n: tree_sitter::Node<'_>, text: &str) -> Vec<String> {
@@ -56,7 +63,7 @@ pub(in super::super) fn rust_inline_at(mut n: tree_sitter::Node<'_>, text: &str)
 }
 
 /// Flatten one grammar use tree, preserving full paths and local aliases.
-fn rust_use_leaves(
+pub(in super::super) fn rust_use_leaves(
     n: tree_sitter::Node<'_>,
     text: &str,
     prefix: &[String],
@@ -708,6 +715,11 @@ impl KernelResolver {
             "method" | "field" | "property" | "enum_member" | "file" | "module" | "namespace"
         ) {
             return None;
+        }
+        // A `use` path, a nested `fn`, or a local binding owns the name at
+        // this call site; only what that binding names is in scope.
+        if let Some(visible) = self.rust_binding_visible(n, r) {
+            return Some(visible);
         }
         for (local, p, m) in self.rust_visible_uses(&r.file_path, offset) {
             if local == name {

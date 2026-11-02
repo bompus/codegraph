@@ -1117,6 +1117,16 @@ if super::lang_scope::is_dart_member_read(r) {
                 return Ok(o);
             }
         }
+        // A bare Rust name a `use` alias or a local owns: the item its path
+        // names, the nested `fn` a block declares, or nothing when a
+        // parameter or a non-function `let` is what the name means.
+        if let Some(result) = self.match_rust_bound_name(r)? {
+            let Some(c) = result else { return Ok(ResolveOutcome::unresolved()) };
+            return match self.gate_language(Some(c), r) {
+                Some(c) => self.finish(r, c, None, true),
+                None => Ok(ResolveOutcome::unresolved()),
+            };
+        }
         if let Some(c) = self.match_rust_use_alias(r)? {
             return match self.gate_language(Some(c), r) {
                 Some(c) => self.finish(r, c, None, true),
