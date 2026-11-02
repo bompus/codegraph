@@ -1063,21 +1063,6 @@ impl KernelResolver {
             if imp.local_name != r.reference_name && !is_member {
                 continue;
             }
-            // A `declare module` the import's file can see describes the
-            // module ahead of a package whose module is only a declaration
-            // file; a module of the repository's own packages is what runs
-            // (findImportedExport in import-resolver.ts). `ts_ambient_lookup`
-            // applies both rules.
-            if is_esm_family(&r.language) {
-                let want = if imp.is_namespace {
-                    r.reference_name.rsplit('.').next().unwrap_or(&r.reference_name).to_string()
-                } else {
-                    imp.exported_name.clone()
-                };
-                if let Some(node) = self.ts_ambient_lookup(&imp.source, &want, imp.is_default, r)? {
-                    return Ok(Some(KCand { node, confidence: 0.9, resolved_by: "import" }));
-                }
-            }
             let mut resolved_path =
                 self.resolve_import_path(&imp.source, &r.file_path, &r.language)?;
             if resolved_path.is_none() && r.language == "python" {
@@ -1085,7 +1070,6 @@ impl KernelResolver {
                     .find_python_module_file(&imp.source, &r.file_path)?
                     .map(|n| n.file_path.clone());
             }
-            let Some(resolved_path) = resolved_path else { continue };
             let want = ExportWant {
                 is_default: imp.is_default,
                 is_namespace: imp.is_namespace,
@@ -1107,6 +1091,44 @@ impl KernelResolver {
                     None
                 },
             };
+            // A `declare module` the import's file can see describes the
+            // module ahead of a package whose module is only a declaration
+            // file; a module of the repository's own packages is what runs
+            // (findImportedExport in import-resolver.ts). `ts_ambient_lookup`
+            // applies both rules. A declaration file whose built source beside
+            // it exports the name is that implementation's, not the stub's.
+            if is_esm_family(&r.language) {
+                let mut real_export = false;
+                if let Some(path) = &resolved_path {
+                    if is_declaration_file(path) {
+                        if let Some(stem) = [".d.ts", ".d.mts", ".d.cts"].iter().find_map(|suffix| path.strip_suffix(suffix)) {
+                            let alternatives: &[&str] = if path.ends_with(".d.mts") { &[".mts", ".mjs"] }
+                                else if path.ends_with(".d.cts") { &[".cts", ".cjs"] }
+                                else { &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"] };
+                            for extension in alternatives {
+                                let implementation = format!("{stem}{extension}");
+                                if self.file_exists(&implementation)
+                                    && self.find_exported_symbol(&implementation, &want, &r.language, &mut HashSet::new(), 0)?.is_some()
+                                {
+                                    real_export = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if !real_export {
+                    let ambient_name = if imp.is_namespace {
+                        r.reference_name.rsplit('.').next().unwrap_or(&r.reference_name).to_string()
+                    } else {
+                        imp.exported_name.clone()
+                    };
+                    if let Some(node) = self.ts_ambient_lookup(&imp.source, &ambient_name, imp.is_default, r)? {
+                        return Ok(Some(KCand { node, confidence: 0.9, resolved_by: "import" }));
+                    }
+                }
+            }
+            let Some(resolved_path) = resolved_path else { continue };
             let mut visited = HashSet::new();
             let mut target = None;
             if r.reference_kind == "calls" && is_js_family(&r.language) {

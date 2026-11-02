@@ -1247,6 +1247,27 @@ impl KernelResolver {
     pub(super) fn ts_ambient_lookup(&mut self, specifier: &str, exported: &str, default: bool, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
         if specifier.starts_with('.') || specifier.starts_with('/') { return Ok(None); }
         let specifier = specifier.strip_prefix("node:").unwrap_or(specifier);
+        // A package's entry may be a declaration file with the implementation
+        // beside it (`types` listed before `default`): the implementation that
+        // exports the name is the module, not the block.
+        if let Some(path) = self.resolve_import_path(specifier, &r.file_path, &r.language)? {
+            if crate::resolve::imports::is_declaration_file(&path) {
+                if let Some(stem) = [".d.ts", ".d.mts", ".d.cts"].iter().find_map(|suffix| path.strip_suffix(suffix)) {
+                    let alternatives: &[&str] = if path.ends_with(".d.mts") { &[".mts", ".mjs"] }
+                        else if path.ends_with(".d.cts") { &[".cts", ".cjs"] }
+                        else { &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"] };
+                    for extension in alternatives {
+                        let implementation = format!("{stem}{extension}");
+                        if !self.file_exists(&implementation) { continue; }
+                        if exported == "*" { return Ok(None); }
+                        let want = ExportWant { is_default: default, is_namespace: false, exported_name: exported.to_string(), member_name: None };
+                        if self.find_exported_symbol(&implementation, &want, &r.language, &mut HashSet::new(), 0)?.is_some() {
+                            return Ok(None);
+                        }
+                    }
+                }
+            }
+        }
         // A module of the repository's own packages comes before a block: the
         // module is what runs, and the block only describes it. A name only the
         // block declares still resolves to it.
@@ -1268,6 +1289,25 @@ impl KernelResolver {
         let mut hits = Vec::new();
         for file in files.iter().filter(|f| cached.as_ref().is_none_or(|cached| cached.as_ref() == Some(*f))) {
             if !self.declaring_file_answers(file, &r.file_path) { continue; }
+            // A package's types entry with the implementation beside it: the
+            // implementation that exports the name is the module, not the block.
+            if let Some(stem) = [".d.ts", ".d.mts", ".d.cts"].iter().find_map(|suffix| file.strip_suffix(suffix)) {
+                let alternatives: &[&str] = if file.ends_with(".d.mts") { &[".mts", ".mjs"] }
+                    else if file.ends_with(".d.cts") { &[".cts", ".cjs"] }
+                    else { &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"] };
+                let mut implemented = false;
+                for extension in alternatives {
+                    let implementation = format!("{stem}{extension}");
+                    if !self.file_exists(&implementation) { continue; }
+                    if exported == "*" { implemented = true; break; }
+                    let want = ExportWant { is_default: default, is_namespace: false, exported_name: exported.to_string(), member_name: None };
+                    if self.find_exported_symbol(&implementation, &want, &r.language, &mut HashSet::new(), 0)?.is_some() {
+                        implemented = true;
+                        break;
+                    }
+                }
+                if implemented { continue; }
+            }
             let Some(scan) = self.ts_scope_scan(file) else { continue };
             for block in scan.blocks.iter().filter(|b| b.ambient && b.name.strip_prefix("node:").unwrap_or(&b.name) == specifier) {
                 if exported == "*" {
