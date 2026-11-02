@@ -2586,15 +2586,42 @@ impl KernelResolver {
         if scoped.is_empty() {
             return Ok(None);
         }
-        let same_file: Vec<Arc<KNode>> = scoped
+        // Of the members a Java `Type::method` could name, those of a `Type`
+        // the file can see, as for a bare type name: elasticsearch's
+        // `Template::lifecycle` under `import …metadata.Template` is that
+        // class's method, not the accessor of a record `Template` nested
+        // elsewhere.
+        let members: Vec<Arc<KNode>> = if r.language == "java" && scoped.len() > 1 {
+            let type_ref = r.clone().naming(&r.reference_name[..sep], "references");
+            let mut visible = Vec::new();
+            for n in scoped {
+                let owner_qn = n.qualified_name.rsplit_once("::").map(|(o, _)| o.to_string()).unwrap_or_default();
+                let owner = self
+                    .nodes_by_qualified_name(&owner_qn)?
+                    .iter()
+                    .find(|t| t.file_path == n.file_path && super::language_type_scope::visible_type(&t.kind))
+                    .cloned();
+                match owner {
+                    Some(owner) if !self.language_type_visible(&owner, &type_ref)? => {}
+                    _ => visible.push(n),
+                }
+            }
+            visible
+        } else {
+            scoped
+        };
+        if members.is_empty() {
+            return Ok(None);
+        }
+        let same_file: Vec<Arc<KNode>> = members
             .iter()
             .filter(|n| n.file_path == r.file_path)
             .cloned()
             .collect();
-        if same_file.is_empty() && scoped.len() > 1 {
+        if same_file.is_empty() && members.len() > 1 {
             return Ok(None);
         }
-        let pool = if same_file.is_empty() { scoped } else { same_file };
+        let pool = if same_file.is_empty() { members } else { same_file };
         // `<=` reduce keeps the first minimum — min_by_key does the same.
         let target = pool.iter().min_by_key(|n| n.start_line).unwrap().clone();
         Ok(Some(KCand {
