@@ -578,6 +578,13 @@ if super::lang_scope::is_dart_member_read(r) {
             return self.after_name_match(r, cands, erlang);
         }
         let mut name_cand = self.match_by_file_path(r)?;
+        // A dotted Java, Kotlin or C# supertype (`extends Outer.Inner`) is a
+        // nested type's path: the type it names in the file's reach, or nothing.
+        if name_cand.is_none() {
+            if let Some(dotted) = self.match_dotted_supertype(r)? {
+                return self.after_name_match(r, cands, dotted);
+            }
+        }
         if name_cand.is_none() {
             name_cand = self.match_by_qualified_name(r)?;
         }
