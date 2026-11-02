@@ -318,6 +318,12 @@ export interface ResolutionContext {
    * relative resolution fails. Optional so existing callers compile.
    */
   getCppIncludeDirs?(): string[];
+  /**
+   * The crates of the project's Cargo workspace, each spelling of a name →
+   * its member's directory. Optional so minimal contexts compile; they read
+   * the manifests themselves (see getCargoWorkspaceCrateMap).
+   */
+  getCargoCrates?(): Map<string, string>;
 
 }
 

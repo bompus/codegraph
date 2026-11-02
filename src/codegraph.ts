@@ -1060,7 +1060,7 @@ export class CodeGraph {
   private stampModuleConfigSnapshot(): void {
     try {
       const stored = this.queries.getMetadata(MODULE_CONFIG_METADATA_KEY);
-      this.queries.setMetadata(MODULE_CONFIG_METADATA_KEY, JSON.stringify(this.resolver.getModuleConfigSnapshot(stored)));
+      this.queries.setMetadata(MODULE_CONFIG_METADATA_KEY, JSON.stringify(this.resolver.getModuleConfigSnapshot(stored, true)));
     } catch { /* metadata is advisory */ }
   }
 
@@ -1695,9 +1695,8 @@ export class CodeGraph {
           if (walValve) { walValve.stop(); await walValve.drain(); }
           try {
             const stored = this.queries.getMetadata(MODULE_CONFIG_METADATA_KEY);
-            const snapshot = this.resolver.getModuleConfigSnapshot(stored);
-            const was = resolution().parseModuleConfigSnapshot(stored);
-            const changed = stored === null ? [] : Object.keys(snapshot).filter((rel) => (was[rel] ?? 'absent') !== snapshot[rel]);
+            const snapshot = this.resolver.getModuleConfigSnapshot(stored, result.filesAdded > 0 || result.filesRemoved > 0);
+            const changed = stored === null ? [] : resolution().changedModuleConfigs(resolution().parseModuleConfigSnapshot(stored), snapshot);
             if (changed.length > 0) {
               this.resolver.resetModuleConfig();
               let reopened = 0;

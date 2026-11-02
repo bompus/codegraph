@@ -722,33 +722,31 @@ export function loadCppIncludeDirs(projectRoot: string): string[] {
   return dirs;
 }
 
+/** The compilation databases codegraph looks for, by project-relative path. */
+export const CPP_COMPILE_DB_FILES = [
+  'compile_commands.json',
+  'build/compile_commands.json',
+  'cmake-build-debug/compile_commands.json',
+  'cmake-build-release/compile_commands.json',
+  'out/compile_commands.json',
+] as const;
+
 /**
- * Try to load include directories from compile_commands.json.
+ * The C/C++ include search directories a project's compile_commands.json
+ * names, by its -I and -isystem flags, relative to projectRoot.
  * Returns null if no compilation database is found (so the heuristic
  * fallback can run). Returns an array (possibly empty) otherwise.
  */
-function loadCppIncludeDirsFromCompileDB(projectRoot: string): string[] | null {
-  const candidates = [
-    path.join(projectRoot, 'compile_commands.json'),
-    path.join(projectRoot, 'build', 'compile_commands.json'),
-    path.join(projectRoot, 'cmake-build-debug', 'compile_commands.json'),
-    path.join(projectRoot, 'cmake-build-release', 'compile_commands.json'),
-    path.join(projectRoot, 'out', 'compile_commands.json'),
-  ];
-
-  let dbPath: string | undefined;
-  for (const c of candidates) {
-    try {
-      if (fs.existsSync(c)) {
-        dbPath = c;
-        break;
-      }
-    } catch {
-      // ignore
-    }
+export function loadCppIncludeDirsFromCompileDB(projectRoot: string): string[] | null {
+  for (const file of CPP_COMPILE_DB_FILES) {
+    const dbPath = path.join(projectRoot, file);
+    if (fs.existsSync(dbPath)) return readCompileDbIncludeDirs(dbPath, projectRoot);
   }
-  if (!dbPath) return null;
+  return null;
+}
 
+/** The include directories the compilation database at `dbPath` names; null when it can't be read. */
+export function readCompileDbIncludeDirs(dbPath: string, projectRoot: string): string[] | null {
   try {
     const content = fs.readFileSync(dbPath, 'utf-8');
     const entries = JSON.parse(content) as Array<{
@@ -836,7 +834,7 @@ function shlexSplit(cmd: string): string[] {
  * Heuristic include directory discovery when no compile_commands.json exists.
  * Checks common convention directories and scans top-level dirs for headers.
  */
-function loadCppIncludeDirsHeuristic(projectRoot: string): string[] {
+export function loadCppIncludeDirsHeuristic(projectRoot: string): string[] {
   const dirs: string[] = [];
   const conventionDirs = ['include', 'src', 'lib', 'api', 'inc'];
 

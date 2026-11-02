@@ -139,7 +139,7 @@ function getArrayValue(section: string, key: string): string | null {
   return null;
 }
 
-function parseWorkspaceMembers(cargoToml: string): string[] {
+export function parseWorkspaceMembers(cargoToml: string): string[] {
   const workspaceSection = getSection(cargoToml, 'workspace');
   if (!workspaceSection) return [];
   const membersValue = getArrayValue(workspaceSection, 'members');
@@ -215,6 +215,61 @@ function expandMembers(members: string[], context: ResolutionContext): string[] 
 }
 
 /**
+ * What resolution reads from a Cargo manifest: the workspace's members, the
+ * package's name and what it depends on by name, package and path. A version
+ * bump is none of that (upstream 9d3abb84 / f72c9d2e).
+ */
+export function cargoManifestFields(text: string): string {
+  return JSON.stringify([parseWorkspaceMembers(text), parsePackageName(text), rustManifestDependencies(text)]);
+}
+
+interface ManifestDependency {
+  key: string;
+  pkg: string;
+  path?: string;
+  workspace: boolean;
+  kind: 'normal' | 'dev' | 'build' | 'workspace';
+}
+
+/** A manifest's dependencies, normalizing `-` to `_` as `use` paths write them. */
+function rustManifestDependencies(text: string): ManifestDependency[] {
+  const deps = new Map<string, ManifestDependency>();
+  const entry = (kind: ManifestDependency['kind'], name: string): ManifestDependency => {
+    const key = name.replace(/-/g, '_');
+    let dep = deps.get(`${kind} ${key}`);
+    if (!dep) deps.set(`${kind} ${key}`, (dep = { key, pkg: key, workspace: false, kind }));
+    return dep;
+  };
+  const read = (dep: ManifestDependency, fields: string): void => {
+    const pkg = /\bpackage\s*=\s*"([^"]+)"/.exec(fields)?.[1];
+    if (pkg) dep.pkg = pkg.replace(/-/g, '_');
+    const at = /\bpath\s*=\s*"([^"]+)"/.exec(fields)?.[1];
+    if (at) dep.path = at.replace(/\\/g, '/');
+    if (/\bworkspace\s*=\s*true\b/.test(fields)) dep.workspace = true;
+  };
+  let kind: ManifestDependency['kind'] | null = null;
+  let table: ManifestDependency | null = null;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(/#.*$/, '').trim();
+    const header = /^\[([^\]]+)\]$/.exec(line);
+    if (header) {
+      const m = /^(?:(workspace)\.|target\..+\.)?(dev-|build-)?dependencies(?:\.([A-Za-z0-9_-]+))?$/.exec(header[1]!.trim());
+      const of = !m ? null : m[1] ? 'workspace' : m[2] === 'dev-' ? 'dev' : m[2] === 'build-' ? 'build' : 'normal';
+      kind = of !== null && !m![3] ? of : null;
+      table = of !== null && m![3] ? entry(of, m![3]) : null;
+      continue;
+    }
+    if (table) {
+      read(table, line);
+      continue;
+    }
+    const dep = kind === null ? null : /^"?([A-Za-z0-9_-]+)"?\s*(?:\.\s*([A-Za-z_-]+)\s*)?=\s*(.*)$/.exec(line);
+    if (dep) read(entry(kind!, dep[1]!), dep[2] ? `${dep[2]} = ${dep[3]}` : dep[3]!);
+  }
+  return [...deps.values()];
+}
+
+/**
  * Build a map from crate-name aliases to workspace member directory paths.
  * Example: "mytool-core" and "mytool_core" -> "crates/mytool-core"
  *
@@ -222,6 +277,11 @@ function expandMembers(members: string[], context: ResolutionContext): string[] 
  * when the context exposes `listDirectories`.
  */
 export function getCargoWorkspaceCrateMap(context: ResolutionContext): Map<string, string> {
+  return context.getCargoCrates?.() ?? readCargoWorkspaceCrateMap(context);
+}
+
+/** The crate map as the resolver keeps it, read from the manifests on disk. */
+export function readCargoWorkspaceCrateMap(context: ResolutionContext): Map<string, string> {
   const result = new Map<string, string>();
   const rootCargoToml = context.readFile('Cargo.toml');
   if (!rootCargoToml) return result;
