@@ -982,6 +982,22 @@ if super::lang_scope::is_dart_member_read(r) {
                 }
             }
         }
+        // A guess by name stops at a monorepo's own edge: the tests of a
+        // nested workspace install see neither the outer root's packages nor
+        // its globals (crossesWorkspaceRoot).
+        if outcome.status == "resolved" && is_js_family(&r.language)
+            && matches!(outcome.resolved_by.as_deref(), Some("exact-match" | "fuzzy" | "function-ref"))
+        {
+            if let Some(tid) = outcome.target_node_id.clone() {
+                if let Some(target) = self.node_by_id(&tid)? {
+                    if let Some(ws) = self.workspaces.as_ref() {
+                        if crate::resolve::imports::leaves_workspace_root(&r.file_path, &target.file_path, &ws.nested_roots) {
+                            outcome = ResolveOutcome::unresolved();
+                        }
+                    }
+                }
+            }
+        }
         if let Some(attribute) = attribute {
             if !attribute.type_from.is_empty() { outcome.type_from = Some(attribute.type_from); }
         }

@@ -114,6 +114,8 @@ pub struct KernelPackageEntriesIn {
     pub dir: String,
     /// `exports` key (`.`, `./widgets`, `./schema/*`) → its targets, best first.
     pub exports: Vec<KernelKvList>,
+    /// The same keys' `browser` condition targets, best first.
+    pub browser: Option<Vec<KernelKvList>>,
     /// source/module/main/types/typings targets, best first.
     pub main: Vec<String>,
 }
@@ -139,6 +141,9 @@ pub struct KernelWorkspaceIn {
     pub entries_by_dir: Option<Vec<KernelPackageEntriesIn>>,
     /// Manifest directory → `file:`/`link:`/`portal:` dependency name → package dir.
     pub scoped_by_name: Option<Vec<KernelScopedPackageIn>>,
+    /// Folders below the root whose manifest declares workspaces of its own:
+    /// a monorepo inside the repository, with an install of its own.
+    pub nested_roots: Option<Vec<String>>,
 }
 
 #[cfg_attr(feature = "addon", napi(object))]
@@ -1024,6 +1029,12 @@ impl KernelResolver {
                                         .into_iter()
                                         .map(|kv| (kv.key, kv.values))
                                         .collect(),
+                                    browser: e
+                                        .browser
+                                        .unwrap_or_default()
+                                        .into_iter()
+                                        .map(|kv| (kv.key, kv.values))
+                                        .collect(),
                                     main: e.main,
                                 },
                             )
@@ -1044,6 +1055,7 @@ impl KernelResolver {
                         .collect()
                 })
                 .unwrap_or_default(),
+            nested_roots: w.nested_roots.unwrap_or_default(),
         });
         // context.getCppIncludeDirs?.() ?? [] — the TS side resolves
         // compile_commands.json + convention heuristics and passes the list;

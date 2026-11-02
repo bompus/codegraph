@@ -186,6 +186,7 @@ export interface KernelKvList {
 export interface KernelPackageEntriesIn {
   dir: string;
   exports: KernelKvList[];
+  browser?: KernelKvList[];
   main: string[];
 }
 
@@ -201,6 +202,8 @@ export interface KernelWorkspaceIn {
   localLinkNames?: string[];
   entriesByDir?: KernelPackageEntriesIn[];
   scopedByName?: KernelScopedPackageIn[];
+  /** Folders below the root whose manifest declares workspaces of its own. */
+  nestedRoots?: string[];
 }
 
 export interface KernelResolverConfig {

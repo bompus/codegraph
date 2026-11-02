@@ -109,7 +109,14 @@ impl KernelResolver {
             }
         }
         let name = Self::longest_package_name(import_path, ws.by_name.keys())?;
-        Some((name.to_string(), ws.by_name[name].clone()))
+        let dir = ws.by_name[name].clone();
+        // A bare import from inside a nested workspace install doesn't reach
+        // the outer workspace's packages: package managers don't nest
+        // workspaces.
+        if leaves_workspace_root(from_file, &dir, &ws.nested_roots) {
+            return None;
+        }
+        Some((name.to_string(), dir))
     }
 
     /// resolveWorkspaceImport (workspace-packages.ts): sourceEntries first,
@@ -153,7 +160,13 @@ impl KernelResolver {
             Some(entry) => vec![entry],
             None => self.declared_workspace_entries(dir.as_str(), subpath),
         };
-        Some(WorkspaceTargets { declared, directory, package_dir: dir })
+        let browser = self
+            .workspaces
+            .as_ref()
+            .and_then(|ws| ws.entries_by_dir.get(dir.as_str()))
+            .map(|entries| exported_targets(&entries.browser, &format!(".{subpath}")))
+            .unwrap_or_default();
+        Some(WorkspaceTargets { declared, browser, directory, package_dir: dir })
     }
 
     /// declaredEntries: the targets a package's manifest declares for
@@ -227,6 +240,11 @@ impl KernelResolver {
             }
         }
         None
+    }
+
+    /// Whether `file` reads the browser's page (see is_browser_code_source).
+    fn is_browser_code(&mut self, file: &str) -> bool {
+        self.read_file(file).is_some_and(|src| is_browser_code_source(src.text()))
     }
 
     /// applyAliases (path-aliases.ts): candidate paths relative to
@@ -355,6 +373,18 @@ impl KernelResolver {
             // else the member's directory where extension/index permutations
             // find its barrel, else the source its build output mirrors.
             if let Some(targets) = self.workspace_import_targets(import_path, from_file) {
+                // A file that reads the page takes the entry's `browser`
+                // condition (react's fixtures, built for the browser).
+                if !targets.browser.is_empty() && self.is_browser_code(from_file) {
+                    for target in &targets.browser {
+                        if let Some(hit) = self
+                            .indexed_target(target, language)
+                            .or_else(|| self.built_source_of(target, &targets.package_dir, language))
+                        {
+                            return Ok(Some(hit));
+                        }
+                    }
+                }
                 if let Some(declared) = self.declared_workspace_entry(&targets, language) {
                     return Ok(Some(declared));
                 }
@@ -2032,6 +2062,50 @@ impl KernelResolver {
     }
 }
 
+/// leavesWorkspaceRoot (workspace-packages.ts): whether `target`, a project
+/// path, lies outside the nested workspace root `file` is under, if it is
+/// under one.
+pub(super) fn leaves_workspace_root(file: &str, target: &str, roots: &[String]) -> bool {
+    let file = file.replace('\\', "/");
+    let mut root = "";
+    for dir in roots {
+        if dir.len() > root.len() && file.starts_with(&format!("{dir}/")) {
+            root = dir;
+        }
+    }
+    !root.is_empty() && !target.replace('\\', "/").starts_with(&format!("{root}/"))
+}
+
+/// Whether a file reads the browser's page, so that the `browser` condition of
+/// an import is the one it runs with: `document.title`, `window.location`.
+pub(super) fn is_browser_code_source(source: &str) -> bool {
+    let text = crate::resolve::awaited::blank_string_contents(&crate::resolve::awaited::strip_ts_comments(source));
+    let bytes = text.as_bytes();
+    for needle in ["document", "window"] {
+        let mut from = 0;
+        while let Some(at) = text[from..].find(needle) {
+            let start = from + at;
+            let end = start + needle.len();
+            let before = start.checked_sub(1).map(|i| bytes[i]);
+            let boundary = before.is_none_or(|b| !(b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b == b'.'));
+            let after = bytes.get(end).copied();
+            let follows = after == Some(b'.') || after == Some(b'[') || after.is_some_and(|b| b.is_ascii_whitespace());
+            if boundary && follows {
+                // Skip whitespace before `.`/`[`.
+                let mut i = end;
+                while bytes.get(i).is_some_and(|b| b.is_ascii_whitespace()) {
+                    i += 1;
+                }
+                if bytes.get(i) == Some(&b'.') || bytes.get(i) == Some(&b'[') {
+                    return true;
+                }
+            }
+            from = end;
+        }
+    }
+    false
+}
+
 pub(super) fn is_declaration_file(path: &str) -> bool {
     [".d.ts", ".d.mts", ".d.cts"].iter().any(|ext| path.ends_with(ext))
 }
@@ -2091,6 +2165,8 @@ fn indexed_spelling(file_path: &str, language: &str) -> String {
 pub(super) struct WorkspaceTargets {
     /// The entries the package declares for the import, best first.
     declared: Vec<String>,
+    /// The entries the package declares for a browser, best first.
+    browser: Vec<String>,
     /// The package's directory plus the import's subpath, extension-less.
     directory: String,
     /// The package's directory.
