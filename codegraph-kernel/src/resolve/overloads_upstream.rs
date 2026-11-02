@@ -205,6 +205,12 @@ impl KernelResolver {
             return Ok(hit);
         }
         if r.language == "swift" {
+            // A closure — trailing or in the parentheses — reaches the
+            // overload that takes a function, a value the other one.
+            if let Some(selected) = self.swift_overload_for_closure(&hit.node, &siblings, r)? {
+                hit.node = selected;
+                return Ok(hit);
+            }
             if self.swift_overload_labels_fit(&hit.node, r) != Some(false) {
                 return Ok(hit);
             }

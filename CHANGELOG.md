@@ -102,6 +102,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+ In Swift, a call now links to the overload that fits when two differ only in taking a closure: `didStop.write(true)` reaches `write(_ value:)` and `write { $0 = value }` reaches `write(_ closure:)`. A trailing closure now counts among the arguments too, so `clearCache { … }` inside `clearCache() async` reaches `clearCache(completion:)` instead of itself. Re-index Swift projects after upgrading.
+
  In C#, a name written with type arguments now means a type with that many type parameters: `new List<Brand>()` inside a Blazor page called `List` no longer links to the page, and `IProbe<T>` beside a plain `IProbe` links to the right one. A variable declared with a built-in type, like `int year = 0` or `decimal value`, no longer links to a project class named after it or to another variable's type, while an extension method on that type still links.
 
  In C, C++ and Objective-C, a struct, class or union now links to the types its members are declared with, whether held by value, by pointer, in an array, through a function pointer or inside a template like `std::vector<Foo>`, and a `typedef` or `using` alias links to the type it names, so impact on a type reaches every struct that holds one, like redis's `redisServer` for `pause_event`. A member's type is the one C++ name lookup finds from the class, so a builtin, a macro or a function of the same name links nothing, and a type a macro renames is what the macro names where the file sees it, like hiredis's `#define sds hisds` in redis-cli.c. Re-index C, C++ and Objective-C projects after upgrading.
