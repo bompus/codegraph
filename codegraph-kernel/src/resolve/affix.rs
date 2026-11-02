@@ -355,6 +355,9 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
         vec![
             both(r"\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.]*)", b"=", 0),
             rp(r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)(?:\s*<[^;=(){}<>]*(?:<[^;=(){}<>]*>[^;=(){}<>]*)*>)?(?:\s*\[[\s,]*\])*\??\s+", r"\s*(?:[=;,)]|in\b)", false, true, true, 0),
+            // `int year = 0`, `foreach (string name in …)`: a keyword type
+            // names no project class.
+            rp(r"(?-u:\b)((?:bool|byte|sbyte|char|decimal|double|float|int|uint|long|ulong|short|ushort|string))\??\s+", r"\s*(?:[=;,)]|in\b)", false, true, true, 0),
         ],
     );
     m.insert(

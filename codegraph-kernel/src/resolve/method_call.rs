@@ -170,8 +170,20 @@ impl KernelResolver {
             }
             scope = node.parent();
         }
-        let Some(root_type) = root_type else {
-            return Ok(false);
+        let root_type = match root_type {
+            Some(root_type) => root_type,
+            None => {
+                // No `is` pattern types the root: a lambda over the extension's
+                // own `this` parameter (`value.Elements.Select(e => e.M())`)
+                // recurses into it, as a value of its own type.
+                let declared = text(first);
+                let name = declared
+                    .split_whitespace()
+                    .last()
+                    .unwrap_or("")
+                    .trim_end_matches('?');
+                return Ok(!name.is_empty() && text(root) == name);
+            }
         };
         let Some(owner) = self.resolve_bound_type(root_type, r, 0)? else {
             return Ok(false);
@@ -955,6 +967,12 @@ if inferred.is_none() && r.language == "dart" {
                         }
                     }
                 } else {
+                // A C# keyword type (`int year`, `string text`) names no
+                // project class: an extension method is the only project
+                // method it has.
+                if r.language == "csharp" && t.chars().next().is_some_and(|c| c.is_ascii_lowercase()) {
+                    return self.unique_csharp_extension_method(&t, &method_name, r);
+                }
                 let Some(mut t) = self.inferred_member_type_bound(&t, r)? else { return Ok(None) };
                 if is_esm_family(&r.language) && t.ends_with(']') {
                     match self.ts_bracketed_type(&t, &method_name, r)? {
@@ -1379,6 +1397,11 @@ if inferred.is_none() && r.language == "dart" {
                     // not the receiver's declared type; the property and
                     // chain reader further down still gets its turn.
                 } else {
+                // A C# keyword type names no project class: an extension
+                // method is the only project method it has.
+                if r.language == "csharp" && t.chars().next().is_some_and(|c| c.is_ascii_lowercase()) {
+                    return self.unique_csharp_extension_method(&t, &method_name, r);
+                }
                 let Some(mut t) = self.inferred_member_type_bound(&t, r)? else { return Ok(None) };
                 if is_esm_family(&r.language) && awaited_file.is_none() && t.ends_with(']') {
                     match self.ts_bracketed_type(&t, &method_name, r)? {
@@ -1888,7 +1911,59 @@ if inferred.is_none() && r.language == "dart" {
         Ok(None)
     }
 
-    /// The one C# extension method (`static T M(this Owner o)`) named
+    /// The type a C# method's first parameter declares, when that parameter
+    /// is its `this` parameter: the declaration is read past its attributes,
+    /// the parameter list past wrapping and the parameter past its own
+    /// attributes and `ref`/`in`/`out` (`[NotNullWhen(false)] this string? s`).
+    fn csharp_this_parameter_type(&mut self, method: &KNode) -> Option<String> {
+        let lines = self.read_file(&method.file_path)?;
+        let from = ((method.start_line - 1).max(0) as usize).min(lines.len());
+        let to = (method.end_line.max(0) as usize).clamp(from, lines.len());
+        let source = lines[from..to].join("\n");
+        let start = super::member_scope::csharp_past_attributes(&source, 0);
+        let rest = &source[start.min(source.len())..];
+        let pattern = Self::cached_regex(&format!(r"(?-u:\b){}\s*(?:<[^<>()]*>)?\s*\(", regex::escape(&method.name))).ok()?;
+        let open = pattern.find(rest)?.end();
+        let bytes = rest.as_bytes();
+        let mut depth = 1i32;
+        let mut end = None;
+        let mut i = open;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'"' | b'\'' => {
+                    let quote = bytes[i];
+                    i += 1;
+                    while i < bytes.len() && bytes[i] != quote {
+                        if bytes[i] == b'\\' { i += 1; }
+                        i += 1;
+                    }
+                }
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => {
+                    depth -= 1;
+                    if depth == 0 { end = Some(i); break; }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        let first = &rest[open..end?];
+        let first = &first[super::member_scope::csharp_past_attributes(first, 0)..];
+        let mut is_this = false;
+        let mut ty = None;
+        for token in first.split_whitespace() {
+            let token = token.trim_start_matches('[');
+            match token {
+                "this" => { is_this = true; }
+                "ref" | "in" | "out" | "params" | "scoped" | "readonly" => {}
+                _ => { ty = Some(token.trim_end_matches(',').to_string()); break; }
+            }
+        }
+        if !is_this { return None; }
+        ty.map(|t| t.trim_end_matches('?').to_string())
+    }
+
+    /// The one C# extension method (`static T M(this Owner o)`) named    /// The one C# extension method (`static T M(this Owner o)`) named
     /// `method` whose `this` parameter can hold a `receiver_type`: that type,
     /// one of its project supertypes, or a type the project does not
     /// declare (a generic `T`, `object`, a framework interface). None
@@ -1925,12 +2000,8 @@ if inferred.is_none() && r.language == "dart" {
         }
         let mut extensions = Vec::new();
         for n in named {
-            let Some(lines) = self.read_file(&n.file_path) else { continue };
-            let from = (n.start_line - 1).max(0) as usize;
-            let to = ((n.start_line + 2).max(0) as usize).min(lines.len());
-            let head = if from < to { lines[from..to].join(" ") } else { String::new() };
-            let Some(c) = re!(r"\(\s*this\s+([A-Za-z_][A-Za-z0-9_.]*)").captures(&head) else { continue };
-            let this_type = simple(&c[1]);
+            let Some(this_type) = self.csharp_this_parameter_type(&n) else { continue };
+            let this_type = simple(&this_type);
             let declared = self
                 .nodes_by_name(&this_type)?
                 .iter()

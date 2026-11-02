@@ -1407,3 +1407,19 @@ pub(super) fn cpp_declarator_type(text: &str) -> String {
     }
     if dropped { out.split_whitespace().collect::<Vec<_>>().join(" ") } else { text.to_string() }
 }
+
+#[cfg(test)]
+mod receiver_tests {
+    use super::*;
+
+    #[test]
+    fn csharp_keyword_type_pattern_matches_a_parameter() {
+        let pats = local_receiver_type_patterns("csharp");
+        let line = "    public string Search(string name, int year = 0)";
+        let hit = pats.iter().find_map(|p| p.affix.find_from(line, "year", 0));
+        assert!(hit.is_some(), "no pattern matched the line");
+        let hit = hit.unwrap();
+        let (s, e) = hit.group.expect("captured type");
+        assert_eq!(&line[s..e], "int");
+    }
+}

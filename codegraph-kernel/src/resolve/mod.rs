@@ -862,6 +862,8 @@ pub struct KernelResolver {
     csharp_global_statics: Option<Rc<HashMap<Option<String>, HashSet<String>>>>,
     /// The nearest `.csproj` directory, by directory.
     csharp_project_memo: HashMap<String, Option<String>>,
+    /// csharpDeclaredArity, by type node id.
+    csharp_arity_memo: HashMap<String, usize>,
     /// objcSupertypesOf, by class name.
     objc_supers_memo: HashMap<String, Rc<Vec<String>>>,
     /// objcHierarchyAt, by the sender's class name.
@@ -1181,6 +1183,7 @@ impl KernelResolver {
             csharp_static_usings_memo: HashMap::new(),
             csharp_global_statics: None,
             csharp_project_memo: HashMap::new(),
+            csharp_arity_memo: HashMap::new(),
             objc_supers_memo: HashMap::new(),
             objc_hierarchy_memo: HashMap::new(),
             manifest_own_memo: HashMap::new(),

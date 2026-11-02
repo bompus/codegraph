@@ -10,7 +10,7 @@ fn is_vb_member_kind(kind: &str) -> bool {
     matches!(kind, "method" | "property" | "field" | "enum_member" | "constant" | "variable")
 }
 
-fn is_csharp_type_kind(kind: &str) -> bool {
+pub(super) fn is_csharp_type_kind(kind: &str) -> bool {
     matches!(kind, "class" | "interface" | "enum" | "struct" | "record")
 }
 
@@ -382,6 +382,93 @@ impl KernelResolver {
 
     /// The nearest directory at or above `dir` holding a `.csproj`; `None`
     /// when there is none, so project-less files share one scope.
+    /// Where a C# declaration's source goes on past the attribute lists above
+    /// it: its node starts at the first `[`, and more may follow.
+    fn csharp_declaration_source(&mut self, node: &KNode) -> Option<String> {
+        let lines = self.read_file(&node.file_path)?;
+        let from = ((node.start_line - 1).max(0) as usize).min(lines.len());
+        let to = (node.end_line.max(0) as usize).clamp(from, lines.len());
+        let source = lines[from..to].join("\n");
+        Some(source[csharp_past_attributes(&source, 0)..].to_string())
+    }
+
+    /// How many type parameters a C# type declares: `class Cache<K, V>` 2,
+    /// `class List` 0. A razor component's are its `@typeparam` lines.
+    fn csharp_declared_arity(&mut self, ty: &KNode) -> usize {
+        if let Some(hit) = self.csharp_arity_memo.get(&ty.id) {
+            return *hit;
+        }
+        let arity = if ty.kind == "component" {
+            self.read_file(&ty.file_path)
+                .map(|lines| lines.iter().filter(|l| re!(r"^\s*@typeparam\b").is_match(l)).count())
+                .unwrap_or(0)
+        } else {
+            let source = self.csharp_declaration_source(ty);
+            let pattern = Self::cached_regex(&format!(
+                r"\b(?:class|struct|interface|record|enum)\s+(?:(?:class|struct)\s+)?{}\b(?:\s*<([^<>]*)>)?",
+                regex::escape(&ty.name)
+            )).ok();
+            source
+                .as_deref()
+                .and_then(|source| pattern.and_then(|re| re.captures(source).map(|c| c.get(1).map(|m| m.as_str().to_string()))))
+                .map(|params| params.map_or(0, |p| p.split(',').count()))
+                .unwrap_or(0)
+        };
+        self.csharp_arity_memo.insert(ty.id.clone(), arity);
+        arity
+    }
+
+    /// How many type arguments the C# type named at `r` is written with: 2 for
+    /// `Cache<string, List<int>>`, 0 for none, None when the list doesn't
+    /// close on its line.
+    fn csharp_written_arity(&mut self, r: &ResolveRefIn) -> Option<usize> {
+        let name = r.reference_name.rsplit('.').next().unwrap_or(&r.reference_name);
+        let lines = self.read_file(&r.file_path)?;
+        let line = lines.get((r.line - 1).max(0) as usize)?;
+        let bytes = line.as_bytes();
+        let from = (r.column.max(0) as usize).min(bytes.len());
+        let at = line[from..].find(name).map(|i| i + from)?;
+        let mut i = at + name.len();
+        while bytes.get(i) == Some(&b' ') { i += 1; }
+        if bytes.get(i) != Some(&b'<') { return Some(0); }
+        let mut depth = 0i32;
+        let mut args = 1usize;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'<' | b'(' | b'[' => depth += 1,
+                b'>' | b')' | b']' => {
+                    depth -= 1;
+                    if depth == 0 { return Some(args); }
+                }
+                b',' if depth == 1 => args += 1,
+                _ => {}
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// Whether a C# type can be what `r` names, by type arguments: a name
+    /// written with them means a type declaring as many (`new List<T>()` is
+    /// the BCL's, not a page class `List`).
+    pub(super) fn csharp_type_arity_fits(&mut self, ty: &KNode, r: &ResolveRefIn) -> bool {
+        if r.language != "csharp" && r.language != "razor" {
+            return true;
+        }
+        if r.reference_kind != "references" && r.reference_kind != "instantiates" {
+            return true;
+        }
+        let is_type = is_csharp_type_kind(&ty.kind)
+            || (ty.kind == "component" && ty.language == "razor");
+        if !is_type {
+            return true;
+        }
+        match self.csharp_written_arity(r) {
+            None | Some(0) => true,
+            Some(written) => written == self.csharp_declared_arity(ty),
+        }
+    }
+
     pub(super) fn csharp_project_of(&mut self, dir: &str) -> Option<String> {
         if let Some(hit) = self.csharp_project_memo.get(dir) {
             return hit.clone();
@@ -796,5 +883,67 @@ impl KernelResolver {
             }
         }
         Ok(None)
+    }
+}
+
+
+/// Where `text` goes on past the C# attribute lists that open at `from`:
+/// space, comments and preprocessor lines may stand between lists, and a
+/// list's brackets may sit inside a string or a character literal.
+pub(super) fn csharp_past_attributes(text: &str, from: usize) -> usize {
+    let bytes = text.as_bytes();
+    let mut at = from;
+    loop {
+        // Trivia.
+        loop {
+            while at < bytes.len() && bytes[at].is_ascii_whitespace() { at += 1; }
+            if text[at..].starts_with("//") {
+                at = text[at..].find('\n').map_or(bytes.len(), |i| at + i + 1);
+                continue;
+            }
+            if text[at..].starts_with("/*") {
+                at = text[at..].find("*/").map_or(bytes.len(), |i| at + i + 2);
+                continue;
+            }
+            if bytes.get(at) == Some(&b'#') {
+                at = text[at..].find('\n').map_or(bytes.len(), |i| at + i + 1);
+                continue;
+            }
+            break;
+        }
+        if bytes.get(at) != Some(&b'[') { return at; }
+        let mut depth = 0i32;
+        while at < bytes.len() {
+            match bytes[at] {
+                b'@' if bytes.get(at + 1) == Some(&b'"') => {
+                    at += 2;
+                    while at < bytes.len() {
+                        if bytes[at] == b'"' {
+                            if bytes.get(at + 1) == Some(&b'"') { at += 2; continue; }
+                            break;
+                        }
+                        at += 1;
+                    }
+                    at += 1;
+                }
+                b'"' | b'\'' => {
+                    let quote = bytes[at];
+                    at += 1;
+                    while at < bytes.len() && bytes[at] != quote {
+                        if bytes[at] == b'\\' { at += 1; }
+                        at += 1;
+                    }
+                    at += 1;
+                }
+                b'[' => { depth += 1; at += 1; }
+                b']' => {
+                    depth -= 1;
+                    at += 1;
+                    if depth == 0 { break; }
+                }
+                _ => at += 1,
+            }
+        }
+        if depth > 0 { return from; }
     }
 }

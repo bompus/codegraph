@@ -450,6 +450,7 @@ impl KernelResolver {
         }
 
         if !self.language_type_visible(candidate,r)? { return Ok(false); }
+        if !self.csharp_type_arity_fits(candidate, r) { return Ok(false); }
         if candidate.file_path == r.file_path {
             return Ok(true);
         }
@@ -968,6 +969,15 @@ impl KernelResolver {
             .cloned()
             .collect();
         let mut candidates = self.apply_language_gate(all_named, r);
+        // A C# name written with type arguments means a type declaring as
+        // many (`new List<T>()` is the BCL's, not a page class `List`).
+        if r.language == "csharp" || r.language == "razor" {
+            let mut kept = Vec::with_capacity(candidates.len());
+            for n in candidates {
+                if self.csharp_type_arity_fits(&n, r) { kept.push(n); }
+            }
+            candidates = kept;
+        }
         candidates.retain(|n| n.kind != "import");
         // A .NET type position names a type, never a same-named member.
         if self.is_dotnet_type_ref(r) {
