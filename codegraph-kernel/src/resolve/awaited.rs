@@ -57,7 +57,7 @@ fn awaited_names(text: &str) -> HashSet<String> {
 }
 
 /// Push `c` blanked: one space per UTF-16 unit, a newline kept.
-fn push_blank(out: &mut String, c: char) {
+pub(super) fn push_blank(out: &mut String, c: char) {
     if c == '\n' {
         out.push('\n');
     } else {
