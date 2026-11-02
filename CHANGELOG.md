@@ -100,6 +100,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Ordinary watcher startup can initialize a missing project index under daemon ownership and waits for fresh file indexing and queued synthesized edges before reporting readiness.
 - Indexing a large project takes about a quarter less memory at its peak.
+- Indexing a small project takes much less CPU and memory: CodeGraph starts only the threads a project needs, and a file that's slow to parse no longer holds up the others.
 
 ### Fixes
 
