@@ -760,7 +760,7 @@ if super::lang_scope::is_dart_member_read(r) {
             };
             cand.node = ty;
         }
-        if self.is_bound_to_out_of_repo_import(r)? {
+        if self.is_bound_to_out_of_repo_import(r, Some(&cand.node))? {
             return Ok(None);
         }
         // One embedded bare that only a package the file dot-imports

@@ -684,11 +684,34 @@ impl KernelResolver {
     }
 
     /// isBoundToOutOfRepoImport (import-resolver.ts): for a bare name in a
-    /// migrated language only the ESM arm can fire.
-    pub(super) fn is_bound_to_out_of_repo_import(&mut self, r: &ResolveRefIn) -> Res<bool> {
+    /// migrated language only the ESM arm can fire. `target` is what a
+    /// strategy found, when the caller has it (the Python arm reads it).
+    pub(super) fn is_bound_to_out_of_repo_import(&mut self, r: &ResolveRefIn, target: Option<&KNode>) -> Res<bool> {
         // Qualified refs resolve by path, not through a bare import binding.
         if r.reference_name.contains("::") || r.reference_name.contains('.') {
             return Ok(false);
+        }
+        // Python: every import binding the name is absolute and names a
+        // module Python's search doesn't find in the project. A class in a
+        // file the import path names stays (the search can miss a module on
+        // a `sys.path` the program sets up itself), as does a class of the
+        // referring file, which may rebind the name.
+        if r.language == "python" {
+            if target.is_some_and(|t| t.file_path == r.file_path) {
+                return Ok(false);
+            }
+            let mappings = self.import_mappings(&r.file_path)?;
+            let mut found = false;
+            for imp in mappings.iter().filter(|m| m.local_name == r.reference_name) {
+                found = true;
+                if imp.source.starts_with('.')
+                    || self.resolve_import_path(&imp.source, &r.file_path, "python")?.is_some()
+                    || target.is_some_and(|t| is_in_python_module_path(&t.file_path, &imp.source))
+                {
+                    return Ok(false);
+                }
+            }
+            return Ok(found);
         }
         // Rust: a `use` path rooted at a stdlib crate ships outside the repo
         // by definition. Deliberately NOT "the module path doesn't resolve":
@@ -1919,6 +1942,14 @@ impl KernelResolver {
 
 fn is_declaration_file(path: &str) -> bool {
     [".d.ts", ".d.mts", ".d.cts"].iter().any(|ext| path.ends_with(ext))
+}
+
+/// Whether `file` is the module `dotted` or inside it, under any root:
+/// `lib/x/helpers/base.py` for `helpers.base`.
+fn is_in_python_module_path(file: &str, dotted: &str) -> bool {
+    let tail = format!("/{}", dotted.replace('.', "/"));
+    let at = format!("/{file}");
+    at.contains(&format!("{tail}/")) || at.ends_with(&format!("{tail}.py")) || at.ends_with(&format!("{tail}.pyi"))
 }
 
 /// isCfmlTemplatePath: the name a CFML include carries — a path with a
