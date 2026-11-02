@@ -1018,6 +1018,18 @@ if super::lang_scope::is_dart_member_read(r) {
         if matches!(r.language.as_str(), "c" | "cpp") && is_inheritance_ref(&r.reference_kind) {
             return self.resolve_cpp_supertype(r);
         }
+        // The type a member of a C or C++ class, or an alias, is declared
+        // with: only a type declaration can be named there, so a function,
+        // variable or macro of that name is no candidate (matchCppDeclaredType).
+        if matches!(r.language.as_str(), "c" | "cpp") && r.reference_kind == "references" {
+            if let Some(holder) = self.node_by_id(&r.from_node_id)? {
+                if matches!(holder.kind.as_str(), "class" | "struct" | "union")
+                    || holder.kind == "type_alias"
+                {
+                    return self.match_cpp_declared_type(r, &holder);
+                }
+            }
+        }
         if let Some(result) = self.ts_scoped_reference(r)? {
             return match result {
                 Some(mut candidate) => {

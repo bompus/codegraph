@@ -1270,6 +1270,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - In C++, indexing no longer fails with "Maximum call stack size exceeded" on a call whose arguments call the same overloaded method, like darts-clone's `extras(extras(id).prev()).set_next(…)` on a class with a `const` and a non-`const` `extras(id)`. Choosing the overload read its arguments, which chose the same overload again without end, and the whole index run failed. Such a call now takes the first overload when the choice comes back to itself, as one whose argument types are unknown does. Thanks @JosefAschauer.
 
+- In C and C++, a struct, class or union now links to the types its members are declared with, whether held by value, by pointer, in an array, through a function pointer or inside a template like `std::vector<Foo>`, and a `typedef` or `using` alias links to the type it names, so impact on a type reaches every struct that holds one, like redis's `redisServer` for `pause_event`. A member's type is the one C++ name lookup finds from the class, so a builtin, a macro or a function of the same name links nothing. Re-index C and C++ projects after upgrading.
+
 ## [1.6.2] - 2026-10-03
 
 ### Highlights

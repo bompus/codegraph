@@ -263,3 +263,160 @@ impl KernelResolver {
         self.cpp_type_owner_visible(target, &site, depth + 1, constructor, included)
     }
 }
+
+impl KernelResolver {
+    /// The type a member of a C or C++ class, or an alias, is declared with:
+    /// what C++ name lookup finds from inside the class, widened to enums and
+    /// stopping at an alias. Only a type declaration can be named there.
+    /// (matchCppDeclaredType, cpp-supertypes.ts.)
+    pub(super) fn match_cpp_declared_type(
+        &mut self,
+        r: &ResolveRefIn,
+        holder: &Arc<KNode>,
+    ) -> Res<ResolveOutcome> {
+        let language = holder.language.clone();
+        if self.cpp_template_parameter(holder, &r.reference_name, r)? {
+            return Ok(ResolveOutcome::unresolved());
+        }
+        let included = self.namespace_visible_files(&r.file_path, &language)?;
+        let written = r.reference_name.trim().to_string();
+        let Some(parts) = super::cpp_aliases::type_segments(&written) else {
+            return Ok(ResolveOutcome::unresolved());
+        };
+        let scopes: Vec<String> = {
+            let mut s: Vec<String> = holder.qualified_name.split("::").map(str::to_string).collect();
+            if holder.kind == "type_alias" {
+                s.pop();
+            }
+            s
+        };
+        let path = parts.join("::");
+        let mut names = Vec::new();
+        if !written.starts_with("::") {
+            for i in (1..=scopes.len()).rev() {
+                names.push(format!("{}::{}", scopes[..i].join("::"), path));
+            }
+        }
+        names.push(path.clone());
+        let mut scoped: Vec<Arc<KNode>> = Vec::new();
+        for name in &names {
+            let mut found: Vec<Arc<KNode>> = self
+                .nodes_by_qualified_name(name)?
+                .iter()
+                .filter(|n| {
+                    matches!(n.language.as_str(), "c" | "cpp")
+                        && matches!(
+                            n.kind.as_str(),
+                            "class" | "struct" | "union" | "enum" | "type_alias"
+                        )
+                        && included.contains(&n.file_path)
+                        && n.id != holder.id
+                })
+                .cloned()
+                .collect();
+            if found.is_empty() {
+                continue;
+            }
+            // The nearest declaration above the holder is the one in force
+            // (`#ifdef WIDE` alternatives, two classes of one name in a file).
+            found.sort_by_key(|n| n.start_line);
+            let preceding: Vec<Arc<KNode>> =
+                found.iter().filter(|n| n.start_line <= holder.start_line).cloned().collect();
+            if !preceding.is_empty() {
+                let line = preceding.iter().map(|n| n.start_line).max().unwrap_or(0);
+                found = preceding.into_iter().filter(|n| n.start_line == line).collect();
+            }
+            scoped = found;
+            break;
+        }
+        let leaf = parts.last().map(String::as_str).unwrap_or(&path);
+        let non_alias = |v: &[Arc<KNode>]| -> Vec<Arc<KNode>> {
+            v.iter().filter(|n| n.kind != "type_alias").cloned().collect()
+        };
+        if language == "c" {
+            // A type a source file defines, named through a header it includes.
+            if let Some(node) = self.cpp_defined_by_includer(leaf, &path, &scopes, holder, &included)? {
+                return Ok(ResolveOutcome::resolved(&node, 0.7, "exact-match", true, None));
+            }
+            let defined = non_alias(&scoped);
+            if defined.len() == 1 {
+                return Ok(ResolveOutcome::resolved(&defined[0], 0.9, "qualified-name", true, None));
+            }
+            if scoped.len() == 1 {
+                return Ok(ResolveOutcome::resolved(&scoped[0], 0.9, "qualified-name", true, None));
+            }
+            // A nested C struct is the file's, under its own name.
+            let mut tail: Vec<Arc<KNode>> = self
+                .nodes_by_name(leaf)?
+                .iter()
+                .filter(|n| {
+                    matches!(n.language.as_str(), "c" | "cpp")
+                        && matches!(n.kind.as_str(), "class" | "struct" | "union" | "enum")
+                        && included.contains(&n.file_path)
+                        && n.id != holder.id
+                        && (n.qualified_name == path || n.qualified_name.ends_with(&format!("::{path}")))
+                })
+                .cloned()
+                .collect();
+            tail.sort_by_key(|n| n.start_line);
+            let own: Vec<Arc<KNode>> =
+                tail.iter().filter(|n| n.file_path == holder.file_path).cloned().collect();
+            let pool = if own.is_empty() { tail } else { own };
+            if pool.len() == 1 {
+                return Ok(ResolveOutcome::resolved(&pool[0], 0.7, "exact-match", true, None));
+            }
+            return Ok(ResolveOutcome::unresolved());
+        }
+        if scoped.len() == 1 {
+            return Ok(ResolveOutcome::resolved(&scoped[0], 0.9, "qualified-name", true, None));
+        }
+        if let Some(node) = self.cpp_type_via_using(&written, &parts, r, &included)? {
+            if node.id != holder.id {
+                return Ok(ResolveOutcome::resolved(&node, 0.9, "qualified-name", true, None));
+            }
+        }
+        if let Some(node) = self.cpp_defined_by_includer(leaf, &path, &scopes, holder, &included)? {
+            return Ok(ResolveOutcome::resolved(&node, 0.7, "exact-match", true, None));
+        }
+        Ok(ResolveOutcome::unresolved())
+    }
+
+    /// The type a header names and only a source file including it defines,
+    /// which no other file can see: a pimpl's `Rep`, an opaque `struct
+    /// dictEntry` `typedef`'d in a header. Several such definitions would be
+    /// a guess, so only exactly one is returned.
+    fn cpp_defined_by_includer(
+        &mut self,
+        leaf: &str,
+        path: &str,
+        scopes: &[String],
+        holder: &Arc<KNode>,
+        included: &HashSet<String>,
+    ) -> Res<Option<Arc<KNode>>> {
+        let mut spelled: HashSet<String> = HashSet::new();
+        for i in 0..=scopes.len() {
+            let prefix = scopes[..i].join("::");
+            spelled.insert(if prefix.is_empty() { path.to_string() } else { format!("{prefix}::{path}") });
+        }
+        let mut found = Vec::new();
+        for node in self.nodes_by_name(leaf)?.iter() {
+            if !matches!(node.language.as_str(), "c" | "cpp")
+                || !matches!(node.kind.as_str(), "class" | "struct" | "union" | "enum")
+                || node.id == holder.id
+                || !spelled.contains(&node.qualified_name)
+            {
+                continue;
+            }
+            let visible = self.namespace_visible_files(&node.file_path, &node.language)?;
+            let hit = visible.contains(&holder.file_path)
+                || visible.iter().any(|f| included.contains(f));
+            if hit {
+                found.push(node.clone());
+            }
+        }
+        if found.len() == 1 {
+            return Ok(Some(found.remove(0)));
+        }
+        Ok(None)
+    }
+}
