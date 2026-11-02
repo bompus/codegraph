@@ -23,6 +23,7 @@
 
 import { parentPort, workerData } from 'worker_threads';
 import type { ToolResult } from './tools';
+import { collectBeforeExit } from '../worker-teardown';
 
 interface WorkerInit {
   root: string | null;
@@ -33,6 +34,32 @@ interface CallMessage {
   id: number;
   toolName: string;
   args: Record<string, unknown>;
+}
+
+/** The pool retiring this idle worker (see QueryPool.retire). */
+interface CloseMessage {
+  type: 'close';
+}
+
+/**
+ * What an idle worker does when the pool asks it to close: release what it
+ * holds, run a full collection, then exit by itself.
+ *
+ * The collection comes before the exit on purpose: on Windows a worker thread
+ * that ends while V8's concurrent marker is marking its heap can crash the
+ * whole process, and a full collection finishes any marking in flight (see
+ * worker-teardown.ts). The effects are passed in so a test can pin that order.
+ */
+export function closeWorker(effects: {
+  closeProjects: () => void;
+  closeGraph: () => void;
+  collect: () => boolean;
+  exit: (code: number) => void;
+}): void {
+  try { effects.closeProjects(); } catch { /* already closed */ }
+  try { effects.closeGraph(); } catch { /* already closed */ }
+  effects.collect();
+  effects.exit(0);
 }
 
 // Mirror the engine's lazy-require of the heavy CodeGraph + tools chain. This
@@ -55,9 +82,10 @@ if (parentPort) {
   // per-worker page cache and mmap small so a grown pool's summed RSS stays
   // near a single connection's.
   let handler: InstanceType<typeof import('./tools').ToolHandler> | null = null;
+  let cg: ReturnType<ReturnType<typeof loadCodeGraph>['openSync']> | null = null;
   let initError: string | null = null;
   try {
-    const cg = root ? loadCodeGraph().openSync(root, { readOnly: true, compactConnection: true }) : null;
+    cg = root ? loadCodeGraph().openSync(root, { readOnly: true, compactConnection: true }) : null;
     handler = new (loadToolHandler())(cg);
   } catch (err) {
     initError = err instanceof Error ? err.message : String(err);
@@ -67,7 +95,16 @@ if (parentPort) {
   // against its crash budget (→ fall back to in-process) without hanging.
   port.postMessage({ type: 'ready', ok: initError === null, error: initError });
 
-  port.on('message', (msg: CallMessage) => {
+  port.on('message', (msg: CallMessage | CloseMessage) => {
+    if (msg?.type === 'close') {
+      closeWorker({
+        closeProjects: () => { void handler?.closeAll(); },
+        closeGraph: () => { cg?.close(); },
+        collect: collectBeforeExit,
+        exit: (code) => process.exit(code),
+      });
+      return;
+    }
     if (!msg || msg.type !== 'call') return;
     void serve(msg);
   });

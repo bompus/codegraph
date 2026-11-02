@@ -28,7 +28,7 @@ import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLangu
 import { loadExtensionOverrides, loadIncludeIgnoredPatterns, loadExcludePatterns, loadIncludePatterns, PROJECT_CONFIG_FILENAME } from '../project-config';
 import { isCodeGraphDataDir, readDirEntries } from '../directory';
 import { logDebug, logWarn } from '../errors';
-import { validatePathWithinRoot, normalizePath, escapesRoot } from '../utils';
+import { validatePathWithinRoot, normalizePath, escapesRoot, isMissingPathError } from '../utils';
 import ignore, { Ignore } from 'ignore';
 import { withNoMatchFastPath } from './ignore-prefilter';
 import { detectFrameworks, detectFrameworksWithSkips, getFrameworkResolver } from '../resolution/frameworks';
@@ -516,6 +516,41 @@ function resolveGitDir(repoRoot: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The sparse checkout of the repository holding `dir`, as a stamp to compare
+ * ({@link INDEXED_SPARSE_CHECKOUT_KEY}): a hash of its patterns and of the config
+ * lines that switch them, since `git sparse-checkout disable` leaves the patterns
+ * as they were. No git process, so this is safe on every `status`: a repository
+ * that has never been sparse has no patterns file, and that failed read is the
+ * whole cost and the answer, ''.
+ */
+function sparseCheckoutStamp(dir: string): string {
+  let repoRoot = path.resolve(dir);
+  while (!fs.existsSync(path.join(repoRoot, '.git'))) {
+    const parent = path.dirname(repoRoot);
+    if (parent === repoRoot) return '';
+    repoRoot = parent;
+  }
+  const gitDir = resolveGitDir(repoRoot);
+  if (!gitDir) return '';
+  let patterns: string;
+  try {
+    patterns = fs.readFileSync(path.join(gitDir, 'info', 'sparse-checkout'), 'utf8');
+  } catch {
+    return '';
+  }
+  // Which of the two git writes depends on `extensions.worktreeConfig`, and a
+  // linked worktree's git dir holds only its own `config.worktree`.
+  const switches = ['config', 'config.worktree'].flatMap((name) => {
+    try {
+      return fs.readFileSync(path.join(gitDir, name), 'utf8').split('\n').filter((line) => /sparsecheckout/i.test(line));
+    } catch {
+      return [];
+    }
+  });
+  return hashContent(`${patterns}\0${switches.join('\n')}`);
 }
 
 /** Expand a leading `~/` the way git does for `core.excludesFile`. */
@@ -1167,7 +1202,7 @@ export function discoverEmbeddedRepoRoots(rootDir: string): string[] {
       );
       const repoIgnore = buildDefaultIgnore(repoAbs);
       for (const entry of staged.split('\0')) {
-        if (!entry || entry.slice(0, 6) !== '160000') continue;
+        if (!entry || !isGitlinkEntry(entry)) continue;
         const tab = entry.indexOf('\t');
         if (tab === -1) continue;
         const rel = entry.slice(tab + 1);
@@ -1288,7 +1323,7 @@ function findIgnoredEmbeddedRepos(repoDir: string, includeIgnored: Ignore | null
 }
 
 /**
- * `git ls-files -z -s`, expanding submodules where git allows it.
+ * `git ls-files -z -s -t`, expanding submodules where git allows it.
  *
  * `--recurse-submodules` could not be combined with `-s` before git 2.36:
  * `builtin/ls-files.c` listed `show_stage` among the modes that die, and the
@@ -1305,10 +1340,15 @@ function findIgnoredEmbeddedRepos(repoDir: string, includeIgnored: Ignore | null
  */
 function lsFilesStaged(gitOpts: Parameters<typeof execFileSync>[2]): string {
   try {
-    return execFileSync('git', ['ls-files', '-z', '-s', '--recurse-submodules'], gitOpts) as unknown as string;
+    return execFileSync('git', ['ls-files', '-z', '-s', '-t', '--recurse-submodules'], gitOpts) as unknown as string;
   } catch {
-    return execFileSync('git', ['ls-files', '-z', '-s'], gitOpts) as unknown as string;
+    return execFileSync('git', ['ls-files', '-z', '-s', '-t'], gitOpts) as unknown as string;
   }
+}
+
+/** Whether an {@link lsFilesStaged} entry, `<tag> <mode> <object> <stage>\t<path>`, is a gitlink. */
+function isGitlinkEntry(entry: string): boolean {
+  return entry.slice(2, 8) === '160000';
 }
 
 /**
@@ -1355,17 +1395,26 @@ function collectGitFiles(repoDir: string, prefix: string, files: Set<string>, em
   // (the core.quotepath default), and the quoted form never matches a real file
   // on disk → those files are silently dropped from the index. (#541) With -s the
   // path follows a TAB after the `<mode> <object> <stage>` prefix.
+  //
+  // -t puts a status letter and a space before that prefix, and `S` is
+  // skip-worktree: git lists the path without looking for it. A sparse checkout
+  // leaves such files out of the working tree, so a sparse clone of a large repo
+  // names tens of thousands of files that are not there, and every later pass
+  // would try to read them. The bit alone does not say the file is gone, though:
+  // `update-index --skip-worktree` hides local edits to a file that stays where
+  // it is, so the disk decides.
   const gitlinkRels: string[] = [];
   const tracked = lsFilesStaged(gitOpts);
   for (const entry of tracked.split('\0')) {
     if (!entry) continue;
     const tab = entry.indexOf('\t');
-    if (tab === -1) continue; // --stage always emits "<mode> <object> <stage>\t<path>"
+    if (tab === -1) continue; // --stage always emits "<tag> <mode> <object> <stage>\t<path>"
     const rel = entry.slice(tab + 1);
-    if (entry.slice(0, 6) === '160000') {
+    if (isGitlinkEntry(entry)) {
       gitlinkRels.push(rel); // an unexpanded gitlink — recursed into below, not a source file itself
       continue;
     }
+    if (entry[0] === 'S' && !fs.existsSync(path.join(repoDir, rel))) continue;
     files.add(normalizePath(prefix + rel));
   }
 
@@ -1430,6 +1479,53 @@ function collectGitFiles(repoDir: string, prefix: string, files: Set<string>, em
 }
 
 /**
+ * Whether the repository `rootDir` sits in gitignores `rootDir` itself. Git
+ * then lists nothing inside it, so the git-backed scan and change detection
+ * both step aside for the directory walk. Asked only of a folder below its
+ * repository's root.
+ */
+function isIgnoredByEnclosingRepo(rootDir: string): boolean {
+  try {
+    // git check-ignore exits 0 if the path IS ignored, 1 if not
+    execFileSync(
+      'git',
+      ['check-ignore', '-q', path.resolve(rootDir)],
+      { cwd: rootDir, encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** {@link gitRepoPrefix} answers, by folder. */
+const gitRepoPrefixes = new Map<string, string>();
+
+/**
+ * Where `dir` sits in its git repository: '' at the repository's root, else the
+ * path from the root with a trailing slash (`app/`). Throws when `dir` is in no
+ * repository. `git status --porcelain` prints every path from the repository's
+ * root, whichever folder it runs in, so a project below the root takes this
+ * off (#1636). A folder with its own `.git` is a repository or worktree root and
+ * costs no git call; any other answer is kept, since a folder's place in its
+ * repository does not move under a running process.
+ */
+function gitRepoPrefix(dir: string): string {
+  if (fs.existsSync(path.join(dir, '.git'))) return '';
+  const key = path.resolve(dir);
+  let prefix = gitRepoPrefixes.get(key);
+  if (prefix === undefined) {
+    prefix = normalizePath(execFileSync(
+      'git',
+      ['rev-parse', '--show-prefix'],
+      { cwd: dir, encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
+    ).trim());
+    gitRepoPrefixes.set(key, prefix);
+  }
+  return prefix;
+}
+
+/**
  * Get all files visible to git (tracked + untracked but not ignored).
  * Respects .gitignore at all levels (root, subdirectories) and descends into
  * embedded (nested, non-submodule) git repos. Returns null on failure
@@ -1446,23 +1542,13 @@ function getGitVisibleFiles(rootDir: string): Set<string> | null {
       { cwd: rootDir, encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
     ).trim();
 
-    if (path.resolve(gitRoot) !== path.resolve(rootDir)) {
-      try {
-        // git check-ignore exits 0 if the path IS ignored, 1 if not
-        execFileSync(
-          'git',
-          ['check-ignore', '-q', path.resolve(rootDir)],
-          { cwd: rootDir, encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
-        );
-        // Directory is gitignored by parent repo — fall back to filesystem walk
-        logDebug('project root is gitignored by a parent repo — falling back to filesystem walk', {
-          rootDir,
-          gitRoot,
-        });
-        return null;
-      } catch {
-        // Not ignored — safe to use git ls-files
-      }
+    if (path.resolve(gitRoot) !== path.resolve(rootDir) && isIgnoredByEnclosingRepo(rootDir)) {
+      // Directory is gitignored by parent repo — fall back to filesystem walk
+      logDebug('project root is gitignored by a parent repo — falling back to filesystem walk', {
+        rootDir,
+        gitRoot,
+      });
+      return null;
     }
 
     const files = new Set<string>();
@@ -1541,7 +1627,12 @@ export function getGitChangedFiles(rootDir: string, sinceCommit?: string | null)
     // so change detection sees the same custom-extension files the full index does.
     const overrides = loadExtensionOverrides(rootDir);
     const isSource = (filePath: string): boolean => isSourceFile(filePath, overrides, rootDir);
-    collectGitStatus(rootDir, '', changes, isSource, loadIncludeIgnoredMatcher(rootDir), loadExcludeMatcher(rootDir), sinceCommit ?? undefined);
+    // A project in a folder below its repository's root (#1636). Git can say
+    // nothing about a folder its repository ignores: decline, as the scan
+    // does, so callers take the full scan that indexed the project.
+    const repoPrefix = gitRepoPrefix(rootDir);
+    if (repoPrefix && isIgnoredByEnclosingRepo(rootDir)) return null;
+    collectGitStatus(rootDir, '', changes, isSource, loadIncludeIgnoredMatcher(rootDir), loadExcludeMatcher(rootDir), sinceCommit ?? undefined, repoPrefix);
     return changes;
   } catch {
     return null;
@@ -1555,6 +1646,15 @@ export function getGitChangedFiles(rootDir: string, sinceCommit?: string | null)
  * about the tree; failed file paths remain explicit retry candidates. (#1829)
  */
 export const INDEXED_AT_COMMIT_KEY = 'indexed_at_commit';
+
+/**
+ * Metadata key: the sparse checkout the index was last brought up to date at
+ * ({@link sparseCheckoutStamp}), written with {@link INDEXED_AT_COMMIT_KEY} by a
+ * full index and a full sync. Git says nothing when a checkout changes shape: the
+ * files that come and go are skip-worktree, or were. Absent on an index built
+ * before the stamp, which then reports no such change.
+ */
+const INDEXED_SPARSE_CHECKOUT_KEY = 'indexed_sparse_checkout';
 
 /** HEAD's commit sha, or null in a non-git repo or one with no commits yet. */
 export function getGitHeadSha(rootDir: string): string | null {
@@ -1613,7 +1713,12 @@ export function canTrustGitFastPath(rootDir: string, sinceCommit?: string | null
   }
 }
 
-function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, isSource: (filePath: string) => boolean, includeIgnored: Ignore | null = null, exclude: Ignore | null = null, sinceCommit?: string): void {
+/**
+ * `repoPrefix` is where `repoDir` sits in its repository ({@link gitRepoPrefix}):
+ * '' for a repository root, which every embedded repo below is, and the
+ * folder's path from the root (`app/`) for a project below it (#1636).
+ */
+function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, isSource: (filePath: string) => boolean, includeIgnored: Ignore | null = null, exclude: Ignore | null = null, sinceCommit?: string, repoPrefix = ''): void {
   const output = execFileSync(
     'git',
     // `-uall` lists individual untracked files instead of collapsing an
@@ -1622,7 +1727,12 @@ function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, isSo
     // below). Nested untracked git repos still collapse to `?? repo/` even
     // with `-uall` — git never crosses a repo boundary — so the recursion
     // still handles them. (#1213)
-    ['status', '--porcelain', '--no-renames', '-z', '-uall'],
+    // Below the repository's root, `-- .` keeps the report to this folder:
+    // git reports the whole repository otherwise. A root runs the command
+    // it always did.
+    repoPrefix
+      ? ['status', '--porcelain', '--no-renames', '-z', '-uall', '--', '.']
+      : ['status', '--porcelain', '--no-renames', '-z', '-uall'],
     { cwd: repoDir, encoding: 'utf-8', timeout: 10000, maxBuffer: 50 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
   );
 
@@ -1633,9 +1743,9 @@ function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, isSo
   // vendor/ dir, or a tracked file under a .gitignored dir, surfaces here as a
   // change — so `codegraph status` (which reads getChangedFiles) reports a
   // pending edit the full index never tracks and `sync` never clears. Matching
-  // repo-relative `rel` at each recursion level mirrors getGitVisibleFiles'
+  // `repoDir`-relative `rel` at each recursion level mirrors getGitVisibleFiles'
   // ScopeIgnore: every embedded repo is judged by ITS OWN rules, never the
-  // parent's. (#766)
+  // parent's, and a project below its repository's root by its own. (#766)
   const ig = buildDefaultIgnore(repoDir);
 
   // One classifier for both candidate sources below, so a committed change is
@@ -1653,6 +1763,8 @@ function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, isSo
       return;
     }
 
+    // Added (`??`) / modified files inside an excluded dir must not enter the
+    // index — match against the `repoDir`-relative path, same as the full scan. (#766)
     // Marker candidates only force a scoped full scan; they are not indexed.
     // Ordinary source candidates retain the full scan's exclusion rules.
     if (!themeMarker && ig.ignores(rel)) return;
@@ -1677,7 +1789,13 @@ function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, isSo
     if (line.length < 4) continue; // Minimum: "XY file"
 
     const statusCode = line.substring(0, 2);
-    const rel = normalizePath(line.substring(3));
+    let rel = normalizePath(line.substring(3));
+    // Porcelain paths run from the repository's root, whatever the cwd: take
+    // them back to this folder, and leave out anything outside it.
+    if (repoPrefix) {
+      if (!rel.startsWith(repoPrefix) || rel.length === repoPrefix.length) continue;
+      rel = rel.slice(repoPrefix.length);
+    }
 
     // Untracked directory entries (trailing slash) may hide an embedded repo —
     // collect for the recursion below instead of treating as a file.
@@ -2121,7 +2239,7 @@ export class ExtractionOrchestrator {
       const rel = normalizePath(relativePath);
       let known = reads?.get(rel);
       if (!known) {
-        const full = validatePathWithinRoot(rootDir, relativePath);
+        const full = validatePathWithinRoot(rootDir, relativePath, { readOnly: true });
         if (!full) return null;
         known = { full, signature: diskSignature(full) };
         reads?.set(rel, known);
@@ -2775,6 +2893,14 @@ export class ExtractionOrchestrator {
           const content = bytes.toString('utf-8');
           return { filePath: fp, content, stats, error: null as Error | null };
         } catch (err) {
+          // Nothing at the path is not a file that could not be read (#2904):
+          // git keeps listing a tracked file deleted from the working tree
+          // until the deletion is staged, a symlink can point at nothing (the
+          // directory walk skips one quietly), and a file can go between the
+          // scan and this read. Skip it. EACCES, EIO and the like still report.
+          if (isMissingPathError(err)) {
+            return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: null as Error | null, gone: true };
+          }
           return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: err as Error };
         }
       })
@@ -2794,12 +2920,24 @@ export class ExtractionOrchestrator {
 
       // Dispatch each readable file into the bounded parse window; the window
       // stores results on the main thread as they arrive.
-      for (const { filePath, content, stats, error, skipped } of fileContents) {
+      for (const { filePath, content, stats, error, skipped, gone } of fileContents) {
         if (signal?.aborted) { aborted = true; break; }
 
         if (skipped) {
           // Not a source file after all — counted as done, stored as nothing.
+          // Counted as skipped too: the scan found it, and a file no tally
+          // holds reads as one the run lost, so the index was called PARTIAL.
           processed++;
+          filesSkipped++;
+          onProgress?.({ phase: 'parsing', current: processed, total });
+          continue;
+        }
+
+        if (gone) {
+          // Listed by the scan but not on disk: skipped, stored as nothing. It
+          // still counts toward the tallies, or the run would read as PARTIAL.
+          processed++;
+          filesSkipped++;
           onProgress?.({ phase: 'parsing', current: processed, total });
           continue;
         }
@@ -3122,6 +3260,10 @@ export class ExtractionOrchestrator {
       }
       content = read.bytes === null ? oversizeStamp(stats.size) : read.bytes.toString('utf8');
     } catch (error) {
+      // Nothing at the path: nothing to index, and not a read failure (#2904).
+      if (isMissingPathError(error)) {
+        return { nodes: [], edges: [], unresolvedReferences: [], errors: [], durationMs: 0 };
+      }
       return {
         nodes: [],
         edges: [],
@@ -4203,7 +4345,7 @@ export class ExtractionOrchestrator {
   }
 
   /** Capture before file reads. In-flight/failed full writes must not claim freshness. */
-  beginGitIndexState(full: boolean): { head: string; stamp: string; dirty: string[] | null } {
+  beginGitIndexState(full: boolean): { head: string; stamp: string; dirty: string[] | null; sparse: string } {
     this.pendingLiquidThemeRoots = null;
     const head = getGitHeadSha(this.rootDir) ?? '';
     const stamp = this.queries.getMetadata(INDEXED_AT_COMMIT_KEY) ?? '';
@@ -4220,10 +4362,10 @@ export class ExtractionOrchestrator {
       // first write, so a crash cannot forget an indexed uncommitted edit.
       this.queries.setMetadata('indexed_dirty_paths', JSON.stringify({ commit: stamp, paths: dirty }));
     }
-    return { head, stamp, dirty };
+    return { head, stamp, dirty, sparse: full ? sparseCheckoutStamp(this.rootDir) : '' };
   }
 
-  finishGitIndexState(snapshot: { head: string; stamp: string; dirty: string[] | null }, full: boolean, retries: string[] = []): void {
+  finishGitIndexState(snapshot: { head: string; stamp: string; dirty: string[] | null; sparse: string }, full: boolean, retries: string[] = []): void {
     if (this.pendingLiquidThemeRoots) {
       const roots = this.pendingLiquidThemeRoots;
       const previous = this.indexedLiquidThemeRoots();
@@ -4241,7 +4383,25 @@ export class ExtractionOrchestrator {
     // The embedded commit makes a torn pair fail closed: readers reject a dirty
     // set that doesn't match the separately stored commit. Write the set first.
     this.queries.setMetadata('indexed_dirty_paths', JSON.stringify({ commit, paths }));
-    if (full) this.queries.setMetadata(INDEXED_AT_COMMIT_KEY, commit);
+    if (full) {
+      this.queries.setMetadata(INDEXED_AT_COMMIT_KEY, commit);
+      this.queries.setMetadata(INDEXED_SPARSE_CHECKOUT_KEY, snapshot.sparse);
+    }
+  }
+
+  /**
+   * The files a change of the sparse checkout brought in or took away since the
+   * last full index or sync: where the scan and the index disagree. Nothing git
+   * reports can supply them, so this runs on a clean tree too. It costs a scan
+   * only when the stamp moved; a scan lists files, and reads none.
+   */
+  private sparseCheckoutChanges(): string[] {
+    const indexedAt = this.queries.getMetadata(INDEXED_SPARSE_CHECKOUT_KEY);
+    if (indexedAt === null || indexedAt === sparseCheckoutStamp(this.rootDir)) return [];
+    const scanned = new Set(scanDirectory(this.rootDir));
+    const indexed = this.queries.getAllFilePaths();
+    const known = new Set(indexed);
+    return [...[...scanned].filter((file) => !known.has(file)), ...indexed.filter((file) => !scanned.has(file))];
   }
 
   /**
@@ -4274,7 +4434,7 @@ export class ExtractionOrchestrator {
       // Git supplies candidates, never the verdict. A committed deletion may
       // have been recreated locally; a previously indexed dirty path may have
       // vanished from git status after restore. Classify current disk vs DB once.
-      const candidates = new Set([...gitChanges.deleted, ...gitChanges.modified, ...gitChanges.added, ...dirtyPaths!]);
+      const candidates = new Set([...gitChanges.deleted, ...gitChanges.modified, ...gitChanges.added, ...dirtyPaths!, ...this.sparseCheckoutChanges()]);
       const scope = this.scopedSyncMatcher();
       const overrides = loadExtensionOverrides(this.rootDir);
       for (const filePath of candidates) {

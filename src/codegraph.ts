@@ -30,6 +30,7 @@ import {
   UnresolvedReference,
   IndexHealth,
   Language,
+  ImpactOptions,
 } from './types';
 import { DatabaseConnection, getDatabasePath, removeDatabaseFiles } from './db';
 import { WalCheckpointValve, resolveWalValveMb } from './db/wal-valve';
@@ -714,10 +715,15 @@ export class CodeGraph {
         // marker behind, so `codegraph status` can tell a truncated index
         // from a completed one instead of silently serving partial results.
         try { this.queries.setMetadata('index_state', 'indexing'); } catch { /* metadata is advisory */ }
-        // Segment vocabulary starts empty and is repopulated by the node write
-        // path as every file (re-)indexes below — so a full index is also the
-        // orphan-cleanup pass for names deleted since the last one.
-        try { this.queries.clearNameSegmentVocab(); } catch { /* vocab is advisory — never fail an index over it */ }
+        // Segment vocabulary. On a fresh database it starts empty, and the node
+        // write path fills it as every file indexes below. Over an existing
+        // graph the store skips unchanged files, which never write their names
+        // again, so clearing here lost them until a rebuild, and a cancelled or
+        // failed run left the table empty (#2252). There the table is kept, and
+        // the names no symbol carries any more are pruned once the run completes.
+        if (freshDb) {
+          try { this.queries.clearNameSegmentVocab(); } catch { /* vocab is advisory — never fail an index over it */ }
+        }
         try { this.queries.clearLiterals(); } catch { /* literals are repopulated even for unchanged files */ }
         // Bulk FTS mode for the mass-insert phase: drop the per-row FTS sync
         // triggers, rebuild nodes_fts once from the nodes table afterwards.
@@ -872,6 +878,16 @@ export class CodeGraph {
           await this.resolver.resolveParameterFlows();
         }
         if (result.success && !this.nearDuplicatesRan) await this.refreshNearDuplicates();
+
+        // Over an existing graph the vocabulary was kept (see the top of the
+        // run). Every write of this run has landed, so drop the rows of names
+        // deleted or renamed since they were written — the orphan cleanup the
+        // up-front clear used to do. A cancelled run keeps them all.
+        if (!freshDb && result.success && !options.signal?.aborted) {
+          const tPrune = Date.now();
+          try { this.queries.pruneNameSegmentVocab(); } catch { /* vocab is advisory — never fail an index over it */ }
+          if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] vocab-prune: ${Date.now() - tPrune}ms`);
+        }
 
         // Refresh planner stats + checkpoint the WAL after bulk writes.
         // Off-thread (worker connection): on a multi-GB index this is minutes
@@ -2913,6 +2929,12 @@ export class CodeGraph {
    * usable (already populated — the overwhelmingly common one-SELECT case —
    * or healed here); false when it isn't (empty graph, or another process
    * holds the index lock — that process's own sync heals it).
+   *
+   * A read-only instance, as the hook opens since #2913, writes through a
+   * connection of its own, opened only once it holds the index lock. Every
+   * index and sync holds that lock while it writes, so the repairs a writer's
+   * open runs, and the migration an index from before the table needs, cannot
+   * disturb a bulk load in progress.
    */
   async healSegmentVocabIfEmpty(): Promise<boolean> {
     const empty = (() => {
@@ -2928,7 +2950,16 @@ export class CodeGraph {
       }
       try {
         if (!this.queries.isNameSegmentVocabEmpty()) return true; // raced: healed meanwhile
-        await this.rebuildNameSegmentVocab();
+        if (!this.db.readOnly) {
+          await this.rebuildNameSegmentVocab();
+          return true;
+        }
+        const writer = DatabaseConnection.open(this.db.getPath());
+        try {
+          await this.rebuildNameSegmentVocab(new QueryBuilder(writer.getDb()));
+        } finally {
+          writer.close();
+        }
         return true;
       } finally {
         this.fileLock.release();
@@ -2940,15 +2971,15 @@ export class CodeGraph {
    * Rebuild the segment vocabulary from the current graph, batched and
    * yielding — the upgrade-heal path for indexes built before the vocab table
    * existed. Runs inside the index mutex/lock (sync and
-   * healSegmentVocabIfEmpty hold them).
+   * healSegmentVocabIfEmpty hold them), through `queries`.
    */
-  private async rebuildNameSegmentVocab(): Promise<void> {
+  private async rebuildNameSegmentVocab(queries: QueryBuilder = this.queries): Promise<void> {
     const maybeYield = createYielder();
     const BATCH = 2000;
     for (let offset = 0; ; offset += BATCH) {
-      const names = this.queries.getDistinctNodeNames(BATCH, offset);
+      const names = queries.getDistinctNodeNames(BATCH, offset);
       if (names.length === 0) break;
-      this.queries.insertNameSegmentsBatch(names);
+      queries.insertNameSegmentsBatch(names);
       await maybeYield();
     }
   }
@@ -3248,10 +3279,11 @@ export class CodeGraph {
    *
    * @param nodeId - ID of the node
    * @param maxDepth - Maximum depth to traverse (default: 3)
+   * @param options - Node and edge safety budgets
    * @returns Subgraph containing potentially impacted nodes
    */
-  getImpactRadius(nodeId: string, maxDepth: number = 3): Subgraph {
-    return this.traverser.getImpactRadius(nodeId, maxDepth);
+  getImpactRadius(nodeId: string, maxDepth: number = 3, options: ImpactOptions = {}): Subgraph {
+    return this.traverser.getImpactRadius(nodeId, maxDepth, options);
   }
 
   /**
