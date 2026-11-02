@@ -776,3 +776,66 @@ impl KernelResolver {
         Ok(Some(ResolveOutcome::unresolved()))
     }
 }
+
+impl KernelResolver {
+    /// `Modifier.pad()` after `import androidx.compose.ui.Modifier`: the type
+    /// is outside the project, but Kotlin lets the project extend it. The call
+    /// reaches a project extension on that type — `fun Modifier.pad()`,
+    /// indexed as `Modifier::pad` — that the call site can see (its file, its
+    /// package, an import of it by name or `.*`) and whose own file imports
+    /// the same type. Compose's own `Modifier.fillMaxSize()` matches none and
+    /// stays unlinked.
+    pub(super) fn kotlin_extension_on_imported_type(
+        &mut self,
+        r: &ResolveRefIn,
+    ) -> Res<Option<KCand>> {
+        if r.language != "kotlin" || r.reference_kind != "calls" {
+            return Ok(None);
+        }
+        let Some(call) = re!(r"^(\w+)\.(\w+)$").captures(&r.reference_name) else {
+            return Ok(None);
+        };
+        let (receiver, method) = (call[1].to_string(), call[2].to_string());
+        let Some(binding) = self
+            .import_mappings(&r.file_path)?
+            .iter()
+            .find(|m| m.local_name == receiver)
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let pkg = binding.source.rsplit_once('.').map(|(p, _)| p.to_string()).unwrap_or_default();
+        let mut extensions: Vec<Arc<KNode>> = Vec::new();
+        for n in self
+            .nodes_by_qualified_name(&format!("{}::{}", binding.exported_name, method))?
+            .iter()
+        {
+            if n.kind != "method" || n.language != "kotlin" {
+                continue;
+            }
+            if !self.is_kotlin_top_level_visible(n, r)? {
+                continue;
+            }
+            let scope = self.kotlin_file_scope(&n.file_path);
+            if scope.imports.contains(&binding.source) || scope.stars.contains(&pkg) {
+                extensions.push(n.clone());
+            }
+        }
+        let chosen: Vec<Arc<KNode>> = if extensions.len() > 1 {
+            extensions
+                .into_iter()
+                .filter(|n| n.file_path == r.file_path)
+                .collect()
+        } else {
+            extensions
+        };
+        Ok(match chosen.as_slice() {
+            [only] => Some(KCand {
+                node: only.clone(),
+                confidence: 0.9,
+                resolved_by: "qualified-name",
+            }),
+            _ => None,
+        })
+    }
+}

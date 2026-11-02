@@ -515,7 +515,7 @@ impl KernelResolver {
     /// isKotlinTopLevelVisible: a top-level Kotlin declaration can be named
     /// from its own package, an `import` of it, a star import of its package,
     /// or a default import. A member of a class is not judged here.
-    fn is_kotlin_top_level_visible(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
+    pub(super) fn is_kotlin_top_level_visible(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
         if n.language != "kotlin" || n.file_path == r.file_path {
             return Ok(true);
         }

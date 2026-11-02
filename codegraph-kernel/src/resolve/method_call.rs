@@ -1161,6 +1161,17 @@ if inferred.is_none() && r.language == "dart" {
             && self.node_by_id(&r.from_node_id)?.is_some_and(|n| n.kind == "route") {
             return self.match_method_call(r);
         }
+        // A Kotlin call on a library type the file imports resolves to the
+        // project's own extension of that type when the file can see one
+        // (`fun Modifier.pad()`); the type's own members stay outside.
+        if r.language == "kotlin"
+            && r.reference_kind == "calls"
+            && self.java_outside_import(r)?
+        {
+            if let Some(c) = probe!(r, "mc:kt-ext-import", self.kotlin_extension_on_imported_type(r)?) {
+                return Ok(Some(c));
+            }
+        }
         // PHP `$this->prop.method` takes the declared-type path in both
         // modes (inside method_call_shape).
         let (object_or_class, method_name, inferable, dotted) = match self.method_call_shape(r)? {
@@ -1973,6 +1984,12 @@ if inferred.is_none() && r.language == "dart" {
                 });
                 return Ok(match via_import {
                     Some(c) => Some(c),
+                    // Kotlin lets the project extend an imported library type:
+                    // `fun Modifier.pad()` is the project's, and `Modifier.pad()`
+                    // reaches it when the call site can see the extension.
+                    None if r.language == "kotlin" => {
+                        probe!(r, "brc:kt-ext-import", self.kotlin_extension_on_imported_type(r)?)
+                    }
                     // A Go `pkg.Type{}.M`/`pkg.Type[args]{}.M` keeps the
                     // composite literal's written type — `pkg.Type`'s method
                     // or nothing.

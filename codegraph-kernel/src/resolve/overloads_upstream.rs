@@ -754,7 +754,20 @@ impl KernelResolver {
         if self.is_import_binding_call_target(&hit.node, r)? {
             return Ok(false);
         }
-        if self.java_outside_import(r)? || !self.language_type_visible(&hit.node, r)?
+        // `import java.lang.reflect.Field;` — the file's `Field` is the JDK's,
+        // never a project class of that name. Only a Kotlin extension the
+        // project declares on that type is in the graph.
+        if self.java_outside_import(r)? {
+            let extension = if r.language == "kotlin" {
+                self.kotlin_extension_on_imported_type(r)?
+            } else {
+                None
+            };
+            if !extension.is_some_and(|c| c.node.id == hit.node.id) {
+                return Ok(false);
+            }
+        }
+        if !self.language_type_visible(&hit.node, r)?
             || !self.dart_top_level_visible(&hit.node, r)? || !self.dart_bare_member_visible(&hit.node, r)? {
             return Ok(false);
         }
