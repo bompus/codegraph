@@ -129,6 +129,16 @@ export function escapesRoot(rel: string): boolean {
 }
 
 /**
+ * Whether a filesystem error means nothing is at the path: ENOENT, or ENOTDIR,
+ * which POSIX reports instead when a folder on the way is a file (Windows
+ * reports ENOENT for both).
+ */
+export function isMissingPathError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
+/**
  * Validate that a file path stays within the project root, resolving symlinks.
  *
  * Two layers: a cheap lexical check that catches `../` traversal, then a

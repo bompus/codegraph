@@ -463,7 +463,8 @@ export function applyAliases(
       const absolute = path.resolve(aliases.baseUrl, filled);
       const relative = path.relative(projectRoot, absolute);
       // Skip if the rewrite escapes the project root (unsafe + can't
-      // be looked up via the file index anyway).
+      // be looked up via the file index anyway). A folder named like
+      // `..generated` is inside it.
       if (escapesRoot(relative)) continue;
       out.push(relative.replace(/\\/g, '/'));
     }
