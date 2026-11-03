@@ -937,13 +937,38 @@ fn is_js_member_node(n: &KNode) -> bool {
 /// function, class or arrow with no name. `export default memo(Card)` or
 /// `new Service()` is an expression and answers `false`; a head the line
 /// doesn't begin conservatively answers `true`.
+/// Skip whitespace, block comments and line comments between `export default`
+/// and the expression that follows it.
+fn skip_js_trivia(mut s: &str) -> &str {
+    loop {
+        let t = s.trim_start();
+        if let Some(rest) = t.strip_prefix("/*") {
+            if let Some(end) = rest.find("*/") {
+                s = &rest[end + 2..];
+                continue;
+            }
+            return t;
+        }
+        if let Some(rest) = t.strip_prefix("//") {
+            match rest.find('\n') {
+                Some(end) => {
+                    s = &rest[end + 1..];
+                    continue;
+                }
+                None => return "",
+            }
+        }
+        return t;
+    }
+}
+
 fn export_default_head_is_anonymous(line: &str) -> bool {
     let Some(m) = re!(r"^[ \t]*export[ \t]+default[ \t]+").find(line) else {
         return true;
     };
-    let mut rest = &line[m.end()..];
+    let mut rest = skip_js_trivia(&line[m.end()..]);
     if let Some(after) = rest.strip_prefix("async") {
-        rest = after.trim_start();
+        rest = skip_js_trivia(after);
     }
     if re!(r"^(?:function|class)").is_match(rest) {
         return true;
@@ -972,6 +997,14 @@ fn export_default_head_is_anonymous(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_default_head_skips_comments() {
+        assert!(export_default_head_is_anonymous("export default /* c */ () => 2"));
+        assert!(export_default_head_is_anonymous("export default // c\n() => 2"));
+        assert!(export_default_head_is_anonymous("export default /* c */ function () {}"));
+        assert!(!export_default_head_is_anonymous("export default /* c */ memo(Card)"));
+    }
 
     #[test]
     fn read_source_refuses_directories_and_oversized_files() {
