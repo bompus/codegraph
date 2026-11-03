@@ -937,15 +937,48 @@ fn is_js_member_node(n: &KNode) -> bool {
 /// function, class or arrow with no name. `export default memo(Card)` or
 /// `new Service()` is an expression and answers `false`; a head the line
 /// doesn't begin conservatively answers `true`.
+/// The byte index of the first JavaScript line terminator at or after `from`.
+fn line_comment_end(s: &str, from: usize) -> usize {
+    s[from..]
+        .char_indices()
+        .find(|(_, c)| matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}'))
+        .map(|(i, _)| from + i)
+        .unwrap_or(s.len())
+}
+
+/// Skip whitespace, block comments and line comments between `export default`
+/// and the expression that follows it.
+fn skip_js_trivia(mut s: &str) -> &str {
+    loop {
+        let t = s.trim_start();
+        if let Some(rest) = t.strip_prefix("/*") {
+            if let Some(end) = rest.find("*/") {
+                s = &rest[end + 2..];
+                continue;
+            }
+            return t;
+        }
+        if let Some(rest) = t.strip_prefix("//") {
+            let end = line_comment_end(rest, 0);
+            if end == rest.len() {
+                return "";
+            }
+            s = &rest[end..];
+            continue;
+        }
+        return t;
+    }
+}
+
 fn export_default_head_is_anonymous(line: &str) -> bool {
     let Some(m) = re!(r"^[ \t]*export[ \t]+default[ \t]+").find(line) else {
         return true;
     };
-    let mut rest = &line[m.end()..];
+    let mut rest = skip_js_trivia(&line[m.end()..]);
     if let Some(after) = rest.strip_prefix("async") {
-        rest = after.trim_start();
+        rest = skip_js_trivia(after);
     }
-    if re!(r"^(?:function|class)").is_match(rest) {
+    if re!(r"^(?:function|class)(?-u:\b)").is_match(rest) {
         return true;
     }
     // `x =>` is anonymous; `(…)` is an arrow's parameters when `=>` or a
@@ -955,7 +988,23 @@ fn export_default_head_is_anonymous(line: &str) -> bool {
     }
     if rest.starts_with('(') {
         let mut depth = 0i32;
-        for (i, c) in rest.char_indices() {
+        let mut i = 0;
+        while i < rest.len() {
+            let c = rest[i..].chars().next().unwrap();
+            // A comment inside the parameters is not a closer.
+            if c == '/' {
+                if let Some(next) = rest[i + 1..].chars().next() {
+                    if next == '/' {
+                        i = line_comment_end(rest, i + 2);
+                        continue;
+                    }
+                    if next == '*' {
+                        let Some(end) = rest[i + 2..].find("*/") else { return false };
+                        i = i + 2 + end + 2;
+                        continue;
+                    }
+                }
+            }
             if c == '(' {
                 depth += 1;
             } else if c == ')' {
@@ -964,6 +1013,7 @@ fn export_default_head_is_anonymous(line: &str) -> bool {
                     return re!(r"^[ \t]*(?:=>|:)").is_match(&rest[i + 1..]);
                 }
             }
+            i += c.len_utf8();
         }
     }
     false
@@ -972,6 +1022,19 @@ fn export_default_head_is_anonymous(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_default_head_skips_comments() {
+        assert!(export_default_head_is_anonymous("export default /* c */ () => 2"));
+        assert!(export_default_head_is_anonymous("export default // c\n() => 2"));
+        assert!(export_default_head_is_anonymous("export default // c\r() => 2"));
+        assert!(export_default_head_is_anonymous("export default // c\u{2028}() => 2"));
+        assert!(export_default_head_is_anonymous("export default /* c */ function () {}"));
+        assert!(export_default_head_is_anonymous("export default /* c */ (/* ) */ x) => x"));
+        assert!(!export_default_head_is_anonymous("export default /* c */ memo(Card)"));
+        assert!(!export_default_head_is_anonymous("export default /* c */ functionality"));
+        assert!(!export_default_head_is_anonymous("export default /* c */ classy"));
+    }
 
     #[test]
     fn read_source_refuses_directories_and_oversized_files() {

@@ -279,6 +279,9 @@ export default (
   value
 ) => value;
 `,
+  'src/gen/commented.ts': `export function helper() { return 1; }
+export default /* comment */ () => 2;
+`,
   'src/gen/use.ts': `import Issue from "./issue"
 import Render from "./render"
 import Write from "./write"
@@ -286,6 +289,7 @@ import Persisted from "./model"
 import Plain from "./plain"
 import Unbalanced from "./unbalanced"
 import Multi from "./multi"
+import Commented from "./commented"
 
 export function generate() {
   Issue()
@@ -295,6 +299,7 @@ export function generate() {
   Plain()
   Unbalanced()
   Multi()
+  Commented()
 }
 `,
   'src/use.tsx': `import handler from "./api/vans"
@@ -451,6 +456,10 @@ describe('an `export default` line inside a template literal', () => {
 
   it('binds a multiline anonymous arrow default to nothing, not to a function beside it', () => {
     expect(generated()).not.toContain('src/gen/multi.ts:helper');
+  });
+
+  it('binds a comment before an anonymous default to nothing, not to a function beside it', () => {
+    expect(generated()).not.toContain('src/gen/commented.ts:helper');
   });
 
   it('leaves regexes, strings and division alone, and a scan it cannot finish', () => {

@@ -33,7 +33,9 @@ import {
 } from '../src/installer/instructions-template';
 
 function mkTmpDir(label: string): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), `cg-targets-${label}-`));
+  // Realpath so the target's real paths and the test's expected paths agree
+  // through a symlinked temp root (macOS /var, or a TMPDIR symlink).
+  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `cg-targets-${label}-`)));
 }
 
 describe('standalone installer Windows shell guidance (#1294)', () => {
@@ -4061,7 +4063,9 @@ function useTmpDirs(label: string): { home: () => string; cwd: () => string } {
     tmpCwd = mkTmpDir(`${label}-cwd`);
     origCwd = process.cwd();
     process.chdir(tmpCwd);
-    homeRestore = setHome(tmpHome);
+    // Global targets build paths from HOME as spelled; use the real path so a
+    // symlinked temp root or macOS /var matches the expected real paths.
+    homeRestore = setHome(fs.realpathSync(tmpHome));
   });
 
   afterEach(() => {
@@ -4081,9 +4085,10 @@ describe('Installer targets — agents with a JSON mcpServers file', () => {
     const locations = (['global', 'local'] as const).filter((l) => c[l] !== null);
 
     for (const location of locations) {
-      const file = () => path.join(location === 'global' ? dirs.home() : dirs.cwd(), ...c[location]!);
+      const baseDir = () => fs.realpathSync(location === 'global' ? dirs.home() : dirs.cwd());
+      const file = () => path.join(baseDir(), ...c[location]!);
       const instructions = location === 'global' ? c.globalInstructions : c.localInstructions;
-      const instructionsFile = () => path.join(location === 'global' ? dirs.home() : dirs.cwd(), ...instructions!);
+      const instructionsFile = () => path.join(baseDir(), ...instructions!);
 
       describe(`${c.id} (${location})`, () => {
         it('writes the documented entry to the documented file, and nothing else for the MCP config', () => {
