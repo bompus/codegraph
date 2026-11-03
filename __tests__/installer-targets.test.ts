@@ -33,7 +33,9 @@ import {
 } from '../src/installer/instructions-template';
 
 function mkTmpDir(label: string): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), `cg-targets-${label}-`));
+  // Realpath so the target's real paths and the test's expected paths agree
+  // through a symlinked temp root (macOS /var, or a TMPDIR symlink).
+  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `cg-targets-${label}-`)));
 }
 
 describe('standalone installer Windows shell guidance (#1294)', () => {
