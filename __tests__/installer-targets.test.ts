@@ -4061,7 +4061,9 @@ function useTmpDirs(label: string): { home: () => string; cwd: () => string } {
     tmpCwd = mkTmpDir(`${label}-cwd`);
     origCwd = process.cwd();
     process.chdir(tmpCwd);
-    homeRestore = setHome(tmpHome);
+    // Global targets build paths from HOME as spelled; use the real path so a
+    // symlinked temp root or macOS /var matches the expected real paths.
+    homeRestore = setHome(fs.realpathSync(tmpHome));
   });
 
   afterEach(() => {
