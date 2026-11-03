@@ -4081,9 +4081,10 @@ describe('Installer targets — agents with a JSON mcpServers file', () => {
     const locations = (['global', 'local'] as const).filter((l) => c[l] !== null);
 
     for (const location of locations) {
-      const file = () => path.join(location === 'global' ? dirs.home() : dirs.cwd(), ...c[location]!);
+      const baseDir = () => fs.realpathSync(location === 'global' ? dirs.home() : dirs.cwd());
+      const file = () => path.join(baseDir(), ...c[location]!);
       const instructions = location === 'global' ? c.globalInstructions : c.localInstructions;
-      const instructionsFile = () => path.join(location === 'global' ? dirs.home() : dirs.cwd(), ...instructions!);
+      const instructionsFile = () => path.join(baseDir(), ...instructions!);
 
       describe(`${c.id} (${location})`, () => {
         it('writes the documented entry to the documented file, and nothing else for the MCP config', () => {
